@@ -2,9 +2,13 @@ import {
   makeBranchName,
   makeWorktreePath,
   parseRemote,
+  authenticatedRemoteUrl,
+  setRemoteUrl,
+  ensureWorkdir,
   setupWorktree,
   removeWorktree,
   commitAll,
+  pushBranch,
 } from "./git";
 import { execSync } from "child_process";
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from "fs";
@@ -113,6 +117,8 @@ describe("worktree operations", () => {
     execSync("git config user.name Test", { cwd: mainRepo });
     writeFileSync(join(mainRepo, "README.md"), "# Test\n");
     execSync("git add -A && git commit -m 'initial'", { cwd: mainRepo });
+    // Add a dummy remote so setRemoteUrl has something to set
+    execSync("git remote add origin https://placeholder.example.com/repo.git", { cwd: mainRepo });
   });
 
   afterEach(() => {
@@ -220,4 +226,74 @@ describe("worktree operations", () => {
     const ok = await removeWorktree(mainRepo, worktreePath);
     expect(ok).toBe(true);
   });
+
+  it("pushBranch fails gracefully without remote", async () => {
+    const worktreePath = join(mainRepo, "..", "test-worktree-push-" + Date.now());
+    try {
+      await setupWorktree(mainRepo, worktreePath, "push-branch");
+      writeFileSync(join(worktreePath, "file.txt"), "content\n");
+      await commitAll(worktreePath, "test commit");
+      // No remote configured — push should fail gracefully
+      const pushed = await pushBranch(worktreePath, "push-branch");
+      expect(pushed).toBe(false);
+    } finally {
+      try { await removeWorktree(mainRepo, worktreePath); } catch {}
+      try { rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+    }
+  });
+  it("setRemoteUrl sets remote URL on a repo", async () => {
+    const ok = await setRemoteUrl(mainRepo, "https://example.com/test.git");
+    expect(ok).toBe(true);
+    const url = execSync("git remote get-url origin", { cwd: mainRepo, encoding: "utf-8" }).trim();
+    expect(url).toBe("https://example.com/test.git");
+  });
+
+  it("setRemoteUrl returns false for non-git directory", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "not-git-"));
+    try {
+      const ok = await setRemoteUrl(tmpDir, "https://example.com/test.git");
+      expect(ok).toBe(false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ensureWorkdir does nothing when workdir exists", async () => {
+    await expect(ensureWorkdir({
+      id: "test", name: "test", workdir: mainRepo,
+      git_remote: null, git_server_token: null, git_default_branch: "main", model_id: null, created_at: "", context_limit: null,
+    } as any)).resolves.toBeUndefined();
+  });
+
+  it("ensureWorkdir throws when workdir missing and no git_remote", async () => {
+    const fakePath = join(tmpdir(), "definitely-does-not-exist-" + Date.now());
+    await expect(ensureWorkdir({
+      id: "test", name: "test", workdir: fakePath,
+      git_remote: null, git_server_token: null, git_default_branch: "main", model_id: null, created_at: "", context_limit: null,
+    } as any)).rejects.toThrow(/no git_remote/i);
+  });
 });
+
+// ─── authenticatedRemoteUrl ─────────────────────────────────────────────────
+
+describe("authenticatedRemoteUrl", () => {
+  it("builds authenticated HTTPS URL for GitHub", () => {
+    const url = authenticatedRemoteUrl("https://github.com/owner/repo.git", "ghp_token123");
+    expect(url).toBe("https://x-access-token:ghp_token123@github.com/owner/repo.git");
+  });
+
+  it("builds authenticated HTTPS URL for Gitea", () => {
+    const url = authenticatedRemoteUrl("https://gitea.example.com/org/repo.git", "tok_abc");
+    expect(url).toBe("https://x-access-token:tok_abc@gitea.example.com/org/repo.git");
+  });
+
+  it("converts SSH remote to authenticated HTTPS", () => {
+    const url = authenticatedRemoteUrl("git@github.com:owner/repo.git", "ghp_token123");
+    expect(url).toBe("https://x-access-token:ghp_token123@github.com/owner/repo.git");
+  });
+
+  it("returns null for invalid remote", () => {
+    expect(authenticatedRemoteUrl("not-a-url", "token")).toBeNull();
+  });
+});
+

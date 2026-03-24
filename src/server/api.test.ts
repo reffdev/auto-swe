@@ -392,3 +392,101 @@ describe("issue actions", () => {
     expect(res.status).toBe(409);
   });
 });
+
+// ─── Edge cases: 404s and missing resources ─────────────────────────────────
+
+describe("404 edge cases", () => {
+  it("GET /api/issues/:id returns 404 for nonexistent", async () => {
+    const res = await request(app).get("/api/issues/nonexistent");
+    expect(res.status).toBe(404);
+  });
+
+  it("PATCH /api/issues/:id returns 404 for nonexistent", async () => {
+    const res = await request(app).patch("/api/issues/nonexistent").send({ title: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/issues/:id/approve returns 404 for nonexistent", async () => {
+    const res = await request(app).post("/api/issues/nonexistent/approve");
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/issues/:id/retry returns 404 for nonexistent", async () => {
+    const res = await request(app).post("/api/issues/nonexistent/retry");
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/issues/:id/approve-pr returns 404 for nonexistent", async () => {
+    const res = await request(app).post("/api/issues/nonexistent/approve-pr");
+    expect(res.status).toBe(404);
+  });
+
+  it("POST /api/issues/:id/reject-pr returns 404 for nonexistent", async () => {
+    const res = await request(app).post("/api/issues/nonexistent/reject-pr");
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE /api/projects/:id returns 404 for nonexistent", async () => {
+    const res = await request(app).delete("/api/projects/nonexistent");
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE /api/machines/:id returns 404 for nonexistent", async () => {
+    const res = await request(app).delete("/api/machines/nonexistent");
+    expect(res.status).toBe(404);
+  });
+
+  it("PATCH /api/machines/:id returns 404 for nonexistent", async () => {
+    const res = await request(app).patch("/api/machines/nonexistent").send({ name: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /api/runs/:id/output returns 404 for nonexistent", async () => {
+    const res = await request(app).get("/api/runs/nonexistent/output");
+    expect(res.status).toBe(404);
+  });
+});
+
+// ─── Validation edge cases ──────────────────────────────────────────────────
+
+describe("validation edge cases", () => {
+  it("POST /api/issues rejects missing title", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const res = await request(app).post("/api/issues").send({ project_id: p.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/title/);
+  });
+
+  it("POST /api/issues rejects missing project_id", async () => {
+    const res = await request(app).post("/api/issues").send({ title: "x" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/project_id/);
+  });
+
+  it("GET /api/llm-requests returns empty array", async () => {
+    const res = await request(app).get("/api/llm-requests");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("GET /api/llm-requests respects limit param", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "x" });
+    for (let i = 0; i < 5; i++) {
+      db.createLlmRequest({ issue_id: issue.id, input_text: `in${i}`, output_text: `out${i}` });
+    }
+    const res = await request(app).get("/api/llm-requests?limit=3");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(3);
+  });
+
+  it("GET /api/llm-requests/run/:runId returns requests for run", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "x" });
+    const run = db.createRun({ issue_id: issue.id });
+    db.createLlmRequest({ run_id: run.id, input_text: "a", output_text: "b" });
+    const res = await request(app).get(`/api/llm-requests/run/${run.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+  });
+});

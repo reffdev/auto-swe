@@ -321,6 +321,17 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         const result = cleanPath(path || ".");
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
+        // Verify root path exists before scanning
+        try {
+          const stat = statSync(fullPath);
+          if (!stat.isDirectory()) {
+            return trackResult(`"${path}" is a file, not a directory. Use readFile to read it.`);
+          }
+        } catch (e) {
+          const err = e as { code?: string };
+          if (err.code === "ENOENT") return trackResult(`Directory not found: "${path}".`);
+          return trackResult(`Error: ${e}`);
+        }
         const lines: string[] = [];
         const visitedDirs = new Set<string>();
         function scan(dir: string, prefix: string, depth: number) {
