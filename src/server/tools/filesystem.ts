@@ -57,8 +57,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
       result.startsWith("Error") ||
       result.startsWith("ERROR") ||
       result.startsWith("File not found") ||
-      result.startsWith("Directory not found") ||
-      result.startsWith("Do not use");
+      result.startsWith("Directory not found");
     const isNotFound =
       result.includes("not found") ||
       result.includes("not a file") ||

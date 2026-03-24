@@ -27,12 +27,14 @@ function RestartOverlay() {
         await new Promise(r => setTimeout(r, 2000))
         try {
           const res = await fetch('/health')
-          if (res.ok) {
-            setStatus('Server is back! Reloading...')
-            await new Promise(r => setTimeout(r, 500))
-            window.location.reload()
-            return
-          }
+          if (!res.ok) continue
+          // Also verify the page itself loads (not an nginx 502)
+          const page = await fetch('/', { headers: { Accept: 'text/html' } })
+          if (!page.ok) continue
+          setStatus('Server is back! Reloading...')
+          await new Promise(r => setTimeout(r, 500))
+          window.location.reload()
+          return
         } catch { /* still down */ }
       }
     }
