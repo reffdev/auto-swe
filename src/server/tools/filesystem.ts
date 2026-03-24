@@ -397,17 +397,6 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         }
         command_to_run = stripped;
       }
-      // Block shell commands that are file-reading workarounds
-      if (
-        /(?:^|\|\s*|&&\s*|;\s*)(cat|head|tail|sed\s+-?n|awk|less|more|nl)\s/.test(
-          command_to_run
-        ) ||
-        /python[3]?\s+-c\s+.*open\s*\(/.test(command_to_run)
-      ) {
-        return trackResult(
-          "Do not use shell commands to read files. Use the readFile tool instead."
-        );
-      }
       const loopMsg = loopGuard("runCommand", { command: command_to_run });
       if (loopMsg) return trackResult(loopMsg);
       const result = spawnSync(command_to_run, {

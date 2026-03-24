@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, MessageSquare } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, MessageSquare, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import {
@@ -46,47 +46,69 @@ function parseSteps(output: string | null): StepData[] | null {
   return null
 }
 
+function ToolCallDetail({ call, result, duration }: {
+  call: { tool: string; args: string }
+  result?: { tool: string; result: string }
+  duration: number
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="border border-border rounded-md overflow-hidden text-xs">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
+      >
+        <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <Wrench className="size-3 shrink-0 text-muted-foreground" />
+        <span className="font-medium text-foreground">{call.tool}</span>
+        <span className="ml-auto text-muted-foreground opacity-60">{formatDuration(duration)}</span>
+      </button>
+      {open && (
+        <div className="px-3 py-2 space-y-2 border-t border-border">
+          <div>
+            <span className="text-muted-foreground font-medium">Args:</span>
+            <pre className="mt-1 bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">{call.args}</pre>
+          </div>
+          {result && (
+            <div>
+              <span className="text-muted-foreground font-medium">Result:</span>
+              <pre className="mt-1 bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-60 overflow-y-auto">{result.result}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StepMessage({ step }: { step: StepData }) {
+  const toolCalls = step.toolCalls ?? []
+  const toolResults = step.toolResults ?? []
+
   return (
     <>
-      {/* Tool calls — shown as assistant messages */}
-      {step.toolCalls?.map((tc, i) => (
-        <Message key={`${step.step}-tc-${i}`} from="assistant">
-          <MessageContent>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-              <Wrench className="size-3" />
-              <span className="font-medium">{tc.tool}</span>
-              <span className="ml-auto opacity-60">{formatDuration(step.durationMs)}</span>
-            </div>
-            <pre className="text-xs bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">{tc.args}</pre>
-          </MessageContent>
-        </Message>
-      ))}
-
-      {/* Tool results — shown as "user" (system) messages */}
-      {step.toolResults?.map((tr, i) => (
-        <Message key={`${step.step}-tr-${i}`} from="user">
-          <MessageContent>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-              <Wrench className="size-3" />
-              <span className="font-medium">{tr.tool} result</span>
-            </div>
-            <pre className="text-xs bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-40 overflow-y-auto">{tr.result}</pre>
-          </MessageContent>
-        </Message>
-      ))}
-
-      {/* Text output */}
+      {/* Agent text — shown first (this is the reasoning/response) */}
       {step.text && (
         <Message from="assistant">
           <MessageContent>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-              <MessageSquare className="size-3" />
-              <span className="font-medium">Agent</span>
-            </div>
             <MessageResponse>{step.text}</MessageResponse>
           </MessageContent>
         </Message>
+      )}
+
+      {/* Tool calls paired with their results — collapsible */}
+      {toolCalls.length > 0 && (
+        <div className="flex flex-col gap-1 max-w-[95%]">
+          {toolCalls.map((tc, i) => (
+            <ToolCallDetail
+              key={`${step.step}-tc-${i}`}
+              call={tc}
+              result={toolResults[i]}
+              duration={step.durationMs}
+            />
+          ))}
+        </div>
       )}
     </>
   )

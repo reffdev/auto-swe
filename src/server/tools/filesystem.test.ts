@@ -251,10 +251,10 @@ describe("runCommand", () => {
     expect(result).toContain("works");
   });
 
-  it("blocks file-reading commands", async () => {
+  it("allows piped commands like head in pipelines", async () => {
     const tools = makeFilesystemTools(workdir);
-    const result = await tools.runCommand.execute({ command: "cat hello.txt" }, { toolCallId: "t1", messages: [] });
-    expect(result).toMatch(/do not use shell/i);
+    const result = await tools.runCommand.execute({ command: "echo hello | head -1" }, { toolCallId: "t1", messages: [] });
+    expect(result).toContain("hello");
   });
 
   it("returns exit code on failure", async () => {
