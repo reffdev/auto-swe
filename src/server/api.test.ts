@@ -148,6 +148,19 @@ describe("projects", () => {
     expect(res.body).toHaveLength(2);
   });
 
+  it("GET /api/projects/:id gets a project", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir, git_remote: "https://github.com/test/repo" });
+    const res = await request(app).get(`/api/projects/${p.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("test");
+    expect(res.body.git_remote).toBe("https://github.com/test/repo");
+  });
+
+  it("GET /api/projects/:id returns 404 for missing", async () => {
+    const res = await request(app).get("/api/projects/nope");
+    expect(res.status).toBe(404);
+  });
+
   it("PATCH /api/projects/:id updates a project", async () => {
     const p = db.createProject({ name: "test", workdir: testDir });
     const res = await request(app)
