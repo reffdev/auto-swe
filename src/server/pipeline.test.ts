@@ -86,4 +86,31 @@ feedback: The test in auth.test.ts line 42 is checking the wrong status code. Ex
     expect(v.failureClass).toBe("unknown");
     expect(v.feedback).toContain("something is wrong");
   });
+
+  it("finds accept status outside fenced block", () => {
+    const output = "I've reviewed everything.\n\nstatus: accept\nsummary: looks great\n</parameter>\n</function>";
+    const v = parseVerdict(output);
+    expect(v.status).toBe("accept");
+  });
+
+  it("finds reject status outside fenced block", () => {
+    const output = "status: reject\nfailure_class: test_failure\nfeedback: tests are broken";
+    const v = parseVerdict(output);
+    expect(v.status).toBe("reject");
+    expect(v.failureClass).toBe("test_failure");
+    expect(v.feedback).toContain("tests are broken");
+  });
+
+  it("accepts when only 'accept' keyword appears", () => {
+    const output = "Everything looks good. I accept this implementation.";
+    const v = parseVerdict(output);
+    expect(v.status).toBe("accept");
+  });
+
+  it("rejects when both accept and reject appear in status fields", () => {
+    // If both status: accept and status: reject appear, reject wins (fail-safe)
+    const output = "status: accept\nstatus: reject\nfeedback: conflicting";
+    const v = parseVerdict(output);
+    expect(v.status).toBe("reject");
+  });
 });

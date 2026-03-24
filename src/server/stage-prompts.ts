@@ -100,48 +100,35 @@ Output the merged brief in the same \`\`\`scout_brief format.`;
 
 // ─── Implement ────────────────────────────────────────────────────────────────
 
-export function constructImplementPrompt(opts: {
+/** Returns { system, user } — scout brief goes in the USER message for maximum attention */
+export function constructImplementPrompts(opts: {
   workingDir: string;
   scoutBrief: string;
+  issueTitle: string;
+  issueDescription: string;
   reviewFeedback?: string;
-}): string {
-  let prompt = `# Implement Stage
+}): { system: string; user: string } {
+  const system = `# Implement Stage
 
 ${workingEnv(opts.workingDir)}
 
 ## Your Role
 
-You are the **Implementer**. You have a comprehensive scout brief with all the context you need. Make the code changes to solve the issue.
+You are the **Implementer**. A scout has already explored the codebase and produced a comprehensive brief for you. The brief is in the user message below — it contains all the code and context you need.
+
+**Do NOT re-read files that are already in the scout brief.** Start implementing immediately.
 
 ${CODING_STANDARDS}
 
 ## Instructions
 
-- **Start implementing immediately** — the scout already explored the codebase for you.
 - Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files.
 - Use \`runCommand\` to run builds/tests to verify your changes work.
+- You CAN read files not covered by the brief if needed, but the brief should cover everything important.
 - Do NOT commit or push — later stages handle that.
 - Do NOT write tests — the Test-Write stage handles that.
 - When done, use \`gitStatus\` and \`gitDiff\` to verify your changes.
 
-## Scout Brief
-
-${opts.scoutBrief}
-`;
-
-  if (opts.reviewFeedback) {
-    prompt += `
-## IMPORTANT: Review Feedback (Retry)
-
-A previous implementation attempt was **rejected** by the reviewer. The worktree still contains your previous changes. Fix the specific issues identified below:
-
-${opts.reviewFeedback}
-
-Address ONLY the issues raised. Do not start from scratch unless the feedback says to.
-`;
-  }
-
-  prompt += `
 ## Output
 
 When done, report what you changed:
@@ -151,17 +138,39 @@ files_changed: [list of files you modified or created]
 summary: [brief description of what was changed and why]
 \`\`\``;
 
-  return prompt;
+  let user = `## Issue: ${opts.issueTitle}\n\n${opts.issueDescription || "(No additional details)"}\n\n`;
+
+  if (opts.reviewFeedback) {
+    user += `## IMPORTANT: Review Feedback (Retry)
+
+A previous implementation attempt was **rejected** by the reviewer. The worktree still contains your previous changes. Fix the specific issues identified below:
+
+${opts.reviewFeedback}
+
+Address ONLY the issues raised. Do not start from scratch unless the feedback says to.
+
+`;
+  }
+
+  user += `## Scout Brief — Codebase Analysis
+
+The following brief was produced by the scout stage. It contains all the relevant code, project structure, and analysis you need.
+
+${opts.scoutBrief}`;
+
+  return { system, user };
 }
 
 // ─── Test-Write ───────────────────────────────────────────────────────────────
 
-export function constructTestWritePrompt(opts: {
+export function constructTestWritePrompts(opts: {
   workingDir: string;
   scoutBrief: string;
   implementOutput: string;
-}): string {
-  return `# Test-Write Stage
+  issueTitle: string;
+  issueDescription: string;
+}): { system: string; user: string } {
+  const system = `# Test-Write Stage
 
 ${workingEnv(opts.workingDir)}
 
@@ -173,21 +182,13 @@ ${CODING_STANDARDS}
 
 ## Instructions
 
-1. Review the implement output to understand what changed
+1. Review the implement output and scout brief in the user message to understand what changed
 2. Read the changed files to see the actual code
 3. Follow the project's existing test patterns (test framework, file naming, directory structure)
 4. Write test files that cover the key behaviors introduced or changed
 5. Run the tests using \`runCommand\` and fix any failures
 6. Do NOT modify implementation files — only create/modify test files
 7. Do NOT commit or push
-
-## Scout Brief
-
-${opts.scoutBrief}
-
-## Implementation Output
-
-${opts.implementOutput}
 
 ## Output
 
@@ -198,6 +199,20 @@ test_files: [list of test files created or modified]
 run_command: [command to run just these tests]
 summary: [what's tested and the results]
 \`\`\``;
+
+  const user = `## Issue: ${opts.issueTitle}
+
+${opts.issueDescription || "(No additional details)"}
+
+## Scout Brief
+
+${opts.scoutBrief}
+
+## Implementation Output
+
+${opts.implementOutput}`;
+
+  return { system, user };
 }
 
 // ─── Review ───────────────────────────────────────────────────────────────────
@@ -208,26 +223,21 @@ function truncateForContext(text: string, maxChars: number): string {
   return text.slice(0, maxChars) + `\n\n[... truncated ${text.length - maxChars} chars. Use readFile to see full content if needed.]`;
 }
 
-export function constructReviewPrompt(opts: {
+export function constructReviewPrompts(opts: {
   workingDir: string;
   scoutBrief: string;
   implementOutput: string;
   testWriteOutput: string;
-}): string {
-  // Truncate each section to prevent context overflow
-  // Budget: ~15k chars each (~3.75k tokens) → ~45k chars total (~11k tokens)
-  // Leaves room for system instructions, tools, and model response
-  const brief = truncateForContext(opts.scoutBrief, 15000);
-  const impl = truncateForContext(opts.implementOutput, 15000);
-  const test = truncateForContext(opts.testWriteOutput, 15000);
-
-  return `# Review Stage
+  issueTitle: string;
+  issueDescription: string;
+}): { system: string; user: string } {
+  const system = `# Review Stage
 
 ${workingEnv(opts.workingDir)}
 
 ## Your Role
 
-You are the **Reviewer**. Verify the implementation is correct and the tests pass. You have read-only access plus \`runCommand\` — use them to read files and run tests directly rather than relying solely on the summaries below.
+You are the **Reviewer**. Verify the implementation is correct and the tests pass. You have read-only access plus \`runCommand\` — use them to read files and run tests directly rather than relying solely on the summaries in the user message.
 
 ## Steps
 
@@ -239,18 +249,6 @@ You are the **Reviewer**. Verify the implementation is correct and the tests pas
    - Is there debug code, console.logs, or commented-out code that shouldn't be there?
    - Are the tests actually testing the right things?
 4. Produce your verdict
-
-## Scout Brief
-
-${brief}
-
-## Implementation Output
-
-${impl}
-
-## Test-Write Output
-
-${test}
 
 ## Verdict
 
@@ -270,4 +268,26 @@ feedback: [specific, actionable feedback about what needs to be fixed.
 Be precise — the implement agent will use this to make corrections.
 Include file names, function names, and what's wrong.]
 \`\`\``;
+
+  const brief = truncateForContext(opts.scoutBrief, 15000);
+  const impl = truncateForContext(opts.implementOutput, 15000);
+  const test = truncateForContext(opts.testWriteOutput, 15000);
+
+  const user = `## Issue: ${opts.issueTitle}
+
+${opts.issueDescription || "(No additional details)"}
+
+## Scout Brief
+
+${brief}
+
+## Implementation Output
+
+${impl}
+
+## Test-Write Output
+
+${test}`;
+
+  return { system, user };
 }

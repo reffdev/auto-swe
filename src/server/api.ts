@@ -9,7 +9,7 @@ import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
-import { executePipeline, type PipelineContext } from "./pipeline";
+import { executePipeline, cancelPipeline, type PipelineContext } from "./pipeline";
 import { mergePullRequest, authenticatedRemoteUrl } from "./git";
 
 /** Base directory for auto-created project clones */
@@ -303,6 +303,25 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         console.error(`Pipeline error (retry):`, err);
       });
     }
+  });
+
+  router.post("/issues/:id/cancel", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    if (issue.status !== "running" && issue.status !== "approved") {
+      res.status(409).json({ error: `cannot cancel issue in status '${issue.status}'` });
+      return;
+    }
+    const cancelled = cancelPipeline(issue.id);
+    if (!cancelled) {
+      // No active pipeline — just reset the status directly
+      db.updateIssue(issue.id, { status: "failed" });
+    }
+    // If cancelled, the pipeline's catch block will set status to "failed"
+    res.json({ cancelled: true, issue: db.getIssue(issue.id) });
   });
 
   router.post("/issues/:id/approve-pr", async (req, res) => {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
@@ -304,6 +304,12 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
               Reject PR
             </Button>
           </>
+        )}
+        {(issue.status === 'running' || issue.status === 'approved') && (
+          <Button size="sm" variant="outline" onClick={() => doAction('cancel', () => api.cancelIssue(issue.id))} disabled={!!actionLoading}>
+            <Square className="size-3.5 mr-1" />
+            {actionLoading === 'cancel' ? 'Cancelling...' : 'Cancel'}
+          </Button>
         )}
         {issue.status === 'failed' && (
           <Button size="sm" onClick={() => doAction('retry', () => api.retryIssue(issue.id))} disabled={!!actionLoading}>

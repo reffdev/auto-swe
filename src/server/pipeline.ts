@@ -23,9 +23,9 @@ import {
 import {
   constructScoutPrompt,
   constructScoutCompactPrompt,
-  constructImplementPrompt,
-  constructTestWritePrompt,
-  constructReviewPrompt,
+  constructImplementPrompts,
+  constructTestWritePrompts,
+  constructReviewPrompts,
 } from "./stage-prompts";
 import {
   makeBranchName,
@@ -91,6 +91,8 @@ interface PipelineConfig {
   branch: string;
   /** Pre-created model instance — shared across all nodes */
   model: ReturnType<ReturnType<typeof createOpenAICompatible>>;
+  /** Abort signal for cancellation */
+  abortSignal: AbortSignal;
 }
 
 // ─── Parsing helpers ──────────────────────────────────────────────────────────
@@ -103,26 +105,44 @@ export function extractScoutBrief(output: string): string {
   return output.trim();
 }
 
-/** Extract verdict from ```verdict ... ``` fenced block */
+/** Extract verdict from ```verdict ... ``` fenced block, or from loose text */
 export function parseVerdict(output: string): {
   status: "accept" | "reject";
   feedback: string;
   failureClass: string;
 } {
+  // Try fenced block first
   const match = output.match(/```verdict\s*\n([\s\S]*?)```/);
-  if (!match) {
-    // Default to reject if we can't parse — fail safe
-    return { status: "reject", feedback: "Could not parse review verdict from output", failureClass: "unknown" };
+  const block = match?.[1] ?? "";
+
+  // Look for status: accept/reject in the fenced block OR anywhere in the output
+  const searchText = block || output;
+  const isAccept = /status:\s*accept/i.test(searchText);
+  const isReject = /status:\s*reject/i.test(searchText);
+
+  // If we found an explicit accept, trust it
+  if (isAccept && !isReject) {
+    return { status: "accept", feedback: "", failureClass: "none" };
   }
-  const block = match[1];
-  const status = /status:\s*accept/i.test(block) ? "accept" : "reject";
-  const feedbackMatch = block.match(/feedback:\s*([\s\S]*?)(?=\n\w+:|$)/);
-  const classMatch = block.match(/failure_class:\s*(\S+)/);
-  return {
-    status,
-    feedback: feedbackMatch?.[1]?.trim() ?? block.trim(),
-    failureClass: classMatch?.[1]?.trim() ?? "unknown",
-  };
+
+  // If we found an explicit reject, extract feedback
+  if (isReject) {
+    const feedbackMatch = searchText.match(/feedback:\s*([\s\S]*?)(?=\n\w+:|$)/);
+    const classMatch = searchText.match(/failure_class:\s*(\S+)/);
+    return {
+      status: "reject",
+      feedback: feedbackMatch?.[1]?.trim() ?? searchText.trim(),
+      failureClass: classMatch?.[1]?.trim() ?? "unknown",
+    };
+  }
+
+  // No explicit status found — check for accept/reject keywords as a last resort
+  if (/\baccept\b/i.test(output) && !/\breject\b/i.test(output)) {
+    return { status: "accept", feedback: "", failureClass: "none" };
+  }
+
+  // Default to reject if truly ambiguous — fail safe
+  return { status: "reject", feedback: "Could not parse review verdict from output", failureClass: "unknown" };
 }
 
 // ─── Shared agent executor ────────────────────────────────────────────────────
@@ -139,6 +159,7 @@ interface RunStageOpts {
   tools: ToolSet;
   maxSteps: number;
   timeoutMs: number;
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -146,7 +167,9 @@ interface RunStageOpts {
  * output, log LLM requests. Returns the final text output.
  */
 async function runStage(opts: RunStageOpts): Promise<string> {
-  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, timeoutMs } = opts;
+  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, timeoutMs, abortSignal } = opts;
+
+  if (abortSignal?.aborted) throw new Error("Pipeline cancelled");
 
   db.updateRun(runId, { status: "running", started_at: new Date().toISOString() });
 
@@ -240,6 +263,7 @@ async function runStage(opts: RunStageOpts): Promise<string> {
       const result = streamText({
         model, system: systemPrompt, prompt: userPrompt,
         tools, maxSteps, temperature: 0.2,
+        abortSignal,
         onStepFinish: onStep,
       });
       let text = "";
@@ -287,7 +311,7 @@ async function scoutNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model } = config.configurable as PipelineConfig;
+  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
 
   let compactedSoFar = "";
   const userIssue = `## Issue: ${state.issueTitle}\n\n${state.issueDescription || "(No additional details)"}`;
@@ -311,6 +335,7 @@ async function scoutNode(
       tools: { ...makeReadOnlyTools(state.worktreePath, budget), fetchUrl: fetchUrlTool } as ToolSet,
       maxSteps: SCOUT_STEP_LIMIT,
       timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
+      abortSignal,
     });
 
     const extracted = extractScoutBrief(scoutOutput);
@@ -336,9 +361,10 @@ async function scoutNode(
       model, modelId: state.modelId,
       systemPrompt: constructScoutCompactPrompt(),
       userPrompt: compactInput,
-      tools: {} as ToolSet, // no tools for compaction
+      tools: {} as ToolSet,
       maxSteps: 1,
       timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
+      abortSignal,
     });
 
     compactedSoFar = extractScoutBrief(compactedSoFar);
@@ -353,25 +379,33 @@ async function implementNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model } = config.configurable as PipelineConfig;
+  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
   const budget = new ContextBudget(machine.context_limit ?? undefined);
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "implement" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
-  console.log(`Pipeline: implement stage (retry ${state.retryCount})`);
+  console.log(`Pipeline: implement stage (retry ${state.retryCount}), scout brief: ${state.scoutBrief.length} chars`);
+  if (state.scoutBrief.length < 100) {
+    console.warn("Pipeline: WARNING — scout brief is very short, implement may re-explore");
+  }
+
+  const implPrompts = constructImplementPrompts({
+    workingDir: state.worktreePath,
+    scoutBrief: state.scoutBrief,
+    issueTitle: state.issueTitle,
+    issueDescription: state.issueDescription,
+    reviewFeedback: state.reviewFeedback || undefined,
+  });
 
   const output = await runStage({
     db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "implement",
     model, modelId: state.modelId,
-    systemPrompt: constructImplementPrompt({
-      workingDir: state.worktreePath,
-      scoutBrief: state.scoutBrief,
-      reviewFeedback: state.reviewFeedback || undefined,
-    }),
-    userPrompt: `## Issue: ${state.issueTitle}\n\n${state.issueDescription || "(No additional details)"}`,
+    systemPrompt: implPrompts.system,
+    userPrompt: implPrompts.user,
     tools: { ...makeFilesystemTools(state.worktreePath, budget), fetchUrl: fetchUrlTool } as ToolSet,
     maxSteps: IMPLEMENT_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
+    abortSignal,
   });
 
   return { implementOutput: output };
@@ -383,25 +417,30 @@ async function testWriteNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model } = config.configurable as PipelineConfig;
+  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
   const budget = new ContextBudget(machine.context_limit ?? undefined);
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "test_write" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
   console.log("Pipeline: test-write stage");
 
+  const testPrompts = constructTestWritePrompts({
+    workingDir: state.worktreePath,
+    scoutBrief: state.scoutBrief,
+    implementOutput: state.implementOutput,
+    issueTitle: state.issueTitle,
+    issueDescription: state.issueDescription,
+  });
+
   const output = await runStage({
     db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "test-write",
     model, modelId: state.modelId,
-    systemPrompt: constructTestWritePrompt({
-      workingDir: state.worktreePath,
-      scoutBrief: state.scoutBrief,
-      implementOutput: state.implementOutput,
-    }),
-    userPrompt: `## Issue: ${state.issueTitle}\n\n${state.issueDescription || "(No additional details)"}`,
+    systemPrompt: testPrompts.system,
+    userPrompt: testPrompts.user,
     tools: { ...makeTestWriteTools(state.worktreePath, budget) } as ToolSet,
     maxSteps: TEST_WRITE_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
+    abortSignal,
   });
 
   return { testWriteOutput: output };
@@ -413,26 +452,31 @@ async function reviewNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model } = config.configurable as PipelineConfig;
+  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
   const budget = new ContextBudget(machine.context_limit ?? undefined);
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "review" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
   console.log(`Pipeline: review stage`);
 
+  const reviewPrompts = constructReviewPrompts({
+    workingDir: state.worktreePath,
+    scoutBrief: state.scoutBrief,
+    implementOutput: state.implementOutput,
+    testWriteOutput: state.testWriteOutput,
+    issueTitle: state.issueTitle,
+    issueDescription: state.issueDescription,
+  });
+
   const output = await runStage({
     db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "review",
     model, modelId: state.modelId,
-    systemPrompt: constructReviewPrompt({
-      workingDir: state.worktreePath,
-      scoutBrief: state.scoutBrief,
-      implementOutput: state.implementOutput,
-      testWriteOutput: state.testWriteOutput,
-    }),
-    userPrompt: `## Issue: ${state.issueTitle}\n\n${state.issueDescription || "(No additional details)"}`,
+    systemPrompt: reviewPrompts.system,
+    userPrompt: reviewPrompts.user,
     tools: { ...makeVerifyTools(state.worktreePath, budget) } as ToolSet,
     maxSteps: REVIEW_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
+    abortSignal,
   });
 
   const verdict = parseVerdict(output);
@@ -518,6 +562,21 @@ const graph = new StateGraph(PipelineState)
   .addEdge("git_ops", END)
   .compile();
 
+// ─── Active pipeline tracking (for cancellation) ─────────────────────────────
+
+const activePipelines = new Map<string, AbortController>(); // issueId → abort controller
+
+export function cancelPipeline(issueId: string): boolean {
+  const controller = activePipelines.get(issueId);
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
+
+export function getActivePipelineIds(): string[] {
+  return [...activePipelines.keys()];
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 export interface PipelineContext {
@@ -533,6 +592,8 @@ export async function executePipeline(
 ): Promise<void> {
   const branch = makeBranchName(issue.id, issue.title);
   const worktreePath = makeWorktreePath(project.workdir, issue.id);
+  const abortController = new AbortController();
+  activePipelines.set(issue.id, abortController);
 
   // Mark machine working, issue running
   ctx.db.updateMachine(machine.id, { status: "working", current_run_id: issue.id });
@@ -570,7 +631,7 @@ export async function executePipeline(
       },
       {
         recursionLimit: 30,
-        configurable: { ctx, machine, project, branch, model } satisfies PipelineConfig,
+        configurable: { ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig,
       }
     );
 
@@ -593,6 +654,7 @@ export async function executePipeline(
     console.error(`Pipeline: "${issue.title}" failed:`, errorMsg);
     ctx.db.updateIssue(issue.id, { status: "failed" });
   } finally {
+    activePipelines.delete(issue.id);
     await removeWorktree(project.workdir, worktreePath).catch(() => {});
     ctx.db.updateMachine(machine.id, { status: "idle", current_run_id: null });
   }
