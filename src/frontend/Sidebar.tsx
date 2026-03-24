@@ -23,14 +23,24 @@ function RestartOverlay() {
 
     let cancelled = false
     const check = async () => {
+      // Phase 1: wait for server to go down
+      setStatus('Waiting for server to shut down...')
+      while (!cancelled) {
+        await new Promise(r => setTimeout(r, 1000))
+        try {
+          const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
+          if (res.ok) continue // still alive
+        } catch { /* down — move to phase 2 */ }
+        break
+      }
+
+      // Phase 2: wait for server to come back
+      setStatus('Waiting for server to restart...')
       while (!cancelled) {
         await new Promise(r => setTimeout(r, 2000))
         try {
-          const res = await fetch('/health')
+          const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
           if (!res.ok) continue
-          // Also verify the page itself loads (not an nginx 502)
-          const page = await fetch('/', { headers: { Accept: 'text/html' } })
-          if (!page.ok) continue
           setStatus('Server is back! Reloading...')
           await new Promise(r => setTimeout(r, 500))
           window.location.reload()
@@ -39,11 +49,8 @@ function RestartOverlay() {
       }
     }
 
-    // Wait 5 seconds for the server to shut down, then start polling
-    const timer = setTimeout(() => {
-      setStatus('Waiting for server to restart...')
-      check()
-    }, 5000)
+    // Give the build a moment to start, then begin checking
+    const timer = setTimeout(check, 2000)
 
     return () => {
       cancelled = true
