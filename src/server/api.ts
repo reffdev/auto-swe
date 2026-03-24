@@ -397,57 +397,47 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   router.post("/update-restart", async (_req, res) => {
     const cwd = process.cwd();
+    const serviceName = process.env.SERVICE_NAME ?? "swe";
 
-    // Respond immediately so the frontend overlay can start polling.
     res.json({ ok: true });
 
-    // Robust update script:
-    // 1. Detect current branch
-    // 2. Fetch origin
-    // 3. Try ff-only pull; if that fails (diverged), hard reset to origin
-    // 4. Install deps
-    // 5. Rebuild frontend
-    const script = `
-      set -e
-      echo '=== Update & restart: fetching origin ==='
-      git fetch origin
+    // Update + restart via systemd:
+    // 1. Fetch + hard reset to origin (handles diverged branches, dirty tree)
+    // 2. Install deps + rebuild frontend
+    // 3. sudo systemctl restart (requires: echo "git ALL=(ALL) NOPASSWD: /bin/systemctl restart swe" > /etc/sudoers.d/swe-restart)
+    // 4. Fallback: process.exit(0) and let Restart=always in the service file handle it
+    const script = [
+      "set -e",
+      "echo '=== Fetching origin ==='",
+      "git fetch origin",
+      "BRANCH=$(git rev-parse --abbrev-ref HEAD)",
+      'echo "=== Branch: $BRANCH ==="',
+      "git checkout -- . 2>/dev/null || true",
+      "git clean -fd 2>/dev/null || true",
+      'git merge --ff-only "origin/$BRANCH" 2>/dev/null || git reset --hard "origin/$BRANCH"',
+      "echo '=== Installing dependencies ==='",
+      "npm install",
+      "echo '=== Rebuilding frontend ==='",
+      "npx vite build",
+      "echo '=== Restarting service ==='",
+      `sudo systemctl restart ${serviceName} 2>/dev/null && exit 0 || true`,
+      "echo '=== No systemctl or no sudo, exiting for auto-restart ==='",
+    ].join("\n");
 
-      BRANCH=$(git rev-parse --abbrev-ref HEAD)
-      echo "=== Branch: $BRANCH ==="
-
-      # Discard any local changes (the server shouldn't have uncommitted work)
-      git checkout -- . 2>/dev/null || true
-      git clean -fd 2>/dev/null || true
-
-      # Try fast-forward; if it fails, hard reset to match origin
-      if ! git merge --ff-only "origin/$BRANCH" 2>/dev/null; then
-        echo "=== Fast-forward failed, resetting to origin/$BRANCH ==="
-        git reset --hard "origin/$BRANCH"
-      fi
-
-      echo "=== Installing dependencies ==="
-      npm install
-
-      echo "=== Rebuilding frontend ==="
-      npx vite build
-
-      echo "=== Build complete ==="
-    `;
-
-    const child = spawn("bash", ["-c", script], {
-      cwd,
-      stdio: "inherit",
-      shell: false,
-    });
+    const child = spawn("bash", ["-c", script], { cwd, stdio: "inherit" });
 
     child.on("close", (code) => {
       if (code !== 0) {
-        console.error(`Update & restart: FAILED with code ${code}. Server NOT restarted.`);
+        console.error(`Update & restart: FAILED with code ${code}`);
         return;
       }
-      console.log("Update & restart: success, exiting for restart…");
-      db.close();
-      process.exit(0);
+      // If systemctl restart worked, systemd already killed us.
+      // If we're still alive, fall back to process.exit and let Restart=always restart us.
+      setTimeout(() => {
+        console.log("Update & restart: falling back to process.exit(0)");
+        db.close();
+        process.exit(0);
+      }, 3000);
     });
 
     child.on("error", (err) => {
