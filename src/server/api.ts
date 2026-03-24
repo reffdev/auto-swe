@@ -7,7 +7,7 @@
 import { Router } from "express";
 import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
-import { spawnSync } from "child_process";
+import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
 import { executePipeline, type PipelineContext } from "./pipeline";
 import { mergePullRequest, authenticatedRemoteUrl } from "./git";
@@ -383,30 +383,37 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   router.post("/update-restart", async (_req, res) => {
     const cwd = process.cwd();
-    try {
-      console.log("Update & restart: pulling latest…");
-      spawnSync("git", ["pull", "--ff-only"], { cwd, encoding: "utf-8", timeout: 30_000, shell: true, stdio: "inherit" });
 
-      console.log("Update & restart: installing dependencies…");
-      spawnSync("npm", ["install"], { cwd, encoding: "utf-8", timeout: 120_000, shell: true, stdio: "inherit" });
+    // Respond immediately so the frontend overlay can track progress.
+    // The build runs in a child process to avoid blocking the event loop
+    // (which would make the server unresponsive and cause nginx 502s).
+    res.json({ ok: true });
 
-      console.log("Update & restart: rebuilding frontend…");
-      spawnSync("npx", ["vite", "build"], { cwd, encoding: "utf-8", timeout: 120_000, shell: true, stdio: "inherit" });
+    const script = [
+      "echo 'Update & restart: pulling latest…'",
+      "git pull --ff-only",
+      "echo 'Update & restart: installing dependencies…'",
+      "npm install",
+      "echo 'Update & restart: rebuilding frontend…'",
+      "npx vite build",
+      "echo 'Update & restart: build complete, restarting…'",
+    ].join(" && ");
 
-      console.log("Update & restart: build complete, restarting…");
-      res.json({ ok: true });
+    const child = spawn("bash", ["-c", script], {
+      cwd,
+      stdio: "inherit",
+      shell: false,
+    });
 
-      // Give the response time to flush, then exit.
-      // The process manager (tsx watch, systemd, etc.) will restart us.
-      setTimeout(() => {
-        db.close();
-        process.exit(0);
-      }, 500);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("Update & restart failed:", msg);
-      res.status(500).json({ error: msg });
-    }
+    child.on("close", (code) => {
+      if (code !== 0) {
+        console.error(`Update & restart: build failed with code ${code}`);
+        return;
+      }
+      console.log("Update & restart: exiting for restart…");
+      db.close();
+      process.exit(0);
+    });
   });
 
   return router;

@@ -23,34 +23,37 @@ function RestartOverlay() {
 
     let cancelled = false
     const check = async () => {
-      // Phase 1: wait for server to go down
-      setStatus('Waiting for server to shut down...')
+      // Phase 1: server is building — wait for it to go down (process.exit after build)
+      setStatus('Building...')
+      let sawDown = false
       while (!cancelled) {
-        await new Promise(r => setTimeout(r, 1000))
+        await new Promise(r => setTimeout(r, 2000))
         try {
           const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
-          if (res.ok) continue // still alive
-        } catch { /* down — move to phase 2 */ }
+          if (res.ok) continue // still building
+        } catch { /* server is down */ }
+        sawDown = true
         break
       }
 
-      // Phase 2: wait for server to come back
-      setStatus('Waiting for server to restart...')
+      if (!sawDown) return
+
+      // Phase 2: wait for new server to come back
+      setStatus('Restarting...')
       while (!cancelled) {
         await new Promise(r => setTimeout(r, 2000))
         try {
           const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
           if (!res.ok) continue
           setStatus('Server is back! Reloading...')
-          await new Promise(r => setTimeout(r, 500))
+          await new Promise(r => setTimeout(r, 1000))
           window.location.reload()
           return
         } catch { /* still down */ }
       }
     }
 
-    // Give the build a moment to start, then begin checking
-    const timer = setTimeout(check, 2000)
+    const timer = setTimeout(check, 1000)
 
     return () => {
       cancelled = true
