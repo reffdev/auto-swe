@@ -4,3 +4,4 @@ dist
 /.projects
 open-swe.db-shm
 open-swe.db-wal
+open-swe.db
