@@ -225,6 +225,11 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const [serverInfo, setServerInfo] = useState<{ commit: string; branch: string } | null>(null)
+
+  useEffect(() => {
+    fetch('/api/server-info').then(r => r.json()).then(setServerInfo).catch(() => {})
+  }, [])
 
   return (
     <aside className="w-72 border-r border-border flex flex-col shrink-0">
@@ -291,7 +296,12 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
       </nav>
 
       {/* Update & Restart */}
-      <div className="p-2 border-t border-border">
+      <div className="p-2 border-t border-border space-y-1">
+        {serverInfo && (
+          <p className="text-[10px] text-muted-foreground text-center font-mono">
+            {serverInfo.branch}@{serverInfo.commit}
+          </p>
+        )}
         <button
           onClick={async () => {
             if (!confirm('Pull latest, rebuild, and restart the server?')) return
