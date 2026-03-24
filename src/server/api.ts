@@ -41,6 +41,15 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getProjects());
   });
 
+  router.get("/projects/:id", (req, res) => {
+    const project = db.getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: "project not found" });
+      return;
+    }
+    res.json(project);
+  });
+
   router.post("/projects", (req, res) => {
     const { name, workdir, git_remote, git_server_token, git_default_branch, model_id } = req.body;
     if (!name || typeof name !== "string") {

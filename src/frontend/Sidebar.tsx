@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2 } from 'lucide-react'
+import { Plus, Server, FolderGit2, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -134,8 +134,10 @@ interface SidebarProps {
   machines: Machine[]
   selectedProjectId: string | null
   selectedMachineId: string | null
+  selectedProjectSettings: string | null
   onSelectProject: (id: string | null) => void
   onSelectMachine: (id: string | null) => void
+  onSelectProjectSettings: (id: string | null) => void
   onDataChange: () => void
 }
 
@@ -144,7 +146,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
   working: 'bg-green-500 animate-pulse',
 }
 
-export function Sidebar({ projects, machines, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
+export function Sidebar({ projects, machines, selectedProjectId, selectedMachineId, selectedProjectSettings, onSelectProject, onSelectMachine, onSelectProjectSettings, onDataChange }: SidebarProps) {
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
 
@@ -167,18 +169,30 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
           <p className="px-3 py-2 text-xs text-muted-foreground">No projects yet</p>
         )}
         {projects.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onSelectProject(p.id === selectedProjectId ? null : p.id)}
-            className={cn(
-              'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
-              'hover:bg-accent',
-              selectedProjectId === p.id && 'bg-accent font-medium',
-            )}
-          >
-            <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate">{p.name}</span>
-          </button>
+          <div key={p.id} className="flex items-center gap-1">
+            <button
+              onClick={() => onSelectProject(p.id === selectedProjectId ? null : p.id)}
+              className={cn(
+                'flex-1 text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
+                'hover:bg-accent',
+                selectedProjectId === p.id && 'bg-accent font-medium',
+              )}
+            >
+              <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{p.name}</span>
+            </button>
+            <button
+              onClick={() => onSelectProjectSettings(p.id === selectedProjectSettings ? null : p.id)}
+              className={cn(
+                'shrink-0 p-1.5 rounded-md transition-colors',
+                'hover:bg-accent',
+                selectedProjectSettings === p.id && 'bg-accent',
+              )}
+              title="Project settings"
+            >
+              <Settings className="size-3.5 text-muted-foreground" />
+            </button>
+          </div>
         ))}
       </nav>
 

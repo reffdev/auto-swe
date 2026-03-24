@@ -4,12 +4,14 @@ import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
+import { ProjectSettings } from './ProjectSettings'
 import type { Run } from './api'
 
 export function Dashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null)
   const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null)
+  const [selectedProjectSettings, setSelectedProjectSettings] = useState<string | null>(null)
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const { data, error, loading, refresh } = usePoll(selectedProjectId ?? undefined)
 
@@ -37,10 +39,11 @@ export function Dashboard() {
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null
 
   // Determine what to show in the main panel
-  const showMachineDetail = selectedMachine && !selectedIssue
-  const showIssueDetail = selectedIssue
-  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail
-  const showEmpty = data && !selectedProjectId && !showMachineDetail
+  const showProjectSettings = selectedProjectSettings
+  const showMachineDetail = selectedMachine && !selectedIssue && !showProjectSettings
+  const showIssueDetail = selectedIssue && !showProjectSettings
+  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showProjectSettings
+  const showEmpty = data && !selectedProjectId && !showMachineDetail && !showProjectSettings
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -49,14 +52,22 @@ export function Dashboard() {
         machines={machines}
         selectedProjectId={selectedProjectId}
         selectedMachineId={selectedMachineId}
+        selectedProjectSettings={selectedProjectSettings}
         onSelectProject={(id) => {
           setSelectedProjectId(id)
           setSelectedIssueId(null)
           setSelectedMachineId(null)
+          setSelectedProjectSettings(null)
         }}
         onSelectMachine={(id) => {
           setSelectedMachineId(id)
           setSelectedIssueId(null)
+          setSelectedProjectSettings(null)
+        }}
+        onSelectProjectSettings={(id) => {
+          setSelectedProjectSettings(id)
+          setSelectedIssueId(null)
+          setSelectedMachineId(null)
         }}
         onDataChange={refresh}
       />
@@ -75,6 +86,13 @@ export function Dashboard() {
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             Select a project to get started
           </div>
+        )}
+        {showProjectSettings && selectedProjectId && (
+          <ProjectSettings
+            project={projects.find((p) => p.id === selectedProjectId)!}
+            onBack={() => setSelectedProjectSettings(null)}
+            onDataChange={refresh}
+          />
         )}
         {showMachineDetail && selectedMachine && (
           <MachineDetail
