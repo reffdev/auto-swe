@@ -7,7 +7,7 @@
 import { Router } from "express";
 import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
-import { execFileSync } from "child_process";
+import { spawnSync } from "child_process";
 import type { Db } from "./db";
 import { executeIssue, type RunnerContext } from "./runner";
 import { mergePullRequest, authenticatedRemoteUrl } from "./git";
@@ -89,11 +89,15 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
           const cloneUrl = git_server_token
             ? authenticatedRemoteUrl(git_remote, git_server_token) ?? git_remote
             : git_remote;
-          execFileSync("git", ["clone", cloneUrl, targetDir], {
+          const cloneResult = spawnSync("git", ["clone", cloneUrl, targetDir], {
             encoding: "utf-8",
             timeout: 120_000,
             stdio: "pipe",
+            shell: true,
           });
+          if (cloneResult.status !== 0) {
+            throw new Error(cloneResult.stderr || cloneResult.stdout || "clone failed");
+          }
           resolvedWorkdir = targetDir;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -339,6 +343,29 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     db.updateIssue(issue.id, { status: "failed" });
     res.json(db.getIssue(issue.id));
+  });
+
+  // ─── Live output (for running issues) ────────────────────────────────────
+
+  router.get("/runs/:id/output", (req, res) => {
+    const run = db.getRun(req.params.id);
+    if (!run) {
+      res.status(404).json({ error: "run not found" });
+      return;
+    }
+    res.json({ status: run.status, output: run.output });
+  });
+
+  // ─── LLM Requests ───────────────────────────────────────────────────────
+
+  router.get("/llm-requests", (req, res) => {
+    const issueId = req.query.issue as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 100;
+    res.json(db.getLlmRequests(issueId, limit));
+  });
+
+  router.get("/llm-requests/run/:runId", (req, res) => {
+    res.json(db.getLlmRequestsByRunId(req.params.runId));
   });
 
   return router;

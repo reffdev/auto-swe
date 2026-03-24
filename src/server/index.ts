@@ -17,8 +17,8 @@ const db = new Db();
 
 // 2. Crash recovery — reset stuck machines/runs from prior crashes
 const recovered = db.recoverFromCrash();
-if (recovered.machines > 0 || recovered.runs > 0) {
-  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s)`);
+if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0) {
+  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s)`);
 }
 
 // 3. Create Express app

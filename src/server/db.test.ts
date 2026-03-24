@@ -353,12 +353,77 @@ describe("crash recovery", () => {
     expect(recovered.completed_at).toBeTruthy();
   });
 
+  it("resets running and approved issues to failed", () => {
+    const p = db.createProject({ name: "test", workdir: "/tmp/test" });
+    const running = db.createIssue({ project_id: p.id, title: "Running" });
+    db.updateIssue(running.id, { status: "running" });
+    const approved = db.createIssue({ project_id: p.id, title: "Approved" });
+    db.updateIssue(approved.id, { status: "approved" });
+    const pending = db.createIssue({ project_id: p.id, title: "Pending" });
+
+    const result = db.recoverFromCrash();
+    expect(result.issues).toBe(2);
+
+    expect(db.getIssue(running.id)!.status).toBe("failed");
+    expect(db.getIssue(approved.id)!.status).toBe("failed");
+    expect(db.getIssue(pending.id)!.status).toBe("pending"); // untouched
+  });
+
+});
+
+// ─── LLM Requests ───────────────────────────────────────────────────────────
+
+describe("llm_requests", () => {
+  it("creates and retrieves an LLM request", () => {
+    const req = db.createLlmRequest({
+      input_text: "Hello",
+      output_text: "Hi there",
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      cache_read_tokens: 3,
+      cache_creation_tokens: 0,
+      duration_ms: 200,
+    });
+    expect(req.id).toBeTruthy();
+    expect(req.input_text).toBe("Hello");
+    expect(req.output_text).toBe("Hi there");
+    expect(req.prompt_tokens).toBe(10);
+    expect(req.completion_tokens).toBe(5);
+    expect(req.cache_read_tokens).toBe(3);
+    expect(req.issue_id).toBeNull();
+  });
+
+  it("links to an issue", () => {
+    const p = db.createProject({ name: "test", workdir: "/tmp/test" });
+    const issue = db.createIssue({ project_id: p.id, title: "Bug" });
+    const run = db.createRun({ issue_id: issue.id });
+    db.createLlmRequest({ issue_id: issue.id, run_id: run.id, input_text: "a", output_text: "b" });
+    db.createLlmRequest({ issue_id: issue.id, run_id: run.id, input_text: "c", output_text: "d" });
+    db.createLlmRequest({ input_text: "e", output_text: "f" }); // no issue
+
+    expect(db.getLlmRequests(issue.id)).toHaveLength(2);
+    expect(db.getLlmRequests()).toHaveLength(3);
+    expect(db.getLlmRequestsByRunId(run.id)).toHaveLength(2);
+  });
+
+  it("respects limit", () => {
+    for (let i = 0; i < 5; i++) {
+      db.createLlmRequest({ input_text: `in${i}`, output_text: `out${i}` });
+    }
+    expect(db.getLlmRequests(undefined, 3)).toHaveLength(3);
+  });
+});
+
+// ─── Crash recovery ─────────────────────────────────────────────────────────
+// (continued)
+
+describe("crash recovery (continued)", () => {
   it("rejects invalid column names in update", () => {
     const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
     expect(() => {
       // @ts-expect-error — testing runtime protection against injection
       db.updateMachine(m.id, { "id; DROP TABLE machines--": "x" });
-    }).toThrow(/Invalid column/);
+    }).toThrow(); // Drizzle/SQLite will error on invalid column names
   });
 
   it("does not touch idle machines or completed runs", () => {

@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
-import type { Run } from './api'
+import type { Issue, Run } from './api'
 
 export function Dashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
@@ -32,7 +32,13 @@ export function Dashboard() {
     ? issues
     : issues.filter((i) => i.status === statusFilter)
 
-  const selectedIssue = issues.find((i) => i.id === selectedIssueId) ?? null
+  // Keep a ref to the last known issue so the detail view doesn't flicker
+  // when the issue temporarily disappears during status transitions
+  const lastIssueRef = useRef<Issue | null>(null)
+  const freshIssue = issues.find((i) => i.id === selectedIssueId) ?? null
+  if (freshIssue) lastIssueRef.current = freshIssue
+  const selectedIssue = selectedIssueId ? (freshIssue ?? lastIssueRef.current) : null
+
   const selectedRun = selectedIssue ? runByIssue.get(selectedIssue.id) ?? null : null
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null
 

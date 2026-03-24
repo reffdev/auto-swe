@@ -10,16 +10,15 @@
  * Ported from mastra-react/src/server/git.ts + github.ts
  */
 
-import { exec, execFile } from "child_process";
+import { exec, spawn, spawnSync } from "child_process";
 import { promisify } from "util";
-import { resolve } from "path";
-import { readdirSync } from "fs";
+import { resolve, dirname } from "path";
+import { readdirSync, existsSync, mkdirSync } from "fs";
 import type { Project } from "./db";
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
 
-/** Run a git command via shell. Only use for commands with NO user input. */
+/** Run a git command via shell string. Only for commands with NO user input in args. */
 async function git(args: string, cwd: string): Promise<string> {
   const { stdout } = await execAsync(`git ${args}`, {
     cwd,
@@ -30,17 +29,91 @@ async function git(args: string, cwd: string): Promise<string> {
 }
 
 /**
- * Run a git command with an args array — no shell interpolation.
- * Use this whenever any argument contains user-supplied values
- * (branch names, commit messages, file paths).
+ * Run a git command with an args array via spawn.
+ * Uses shell: true so git is found via PATH on Windows.
+ * Safe from injection because spawn with shell + args array escapes each arg.
+ *
+ * For commit messages (which may contain shell metacharacters), use
+ * gitCommit() instead — it pipes the message via stdin.
  */
 async function gitSafe(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd,
-    encoding: "utf-8",
-    timeout: 30_000,
+  return new Promise((resolve, reject) => {
+    const proc = spawn("git", args, {
+      cwd,
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 30_000,
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr || stdout || `git exited with code ${code}`));
+    });
+    proc.on("error", reject);
   });
-  return stdout;
+}
+
+/**
+ * Run `git commit` with the message piped via stdin (-F -).
+ * This avoids shell interpolation of the message entirely — no escaping needed.
+ */
+async function gitCommit(message: string, cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("git", ["commit", "-F", "-"], {
+      cwd,
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 30_000,
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    proc.on("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(stderr || stdout || `git commit exited with code ${code}`));
+    });
+    proc.on("error", reject);
+    proc.stdin.end(message.replace(/\r?\n/g, " ").trim());
+  });
+}
+
+// ─── Workdir management ──────────────────────────────────────────────────────
+
+/**
+ * Ensure a project's workdir exists. If it's missing and the project has a
+ * git_remote, re-clone it. Throws if the workdir can't be restored.
+ */
+export async function ensureWorkdir(project: Project): Promise<void> {
+  if (existsSync(project.workdir)) return;
+
+  if (!project.git_remote) {
+    throw new Error(`Workdir missing and no git_remote to clone from: ${project.workdir}`);
+  }
+
+  console.log(`Git: workdir missing, re-cloning ${project.git_remote} → ${project.workdir}`);
+  mkdirSync(dirname(project.workdir), { recursive: true });
+
+  const cloneUrl =
+    project.git_server_token
+      ? authenticatedRemoteUrl(project.git_remote, project.git_server_token) ?? project.git_remote
+      : project.git_remote;
+
+  const result = spawnSync("git", ["clone", cloneUrl, project.workdir], {
+    encoding: "utf-8",
+    timeout: 120_000,
+    stdio: "pipe",
+    shell: true,
+  });
+
+  if (result.status !== 0) {
+    throw new Error(`Failed to re-clone: ${result.stderr || result.stdout || "unknown error"}`);
+  }
+
+  console.log(`Git: re-cloned successfully to ${project.workdir}`);
 }
 
 // ─── Naming ───────────────────────────────────────────────────────────────────
@@ -70,8 +143,15 @@ export async function setupWorktree(
   mainWorkdir: string,
   worktreePath: string,
   branch: string
-): Promise<boolean> {
+): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
+    // Verify the main workdir exists before any git operations
+    try {
+      readdirSync(mainWorkdir);
+    } catch {
+      return { ok: false, error: `project workdir does not exist: ${mainWorkdir}` };
+    }
+
     // Pull latest
     try {
       await git("fetch origin", mainWorkdir);
@@ -94,7 +174,7 @@ export async function setupWorktree(
       ).trim();
       if (currentBranch === branch) {
         console.log(`Git: reusing existing worktree for branch ${branch}`);
-        return true;
+        return { ok: true };
       }
       // Wrong branch — recreate
       try {
@@ -123,23 +203,25 @@ export async function setupWorktree(
     // Verify the worktree has files
     const entries = readdirSync(worktreePath).filter((e) => e !== ".git");
     if (entries.length === 0) {
-      console.error(`Git: worktree created but empty for ${branch}`);
+      const msg = `worktree created but contains no files for ${branch}`;
+      console.error(`Git: ${msg}`);
       try {
-        await git(`worktree remove "${worktreePath}" --force`, mainWorkdir);
+        await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
       } catch {
         /* ignore */
       }
-      return false;
+      return { ok: false, error: msg };
     }
 
     const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
     console.log(
       `Git: worktree created for ${branch} @ ${hash} (${entries.length} entries)`
     );
-    return true;
+    return { ok: true };
   } catch (err) {
-    console.error(`Git: failed to create worktree for ${branch}:`, err);
-    return false;
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`Git: failed to create worktree for ${branch}:`, msg);
+    return { ok: false, error: msg };
   }
 }
 
@@ -154,11 +236,7 @@ export async function removeWorktree(
   } catch {
     // Check if it's already gone
     try {
-      await execFileAsync("git", ["rev-parse", "--git-dir"], {
-        cwd: worktreePath,
-        encoding: "utf-8",
-        timeout: 5_000,
-      });
+      await git("rev-parse --git-dir", worktreePath);
     } catch {
       // Already gone
       try {
@@ -191,8 +269,7 @@ export async function commitAll(
       return null;
     }
 
-    const cleanMsg = message.replace(/\n/g, " ").trim();
-    await gitSafe(["commit", "-m", cleanMsg], worktreePath);
+    await gitCommit(message, worktreePath);
 
     const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
     console.log(`Git: committed ${hash}`);

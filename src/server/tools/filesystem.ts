@@ -27,12 +27,21 @@ import { ContextBudget } from "./context-budget";
 // ─── Full tool set (read + write + run) ───────────────────────────────────────
 
 export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
+  /** Normalize Windows \r\n to \n for consistent text handling across platforms */
+  const normalizeEol = (text: string) => text.replace(/\r\n/g, "\n");
+
   /** Track recent tool calls for loop detection */
   const recentCalls: string[] = [];
   /** Track per-file read counts and which ranges have been read */
   const fileReadCounts = new Map<string, number>();
   const fileReadRanges = new Map<string, Set<string>>();
   const MAX_FILE_READS = 6;
+  /** Reset read tracking for a file after it's been modified */
+  function resetFileReadCount(path: string) {
+    fileReadCounts.delete(path);
+    fileReadRanges.delete(path);
+  }
+
   /** Track consecutive errors to detect agents stuck in error loops */
   let consecutiveErrors = 0;
   const MAX_CONSECUTIVE_ERRORS = 3;
@@ -229,7 +238,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        const content = readFileSync(fullPath, "utf-8");
+        const content = normalizeEol(readFileSync(fullPath, "utf-8"));
         const lines = content.split("\n");
 
         if (offset !== undefined || limit !== undefined) {
@@ -278,6 +287,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         const fullPath = join(resolvedWorkdir, result.cleaned);
         mkdirSync(dirname(fullPath), { recursive: true });
         writeFileSync(fullPath, content, "utf-8");
+        resetFileReadCount(result.cleaned);
         trackSuccess();
         return `Wrote ${content.length} bytes to ${result.cleaned}`;
       } catch (e) {
@@ -570,7 +580,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
             if (globRe && !globRe.test(rel) && !globRe.test(e.name)) continue;
             let content: string;
             try {
-              content = readFileSync(full, "utf-8");
+              content = normalizeEol(readFileSync(full, "utf-8"));
             } catch {
               continue;
             }
@@ -664,7 +674,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
         const stat = statSync(fullPath);
-        const content = readFileSync(fullPath, "utf-8");
+        const content = normalizeEol(readFileSync(fullPath, "utf-8"));
         const lines = content.split("\n").length;
         return cap(`${result.cleaned}: ${stat.size} bytes, ${lines} lines, modified ${stat.mtime.toISOString()}`);
       } catch (e) {
@@ -757,6 +767,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         const fullPath = join(resolvedWorkdir, result.cleaned);
         mkdirSync(dirname(fullPath), { recursive: true });
         appendFileSync(fullPath, content, "utf-8");
+        resetFileReadCount(result.cleaned);
         trackSuccess();
         return `Appended ${content.length} bytes to ${result.cleaned}`;
       } catch (e) {
@@ -776,6 +787,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
         unlinkSync(fullPath);
+        resetFileReadCount(result.cleaned);
         trackSuccess();
         return `Deleted ${result.cleaned}`;
       } catch (e) {
@@ -800,6 +812,8 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         const toFull = join(resolvedWorkdir, toResult.cleaned);
         mkdirSync(dirname(toFull), { recursive: true });
         renameSync(fromFull, toFull);
+        resetFileReadCount(fromResult.cleaned);
+        resetFileReadCount(toResult.cleaned);
         trackSuccess();
         return `Moved ${fromResult.cleaned} → ${toResult.cleaned}`;
       } catch (e) {
@@ -825,22 +839,24 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        const content = readFileSync(fullPath, "utf-8");
-        let count = content.split(old_str).length - 1;
+        const content = normalizeEol(readFileSync(fullPath, "utf-8"));
+        const normalizedOldStr = normalizeEol(old_str);
+        const normalizedNewStr = normalizeEol(new_str);
+        let count = content.split(normalizedOldStr).length - 1;
 
         // Retry with normalised indentation when exact match fails
-        let searchStr = old_str;
+        let searchStr = normalizedOldStr;
         if (count === 0) {
           const normalise = (s: string) =>
             s.replace(/^[ \t]+/gm, "").replace(/[ \t]+$/gm, "");
           const normContent = normalise(content);
-          const normOld = normalise(old_str);
+          const normOld = normalise(normalizedOldStr);
           if (normContent.includes(normOld)) {
             const lines = content.split("\n");
             const normLines = lines.map((l: string) =>
               l.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
             );
-            const oldLines = old_str
+            const oldLines = normalizedOldStr
               .split("\n")
               .map((l: string) =>
                 l.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
@@ -863,7 +879,8 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
           return trackResult(
             `Error: string appears ${count} times in ${path} — make old_str more specific`
           );
-        writeFileSync(fullPath, content.replace(searchStr, new_str), "utf-8");
+        writeFileSync(fullPath, content.replace(searchStr, normalizedNewStr), "utf-8");
+        resetFileReadCount(path);
         trackSuccess();
         return `Replaced 1 occurrence in ${path}`;
       } catch (e) {

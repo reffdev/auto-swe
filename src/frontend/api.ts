@@ -158,3 +158,18 @@ export function approvePr(id: string): Promise<Issue> {
 export function rejectPr(id: string): Promise<Issue> {
   return json(`/api/issues/${id}/reject-pr`, { method: "POST" });
 }
+
+// ─── Live output ──────────────────────────────────────────────────────────────
+
+export interface StepData {
+  step: number;
+  text?: string;
+  toolCalls?: Array<{ tool: string; args: string }>;
+  toolResults?: Array<{ tool: string; result: string }>;
+  tokens: { prompt: number; completion: number };
+  durationMs: number;
+}
+
+export function getRunOutput(runId: string): Promise<{ status: string; output: string | null }> {
+  return json(`/api/runs/${runId}/output`);
+}

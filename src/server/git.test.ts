@@ -125,7 +125,7 @@ describe("worktree operations", () => {
     const worktreePath = join(mainRepo, "..", "test-worktree-" + Date.now());
     try {
       const ok = await setupWorktree(mainRepo, worktreePath, "test-branch");
-      expect(ok).toBe(true);
+      expect(ok).toEqual({ ok: true });
       expect(existsSync(join(worktreePath, "README.md"))).toBe(true);
 
       // Verify we're on the right branch
@@ -150,7 +150,7 @@ describe("worktree operations", () => {
       await setupWorktree(mainRepo, worktreePath, "reuse-branch");
       // Call again — should reuse
       const ok = await setupWorktree(mainRepo, worktreePath, "reuse-branch");
-      expect(ok).toBe(true);
+      expect(ok).toEqual({ ok: true });
     } finally {
       try { await removeWorktree(mainRepo, worktreePath); } catch {}
       try { rmSync(worktreePath, { recursive: true, force: true }); } catch {}
