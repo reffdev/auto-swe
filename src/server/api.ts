@@ -379,25 +379,60 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getLlmRequestsByRunId(req.params.runId));
   });
 
+  // ─── Server info ────────────────────────────────────────────────────────
+
+  router.get("/server-info", (_req, res) => {
+    const cwd = process.cwd();
+    try {
+      const commit = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd, encoding: "utf-8", shell: true }).stdout?.trim() ?? "unknown";
+      const branch = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf-8", shell: true }).stdout?.trim() ?? "unknown";
+      const dirty = spawnSync("git", ["status", "--porcelain"], { cwd, encoding: "utf-8", shell: true }).stdout?.trim();
+      res.json({ commit, branch, dirty: !!dirty, uptime: Math.round(process.uptime()) });
+    } catch {
+      res.json({ commit: "unknown", branch: "unknown", dirty: false, uptime: Math.round(process.uptime()) });
+    }
+  });
+
   // ─── Update & Restart ───────────────────────────────────────────────────
 
   router.post("/update-restart", async (_req, res) => {
     const cwd = process.cwd();
 
-    // Respond immediately so the frontend overlay can track progress.
-    // The build runs in a child process to avoid blocking the event loop
-    // (which would make the server unresponsive and cause nginx 502s).
+    // Respond immediately so the frontend overlay can start polling.
     res.json({ ok: true });
 
-    const script = [
-      "echo 'Update & restart: pulling latest…'",
-      "git pull --ff-only",
-      "echo 'Update & restart: installing dependencies…'",
-      "npm install",
-      "echo 'Update & restart: rebuilding frontend…'",
-      "npx vite build",
-      "echo 'Update & restart: build complete, restarting…'",
-    ].join(" && ");
+    // Robust update script:
+    // 1. Detect current branch
+    // 2. Fetch origin
+    // 3. Try ff-only pull; if that fails (diverged), hard reset to origin
+    // 4. Install deps
+    // 5. Rebuild frontend
+    const script = `
+      set -e
+      echo '=== Update & restart: fetching origin ==='
+      git fetch origin
+
+      BRANCH=$(git rev-parse --abbrev-ref HEAD)
+      echo "=== Branch: $BRANCH ==="
+
+      # Discard any local changes (the server shouldn't have uncommitted work)
+      git checkout -- . 2>/dev/null || true
+      git clean -fd 2>/dev/null || true
+
+      # Try fast-forward; if it fails, hard reset to match origin
+      if ! git merge --ff-only "origin/$BRANCH" 2>/dev/null; then
+        echo "=== Fast-forward failed, resetting to origin/$BRANCH ==="
+        git reset --hard "origin/$BRANCH"
+      fi
+
+      echo "=== Installing dependencies ==="
+      npm install
+
+      echo "=== Rebuilding frontend ==="
+      npx vite build
+
+      echo "=== Build complete ==="
+    `;
 
     const child = spawn("bash", ["-c", script], {
       cwd,
@@ -407,12 +442,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
     child.on("close", (code) => {
       if (code !== 0) {
-        console.error(`Update & restart: build failed with code ${code}`);
+        console.error(`Update & restart: FAILED with code ${code}. Server NOT restarted.`);
         return;
       }
-      console.log("Update & restart: exiting for restart…");
+      console.log("Update & restart: success, exiting for restart…");
       db.close();
       process.exit(0);
+    });
+
+    child.on("error", (err) => {
+      console.error("Update & restart: spawn error:", err.message);
     });
   });
 

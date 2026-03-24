@@ -13,24 +13,28 @@ import type { Project, Machine } from './api'
 
 function RestartOverlay() {
   const [status, setStatus] = useState('Updating and rebuilding...')
+  const [details, setDetails] = useState('')
   const [dots, setDots] = useState('')
 
   useEffect(() => {
-    // Animate dots
     const dotTimer = setInterval(() => {
       setDots(d => d.length >= 3 ? '' : d + '.')
     }, 500)
 
+    // Capture the current commit before restart so we can verify it changed
+    let commitBefore = ''
+    fetch('/api/server-info').then(r => r.json()).then(d => { commitBefore = d.commit }).catch(() => {})
+
     let cancelled = false
     const check = async () => {
-      // Phase 1: server is building — wait for it to go down (process.exit after build)
+      // Phase 1: wait for server to go down (process.exit after build)
       setStatus('Building...')
       let sawDown = false
       while (!cancelled) {
         await new Promise(r => setTimeout(r, 2000))
         try {
           const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
-          if (res.ok) continue // still building
+          if (res.ok) continue
         } catch { /* server is down */ }
         sawDown = true
         break
@@ -45,6 +49,14 @@ function RestartOverlay() {
         try {
           const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
           if (!res.ok) continue
+
+          // Verify the update actually applied
+          try {
+            const info = await (await fetch('/api/server-info')).json()
+            const updated = commitBefore && info.commit !== commitBefore
+            setDetails(`${info.branch}@${info.commit}${updated ? ' (updated)' : ''}`)
+          } catch { /* fine */ }
+
           setStatus('Server is back! Reloading...')
           await new Promise(r => setTimeout(r, 1000))
           window.location.reload()
@@ -67,6 +79,7 @@ function RestartOverlay() {
       <div className="text-center space-y-3">
         <RefreshCw className="size-8 mx-auto animate-spin text-muted-foreground" />
         <p className="text-sm text-foreground font-medium">{status}{dots}</p>
+        {details && <p className="text-xs text-muted-foreground font-mono">{details}</p>}
         <p className="text-xs text-muted-foreground">Do not close this tab</p>
       </div>
     </div>

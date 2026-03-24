@@ -386,6 +386,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         ),
     }),
     execute: async ({ command }) => {
+      console.log(`[runCommand] executing: ${command.slice(0, 100)}`);
       let command_to_run = command;
       while (/^\s*cd\s+/.test(command_to_run)) {
         const stripped = command_to_run
