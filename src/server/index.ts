@@ -7,6 +7,8 @@
 
 import express from "express";
 import cors from "cors";
+import { resolve } from "path";
+import { existsSync } from "fs";
 import { Db } from "./db";
 import { createApiRouter } from "./api";
 
@@ -35,7 +37,18 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// 6. Start server
+// 6. Serve built frontend (production mode)
+const clientDir = resolve(__dirname, "../../dist/client");
+if (existsSync(clientDir)) {
+  app.use(express.static(clientDir));
+  // SPA fallback — serve index.html for all non-API routes
+  app.get("/{*splat}", (_req, res) => {
+    res.sendFile(resolve(clientDir, "index.html"));
+  });
+  console.log(`Serving frontend from ${clientDir}`);
+}
+
+// 7. Start server
 const server = app.listen(PORT, () => {
   console.log(`open-swe server listening on http://localhost:${PORT}`);
 });

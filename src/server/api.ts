@@ -368,5 +368,35 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getLlmRequestsByRunId(req.params.runId));
   });
 
+  // ─── Update & Restart ───────────────────────────────────────────────────
+
+  router.post("/update-restart", async (_req, res) => {
+    const cwd = process.cwd();
+    try {
+      console.log("Update & restart: pulling latest…");
+      spawnSync("git", ["pull", "--ff-only"], { cwd, encoding: "utf-8", timeout: 30_000, shell: true, stdio: "inherit" });
+
+      console.log("Update & restart: installing dependencies…");
+      spawnSync("npm", ["install"], { cwd, encoding: "utf-8", timeout: 120_000, shell: true, stdio: "inherit" });
+
+      console.log("Update & restart: rebuilding frontend…");
+      spawnSync("npx", ["vite", "build"], { cwd, encoding: "utf-8", timeout: 120_000, shell: true, stdio: "inherit" });
+
+      console.log("Update & restart: build complete, restarting…");
+      res.json({ ok: true });
+
+      // Give the response time to flush, then exit.
+      // The process manager (tsx watch, systemd, etc.) will restart us.
+      setTimeout(() => {
+        db.close();
+        process.exit(0);
+      }, 500);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("Update & restart failed:", msg);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   return router;
 }

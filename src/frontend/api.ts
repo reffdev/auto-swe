@@ -174,3 +174,9 @@ export interface StepData {
 export function getRunOutput(runId: string): Promise<{ status: string; output: string | null }> {
   return json(`/api/runs/${runId}/output`);
 }
+
+// ─── Update & Restart ─────────────────────────────────────────────────────────
+
+export function updateAndRestart(): Promise<{ ok: boolean }> {
+  return json("/api/update-restart", { method: "POST" });
+}

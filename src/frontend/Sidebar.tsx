@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2 } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -8,6 +8,58 @@ import {
 import { Input } from '@/components/ui/input'
 import * as api from './api'
 import type { Project, Machine } from './api'
+
+// ─── Restart Overlay ─────────────────────────────────────────────────────────
+
+function RestartOverlay() {
+  const [status, setStatus] = useState('Updating and rebuilding...')
+  const [dots, setDots] = useState('')
+
+  useEffect(() => {
+    // Animate dots
+    const dotTimer = setInterval(() => {
+      setDots(d => d.length >= 3 ? '' : d + '.')
+    }, 500)
+
+    let cancelled = false
+    const check = async () => {
+      while (!cancelled) {
+        await new Promise(r => setTimeout(r, 2000))
+        try {
+          const res = await fetch('/health')
+          if (res.ok) {
+            setStatus('Server is back! Reloading...')
+            await new Promise(r => setTimeout(r, 500))
+            window.location.reload()
+            return
+          }
+        } catch { /* still down */ }
+      }
+    }
+
+    // Wait 5 seconds for the server to shut down, then start polling
+    const timer = setTimeout(() => {
+      setStatus('Waiting for server to restart...')
+      check()
+    }, 5000)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      clearInterval(dotTimer)
+    }
+  }, [])
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/95 backdrop-blur-sm">
+      <div className="text-center space-y-3">
+        <RefreshCw className="size-8 mx-auto animate-spin text-muted-foreground" />
+        <p className="text-sm text-foreground font-medium">{status}{dots}</p>
+        <p className="text-xs text-muted-foreground">Do not close this tab</p>
+      </div>
+    </div>
+  )
+}
 
 // ─── New Project Dialog ──────────────────────────────────────────────────────
 
@@ -147,6 +199,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
 export function Sidebar({ projects, machines, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
+  const [restarting, setRestarting] = useState(false)
 
   return (
     <aside className="w-72 border-r border-border flex flex-col shrink-0">
@@ -212,9 +265,29 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
         ))}
       </nav>
 
+      {/* Update & Restart */}
+      <div className="p-2 border-t border-border">
+        <button
+          onClick={async () => {
+            if (!confirm('Pull latest, rebuild, and restart the server?')) return
+            setRestarting(true)
+            try {
+              await api.updateAndRestart()
+            } catch { /* server will disconnect during restart */ }
+          }}
+          className="w-full px-3 py-1.5 text-xs rounded-md font-medium text-center bg-muted text-muted-foreground hover:bg-muted/80 transition-colors flex items-center justify-center gap-1.5"
+        >
+          <RefreshCw className="size-3" />
+          Update & Restart
+        </button>
+      </div>
+
       {/* Dialogs */}
       <NewProjectDialog open={showNewProject} onClose={() => setShowNewProject(false)} onCreated={onDataChange} />
       <NewMachineDialog open={showNewMachine} onClose={() => setShowNewMachine(false)} onCreated={onDataChange} />
+
+      {/* Restart overlay */}
+      {restarting && <RestartOverlay />}
     </aside>
   )
 }
