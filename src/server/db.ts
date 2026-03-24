@@ -40,6 +40,7 @@ export class Db {
         id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', base_url TEXT NOT NULL,
         model_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'idle', current_run_id TEXT,
+        context_limit INTEGER,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS projects (
@@ -70,6 +71,18 @@ export class Db {
         duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
+
+    // Migrations for existing databases
+    this.migrate();
+  }
+
+  private migrate(): void {
+    // Add context_limit column to machines (added after initial schema)
+    try {
+      this.sqlite.exec("ALTER TABLE machines ADD COLUMN context_limit INTEGER");
+    } catch {
+      // Column already exists — ignore
+    }
   }
 
   close(): void {
@@ -120,7 +133,7 @@ export class Db {
     return this.getMachine(id)!;
   }
 
-  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "enabled" | "status" | "current_run_id">>): void {
+  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "enabled" | "status" | "current_run_id" | "context_limit">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.machines).set(clean).where(eq(schema.machines.id, id)).run();

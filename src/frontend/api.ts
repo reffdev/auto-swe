@@ -14,6 +14,7 @@ export interface Machine {
   enabled: number;
   status: "idle" | "working";
   current_run_id: string | null;
+  context_limit: number | null;
   created_at: string;
 }
 

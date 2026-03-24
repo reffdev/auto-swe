@@ -79,8 +79,8 @@ export async function executeIssue(
     });
     const model = provider(modelId);
 
-    // 3. Create tools
-    const budget = new ContextBudget();
+    // 3. Create tools (use machine's context_limit if configured)
+    const budget = new ContextBudget(machine.context_limit ?? undefined);
     const tools = {
       ...makeFilesystemTools(worktreePath, budget),
       fetchUrl: fetchUrlTool,

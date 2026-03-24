@@ -172,8 +172,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "machine not found" });
       return;
     }
-    const { base_url, model_id, name, enabled } = req.body;
-    db.updateMachine(req.params.id, { base_url, model_id, name, enabled });
+    const { base_url, model_id, name, enabled, context_limit } = req.body;
+    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit });
     res.json(db.getMachine(req.params.id));
   });
 

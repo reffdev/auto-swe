@@ -17,6 +17,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   const [baseUrl, setBaseUrl] = useState(machine.base_url)
   const [modelId, setModelId] = useState(machine.model_id)
   const [enabled, setEnabled] = useState(!!machine.enabled)
+  const [contextLimit, setContextLimit] = useState(machine.context_limit?.toString() ?? '')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -28,12 +29,15 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     setBaseUrl(machine.base_url)
     setModelId(machine.model_id)
     setEnabled(!!machine.enabled)
-  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.enabled])
+    setContextLimit(machine.context_limit?.toString() ?? '')
+  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.enabled, machine.context_limit])
 
+  const parsedContextLimit = contextLimit ? parseInt(contextLimit, 10) || null : null
   const hasChanges =
     name !== machine.name ||
     baseUrl !== machine.base_url ||
     modelId !== machine.model_id ||
+    parsedContextLimit !== (machine.context_limit ?? null) ||
     enabled !== !!machine.enabled
 
   const handleSave = async () => {
@@ -46,6 +50,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
         base_url: baseUrl,
         model_id: modelId,
         enabled: enabled ? 1 : 0,
+        context_limit: parsedContextLimit,
       })
       setSuccess(true)
       onDataChange()
@@ -109,6 +114,12 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Model ID</label>
             <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="e.g. qwen2.5-coder-32b" />
             <p className="text-xs text-muted-foreground mt-1">Model name the server expects</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Context Limit (tokens)</label>
+            <Input value={contextLimit} onChange={(e) => setContextLimit(e.target.value)} placeholder="128000" type="number" />
+            <p className="text-xs text-muted-foreground mt-1">Model's context window size. Leave empty for default (128k). Tool output truncation scales to this.</p>
           </div>
 
           <div className="flex items-center gap-3">

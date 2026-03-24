@@ -108,20 +108,21 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
   }
 
   /** Truncate and track a tool result against the context budget.
-   *  Always truncates at a line boundary. */
+   *  Always truncates at a line boundary.
+   *  Small files (≤50 lines) are never truncated — always worth returning in full. */
   function cap(result: string): string {
     trackSuccess();
     if (!budget) return result;
     const max = budget.maxResultChars;
+    const lineCount = result.split("\n").length;
     let truncated: string;
-    if (result.length > max) {
+    if (result.length > max && lineCount > 50) {
       const cutPoint = result.lastIndexOf("\n", max);
       const safeCut = cutPoint > 0 ? cutPoint : max;
-      const lineCount = result.slice(0, safeCut).split("\n").length;
-      const totalLines = result.split("\n").length;
+      const shownLines = result.slice(0, safeCut).split("\n").length;
       truncated =
         result.slice(0, safeCut) +
-        `\n\n[TRUNCATED at line ${lineCount} of ${totalLines}. To continue reading, call readFile with offset=${lineCount}, limit=200.${budget.shouldStop ? " Context is nearly full — stop reading and produce your output NOW." : ""}]`;
+        `\n\n[TRUNCATED at line ${shownLines} of ${lineCount}. To continue reading, call readFile with offset=${shownLines}, limit=200.${budget.shouldStop ? " Context is nearly full — stop reading and produce your output NOW." : ""}]`;
     } else {
       truncated = result;
     }

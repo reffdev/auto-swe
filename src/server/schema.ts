@@ -15,6 +15,7 @@ export const machines = sqliteTable("machines", {
   enabled: integer("enabled").notNull().default(1),
   status: text("status").notNull().default("idle"),
   current_run_id: text("current_run_id"),
+  context_limit: integer("context_limit"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
