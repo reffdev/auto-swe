@@ -103,7 +103,7 @@ export function Dashboard() {
         {showIssueDetail && selectedIssue && (
           <IssueDetail
             issue={selectedIssue}
-            run={selectedRun}
+            runs={runs.filter(r => r.issue_id === selectedIssue.id)}
             onBack={() => setSelectedIssueId(null)}
             onDataChange={refresh}
           />

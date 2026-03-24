@@ -9,15 +9,15 @@ import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync } from "child_process";
 import type { Db } from "./db";
-import { executeIssue, type RunnerContext } from "./runner";
+import { executePipeline, type PipelineContext } from "./pipeline";
 import { mergePullRequest, authenticatedRemoteUrl } from "./git";
 
 /** Base directory for auto-created project clones */
 const PROJECTS_BASE = resolve(process.env.PROJECTS_BASE ?? "./.projects");
 
 export interface ApiOptions {
-  /** If provided, approve/retry will trigger agent runs. Omit for testing. */
-  runnerCtx?: RunnerContext;
+  /** If provided, approve/retry will trigger the pipeline. Omit for testing. */
+  pipelineCtx?: PipelineContext;
 }
 
 export function createApiRouter(db: Db, options?: ApiOptions): Router {
@@ -257,15 +257,14 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       return;
     }
     db.updateIssue(issue.id, { status: "approved" });
-    const run = db.createRun({ issue_id: issue.id });
     const project = db.getProject(issue.project_id)!;
     const freshIssue = db.getIssue(issue.id)!;
-    res.status(202).json({ issue: freshIssue, run });
+    res.status(202).json({ issue: freshIssue });
 
-    // Fire-and-forget: kick off the agent run
-    if (options?.runnerCtx) {
-      executeIssue(options.runnerCtx, machine, freshIssue, project, run.id).catch((err) => {
-        console.error(`Runner error (approve):`, err);
+    // Fire-and-forget: pipeline creates its own run records per stage
+    if (options?.pipelineCtx) {
+      executePipeline(options.pipelineCtx, machine, freshIssue, project).catch((err) => {
+        console.error(`Pipeline error (approve):`, err);
       });
     }
   });
@@ -292,15 +291,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       git_pr_url: null,
       git_pr_number: null,
       completed_at: null,
+      retry_count: 0,
     });
-    const run = db.createRun({ issue_id: issue.id });
     const project = db.getProject(issue.project_id)!;
-    res.status(202).json({ issue: db.getIssue(issue.id), run });
+    const freshIssue = db.getIssue(issue.id)!;
+    res.status(202).json({ issue: freshIssue });
 
-    // Fire-and-forget: kick off the agent run
-    if (options?.runnerCtx) {
-      executeIssue(options.runnerCtx, machine, db.getIssue(issue.id)!, project, run.id).catch((err) => {
-        console.error(`Runner error (retry):`, err);
+    // Fire-and-forget: pipeline creates its own run records per stage
+    if (options?.pipelineCtx) {
+      executePipeline(options.pipelineCtx, machine, freshIssue, project).catch((err) => {
+        console.error(`Pipeline error (retry):`, err);
       });
     }
   });
@@ -343,6 +343,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     db.updateIssue(issue.id, { status: "failed" });
     res.json(db.getIssue(issue.id));
+  });
+
+  // ─── Issue runs (all stages) ──────────────────────────────────────────────
+
+  router.get("/issues/:id/runs", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    res.json(db.getRunsForIssue(issue.id));
   });
 
   // ─── Live output (for running issues) ────────────────────────────────────

@@ -322,6 +322,51 @@ describe("runs", () => {
     expect(updated.prompt_tokens).toBe(1000);
     expect(updated.completion_tokens).toBe(500);
   });
+
+  it("creates a run with a stage", () => {
+    const run = db.createRun({ issue_id: issueId, stage: "scout" });
+    expect(run.stage).toBe("scout");
+  });
+
+  it("creates a run without a stage (legacy)", () => {
+    const run = db.createRun({ issue_id: issueId });
+    expect(run.stage).toBeNull();
+  });
+
+  it("getRunsForIssue returns all runs in creation order", () => {
+    const r1 = db.createRun({ issue_id: issueId, stage: "scout" });
+    const r2 = db.createRun({ issue_id: issueId, stage: "implement" });
+    const r3 = db.createRun({ issue_id: issueId, stage: "review" });
+    const runs = db.getRunsForIssue(issueId);
+    expect(runs).toHaveLength(3);
+    expect(runs[0].id).toBe(r1.id);
+    expect(runs[1].id).toBe(r2.id);
+    expect(runs[2].id).toBe(r3.id);
+    expect(runs[0].stage).toBe("scout");
+    expect(runs[2].stage).toBe("review");
+  });
+});
+
+// ─── Issues: retry_count ──────────────────────────────────────────────────────
+
+describe("issues retry_count", () => {
+  let projectId: string;
+
+  beforeEach(() => {
+    const p = db.createProject({ name: "test", workdir: "/tmp/test" });
+    projectId = p.id;
+  });
+
+  it("defaults retry_count to 0", () => {
+    const issue = db.createIssue({ project_id: projectId, title: "Test" });
+    expect(issue.retry_count).toBe(0);
+  });
+
+  it("updates retry_count", () => {
+    const issue = db.createIssue({ project_id: projectId, title: "Test" });
+    db.updateIssue(issue.id, { retry_count: 2 });
+    expect(db.getIssue(issue.id)!.retry_count).toBe(2);
+  });
 });
 
 // ─── Crash recovery ─────────────────────────────────────────────────────────

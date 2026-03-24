@@ -54,11 +54,12 @@ export class Db {
         title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'pending', git_branch TEXT, git_worktree TEXT,
         git_pr_url TEXT, git_pr_number INTEGER,
+        retry_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT
       );
       CREATE TABLE IF NOT EXISTS runs (
         id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issues(id),
-        machine_id TEXT, status TEXT NOT NULL DEFAULT 'pending', output TEXT,
+        machine_id TEXT, stage TEXT, status TEXT NOT NULL DEFAULT 'pending', output TEXT,
         started_at TEXT, completed_at TEXT, duration_ms INTEGER,
         prompt_tokens INTEGER, completion_tokens INTEGER,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -77,11 +78,13 @@ export class Db {
   }
 
   private migrate(): void {
-    // Add context_limit column to machines (added after initial schema)
-    try {
-      this.sqlite.exec("ALTER TABLE machines ADD COLUMN context_limit INTEGER");
-    } catch {
-      // Column already exists — ignore
+    const migrations = [
+      "ALTER TABLE machines ADD COLUMN context_limit INTEGER",
+      "ALTER TABLE runs ADD COLUMN stage TEXT",
+      "ALTER TABLE issues ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+    ];
+    for (const sql of migrations) {
+      try { this.sqlite.exec(sql); } catch { /* column already exists */ }
     }
   }
 
@@ -222,7 +225,7 @@ export class Db {
 
   updateIssue(
     id: string,
-    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "completed_at">>
+    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "completed_at" | "retry_count">>
   ): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
@@ -252,10 +255,21 @@ export class Db {
       .all();
   }
 
-  createRun(data: { issue_id: string }): Run {
+  createRun(data: { issue_id: string; stage?: string }): Run {
     const id = randomUUID();
-    this.drizzle.insert(schema.runs).values({ id, issue_id: data.issue_id }).run();
+    this.drizzle.insert(schema.runs).values({
+      id,
+      issue_id: data.issue_id,
+      stage: data.stage ?? null,
+    }).run();
     return this.getRun(id)!;
+  }
+
+  getRunsForIssue(issueId: string): Run[] {
+    // All runs for an issue ordered chronologically (for frontend pipeline view)
+    return (this.sqlite
+      .prepare("SELECT * FROM runs WHERE issue_id = ? ORDER BY rowid ASC")
+      .all(issueId) as Run[]);
   }
 
   updateRun(

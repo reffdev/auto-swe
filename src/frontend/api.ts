@@ -39,6 +39,7 @@ export interface Issue {
   git_worktree: string | null;
   git_pr_url: string | null;
   git_pr_number: number | null;
+  retry_count: number;
   created_at: string;
   completed_at: string | null;
 }
@@ -47,6 +48,7 @@ export interface Run {
   id: string;
   issue_id: string;
   machine_id: string | null;
+  stage: string | null;
   status: "pending" | "running" | "pass" | "fail";
   output: string | null;
   started_at: string | null;
@@ -158,6 +160,12 @@ export function approvePr(id: string): Promise<Issue> {
 
 export function rejectPr(id: string): Promise<Issue> {
   return json(`/api/issues/${id}/reject-pr`, { method: "POST" });
+}
+
+// ─── Issue runs (all stages) ──────────────────────────────────────────────────
+
+export function getIssueRuns(issueId: string): Promise<Run[]> {
+  return json(`/api/issues/${issueId}/runs`);
 }
 
 // ─── Live output ──────────────────────────────────────────────────────────────

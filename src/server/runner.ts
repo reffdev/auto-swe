@@ -288,8 +288,9 @@ async function runAgentWithTimeout(
   timeoutMs: number,
   onStep: (step: StepResult<ToolSet>) => void
 ): Promise<string> {
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(
+    timeoutTimer = setTimeout(
       () => reject(new Error(`Agent timed out after ${Math.round(timeoutMs / 1000)}s`)),
       timeoutMs
     );
@@ -323,5 +324,9 @@ async function runAgentWithTimeout(
     return fullText || "(no output)";
   })();
 
-  return Promise.race([agentPromise, timeoutPromise]);
+  try {
+    return await Promise.race([agentPromise, timeoutPromise]);
+  } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  }
 }

@@ -44,6 +44,7 @@ export const issues = sqliteTable("issues", {
   git_worktree: text("git_worktree"),
   git_pr_url: text("git_pr_url"),
   git_pr_number: integer("git_pr_number"),
+  retry_count: integer("retry_count").notNull().default(0),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   completed_at: text("completed_at"),
 });
@@ -54,6 +55,7 @@ export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
   issue_id: text("issue_id").notNull().references(() => issues.id),
   machine_id: text("machine_id"),
+  stage: text("stage"),  // 'scout' | 'implement' | 'test_write' | 'review' | null (legacy)
   status: text("status").notNull().default("pending"),
   output: text("output"),
   started_at: text("started_at"),

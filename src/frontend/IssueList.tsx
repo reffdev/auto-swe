@@ -157,6 +157,9 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm truncate">{issue.title}</span>
                     <StatusBadge status={issue.status} />
+                    {run?.stage && (issue.status === 'running' || issue.status === 'approved') && (
+                      <span className="text-xs text-muted-foreground capitalize">{run.stage.replace('_', '-')}</span>
+                    )}
                   </div>
                   {issue.description && (
                     <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{issue.description}</p>

@@ -30,7 +30,7 @@ app.use(express.json());
 
 
 // 4. Mount API routes (with runner context for approve/retry)
-app.use("/api", createApiRouter(db, { runnerCtx: { db } }));
+app.use("/api", createApiRouter(db, { pipelineCtx: { db } }));
 
 // 5. Health check
 app.get("/health", (_req, res) => {

@@ -314,8 +314,6 @@ describe("issue actions", () => {
     const res = await request(app).post(`/api/issues/${issue.id}/approve`);
     expect(res.status).toBe(202);
     expect(res.body.issue.status).toBe("approved");
-    expect(res.body.run).toBeTruthy();
-    expect(res.body.run.status).toBe("pending");
   });
 
   it("POST /api/issues/:id/approve rejects non-pending", async () => {
