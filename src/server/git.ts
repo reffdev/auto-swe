@@ -255,6 +255,44 @@ export function parseRemote(remote: string): ParsedRemote | null {
   }
 }
 
+/**
+ * Build an HTTPS remote URL with an embedded token for git push.
+ * e.g. https://x-access-token:ghp_xxx@github.com/owner/repo.git
+ */
+export function authenticatedRemoteUrl(
+  remote: string,
+  token: string
+): string | null {
+  const parsed = parseRemote(remote);
+  if (!parsed) return null;
+  const { serverUrl, owner, repo } = parsed;
+  try {
+    const url = new URL(serverUrl);
+    url.username = "x-access-token";
+    url.password = token;
+    url.pathname = `/${owner}/${repo}.git`;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set the origin remote URL on a git repo/worktree.
+ * Used to inject auth credentials before pushing.
+ */
+export async function setRemoteUrl(
+  repoPath: string,
+  url: string
+): Promise<boolean> {
+  try {
+    await gitSafe(["remote", "set-url", "origin", url], repoPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function authHeaders(
   token: string,
   isGitHub: boolean

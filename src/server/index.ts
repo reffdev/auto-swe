@@ -26,6 +26,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+
 // 4. Mount API routes (with runner context for approve/retry)
 app.use("/api", createApiRouter(db, { runnerCtx: { db } }));
 
@@ -37,6 +38,14 @@ app.get("/health", (_req, res) => {
 // 6. Start server
 const server = app.listen(PORT, () => {
   console.log(`open-swe server listening on http://localhost:${PORT}`);
+});
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`\nFATAL: Port ${PORT} is already in use. Kill the old process first:\n  cmd.exe /c "taskkill /F /PID $(netstat -ano | grep :${PORT} | head -1 | awk '{print $NF}')"\n`);
+  } else {
+    console.error("Server error:", err);
+  }
+  process.exit(1);
 });
 
 // 7. Graceful shutdown

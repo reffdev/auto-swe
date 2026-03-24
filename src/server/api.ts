@@ -5,10 +5,15 @@
  */
 
 import { Router } from "express";
-import { existsSync, statSync } from "fs";
+import { existsSync, statSync, mkdirSync } from "fs";
+import { resolve } from "path";
+import { execFileSync } from "child_process";
 import type { Db } from "./db";
 import { executeIssue, type RunnerContext } from "./runner";
-import { mergePullRequest } from "./git";
+import { mergePullRequest, authenticatedRemoteUrl } from "./git";
+
+/** Base directory for auto-created project clones */
+const PROJECTS_BASE = resolve(process.env.PROJECTS_BASE ?? "./.projects");
 
 export interface ApiOptions {
   /** If provided, approve/retry will trigger agent runs. Omit for testing. */
@@ -42,27 +47,70 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(400).json({ error: "name is required" });
       return;
     }
-    if (!workdir || typeof workdir !== "string") {
-      res.status(400).json({ error: "workdir is required" });
-      return;
-    }
-    // Validate workdir exists and is a directory
-    try {
-      const stat = statSync(workdir);
-      if (!stat.isDirectory()) {
-        res.status(400).json({ error: "workdir is not a directory" });
+
+    let resolvedWorkdir: string;
+
+    if (workdir && typeof workdir === "string") {
+      // Explicit workdir provided — validate it
+      try {
+        const stat = statSync(workdir);
+        if (!stat.isDirectory()) {
+          res.status(400).json({ error: "workdir is not a directory" });
+          return;
+        }
+      } catch {
+        res.status(400).json({ error: "workdir does not exist" });
         return;
       }
-    } catch {
-      res.status(400).json({ error: "workdir does not exist" });
-      return;
+      if (!existsSync(`${workdir}/.git`)) {
+        res.status(400).json({ error: "workdir is not a git repository (no .git found)" });
+        return;
+      }
+      resolvedWorkdir = resolve(workdir);
+    } else {
+      // No workdir — auto-create under .projects/ by cloning git_remote
+      if (!git_remote || typeof git_remote !== "string") {
+        res.status(400).json({ error: "either workdir or git_remote is required" });
+        return;
+      }
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+      const targetDir = resolve(PROJECTS_BASE, slug);
+      if (existsSync(targetDir)) {
+        // Already exists — validate it's a git repo
+        if (!existsSync(`${targetDir}/.git`)) {
+          res.status(409).json({ error: `directory ${targetDir} already exists but is not a git repo` });
+          return;
+        }
+        resolvedWorkdir = targetDir;
+      } else {
+        // Clone the remote (use authenticated URL if token provided, so push works)
+        try {
+          mkdirSync(PROJECTS_BASE, { recursive: true });
+          const cloneUrl = git_server_token
+            ? authenticatedRemoteUrl(git_remote, git_server_token) ?? git_remote
+            : git_remote;
+          execFileSync("git", ["clone", cloneUrl, targetDir], {
+            encoding: "utf-8",
+            timeout: 120_000,
+            stdio: "pipe",
+          });
+          resolvedWorkdir = targetDir;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          res.status(400).json({ error: `failed to clone git_remote: ${msg}` });
+          return;
+        }
+      }
     }
-    // Validate workdir is a git repo
-    if (!existsSync(`${workdir}/.git`)) {
-      res.status(400).json({ error: "workdir is not a git repository (no .git found)" });
-      return;
-    }
-    const project = db.createProject({ name, workdir, git_remote, git_server_token, git_default_branch, model_id });
+
+    const project = db.createProject({
+      name,
+      workdir: resolvedWorkdir,
+      git_remote,
+      git_server_token,
+      git_default_branch,
+      model_id,
+    });
     res.status(201).json(project);
   });
 

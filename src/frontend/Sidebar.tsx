@@ -37,7 +37,7 @@ function NewProjectDialog({ open, onClose, onCreated }: {
     try {
       await api.createProject({
         name,
-        workdir,
+        workdir: workdir || undefined,
         git_remote: gitRemote || undefined,
         git_server_token: gitToken || undefined,
         git_default_branch: branch || undefined,
@@ -59,14 +59,14 @@ function NewProjectDialog({ open, onClose, onCreated }: {
         </DialogHeader>
         <div className="grid gap-3">
           <Input placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input placeholder="Local workdir path (e.g. /home/me/my-repo)" value={workdir} onChange={(e) => setWorkdir(e.target.value)} />
-          <Input placeholder="Git remote URL (optional)" value={gitRemote} onChange={(e) => setGitRemote(e.target.value)} />
-          <Input placeholder="Git server token (optional)" type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} />
+          <Input placeholder="Git remote URL" value={gitRemote} onChange={(e) => setGitRemote(e.target.value)} />
+          <Input placeholder="Git server token (for PR creation)" type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} />
+          <Input placeholder="Local workdir path (optional — clones remote if empty)" value={workdir} onChange={(e) => setWorkdir(e.target.value)} />
           <Input placeholder="Default branch" value={branch} onChange={(e) => setBranch(e.target.value)} />
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
-          <Button onClick={handleSubmit} disabled={!name || !workdir || submitting}>
+          <Button onClick={handleSubmit} disabled={!name || (!workdir && !gitRemote) || submitting}>
             {submitting ? 'Creating...' : 'Create Project'}
           </Button>
         </DialogFooter>

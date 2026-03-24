@@ -98,7 +98,7 @@ export function poll(projectId?: string): Promise<PollResponse> {
 
 export function createProject(data: {
   name: string;
-  workdir: string;
+  workdir?: string;
   git_remote?: string;
   git_server_token?: string;
   git_default_branch?: string;

@@ -17,6 +17,8 @@ import {
   pushBranch,
   createPullRequest,
   removeWorktree,
+  authenticatedRemoteUrl,
+  setRemoteUrl,
 } from "./git";
 import type { Db, Machine, Issue, Project } from "./db";
 
@@ -116,6 +118,14 @@ export async function executeIssue(
     if (!commitHash) {
       // Agent ran but made no changes
       throw new Error("Agent completed but made no file changes");
+    }
+
+    // Set authenticated remote URL for push (embeds token in HTTPS URL)
+    if (project.git_remote && project.git_server_token) {
+      const authUrl = authenticatedRemoteUrl(project.git_remote, project.git_server_token);
+      if (authUrl) {
+        await setRemoteUrl(worktreePath, authUrl);
+      }
     }
 
     const pushed = await pushBranch(worktreePath, branch);
