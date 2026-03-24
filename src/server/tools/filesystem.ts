@@ -58,10 +58,10 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
       result.startsWith("ERROR") ||
       result.startsWith("File not found") ||
       result.startsWith("Directory not found");
+    // Only count file/directory not-found errors — not command exit failures
     const isNotFound =
-      result.includes("not found") ||
-      result.includes("not a file") ||
-      result.includes("not a directory");
+      result.startsWith("File not found") ||
+      result.startsWith("Directory not found");
 
     if (isNotFound) totalNotFoundErrors++;
     if (isError) consecutiveErrors++;
@@ -414,11 +414,13 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
           const max = budget.maxResultChars;
           if (errOutput.length > max) {
             budget.add(max);
-            return trackResult(errOutput.slice(0, max) + "\n[truncated]");
+            return errOutput.slice(0, max) + "\n[truncated]";
           }
           budget.add(errOutput.length);
         }
-        return trackResult(errOutput);
+        // Don't count command failures as consecutive errors — non-zero exit
+        // codes are normal (test failures, missing commands, etc.)
+        return errOutput;
       }
       return cap(out || "(no output)");
     },
