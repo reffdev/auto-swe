@@ -1,79 +1,66 @@
-import { createDeepAgent, FilesystemBackend, type SubAgent } from "deepagents";
-import { HumanMessage } from "@langchain/core/messages";
-import { constructSystemPrompt } from "./prompts";
-import {
-  ContextBudget,
-  makeFilesystemTools,
-  makeReadOnlyTools,
-  makeVerifyTools,
-  fetchUrlTool,
-} from "./tools";
+/**
+ * Open-SWE server entry point.
+ *
+ * Express app serving the API on port 3001.
+ * Initializes the database, runs crash recovery, and mounts routes.
+ */
 
-// Create tool sets for each sub-agent role, bound to the working directory.
-// These are AI SDK tools — the full set from the mastra-react pipeline.
-function createAgentTools(workDir: string) {
-  const budget = new ContextBudget();
+import express from "express";
+import cors from "cors";
+import { Db } from "./db";
+import { createApiRouter } from "./api";
 
-  // Full read/write/run tools for the coder
-  const coderTools = makeFilesystemTools(workDir, budget);
-  // Read-only + verify tools for the reviewer
-  const reviewerTools = makeVerifyTools(workDir, budget);
-  // Read-only tools for scouting/analysis
-  const scoutTools = makeReadOnlyTools(workDir, budget);
+const PORT = parseInt(process.env.PORT ?? "3001", 10);
 
-  return { coderTools, reviewerTools, scoutTools, budget };
+// 1. Initialize database
+const db = new Db();
+
+// 2. Crash recovery — reset stuck machines/runs from prior crashes
+const recovered = db.recoverFromCrash();
+if (recovered.machines > 0 || recovered.runs > 0) {
+  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s)`);
 }
 
-const coderSubAgent: SubAgent = {
-  name: "coder",
-  description: "Writes and edits code to complete tasks",
-  systemPrompt:
-    "You are a software engineer. Write clean, correct code to complete the assigned task.",
-  tools: [],
-};
+// 3. Create Express app
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-const reviewerSubAgent: SubAgent = {
-  name: "reviewer",
-  description: "Reviews code changes for correctness and quality",
-  systemPrompt:
-    "You are a code reviewer. Analyze changes for bugs, style issues, and correctness.",
-  tools: [],
-};
+// 4. Mount API routes (with runner context for approve/retry)
+app.use("/api", createApiRouter(db, { runnerCtx: { db } }));
 
-export interface CreateSweAgentOptions {
-  model?: string;
-  workDir?: string;
-  linearProjectId?: string;
-  linearIssueNumber?: string;
-  agentsMd?: string;
-}
+// 5. Health check
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
 
-export function createSweAgent(options?: CreateSweAgentOptions): ReturnType<typeof createDeepAgent> {
-  const model = options?.model ?? "claude-sonnet-4-20250514";
-  const workDir = options?.workDir ?? "/workspace";
+// 6. Start server
+const server = app.listen(PORT, () => {
+  console.log(`open-swe server listening on http://localhost:${PORT}`);
+});
 
-  const systemPrompt = constructSystemPrompt({
-    workingDir: workDir,
-    linearProjectId: options?.linearProjectId,
-    linearIssueNumber: options?.linearIssueNumber,
-    agentsMd: options?.agentsMd,
+// 7. Graceful shutdown
+function shutdown(signal: string) {
+  console.log(`\n${signal} received — shutting down`);
+  server.close(() => {
+    db.close();
+    console.log("Server closed");
+    process.exit(0);
   });
-
-  // Create filesystem tools bound to the working directory
-  const { coderTools, reviewerTools, scoutTools, budget } = createAgentTools(workDir);
-
-  return createDeepAgent({
-    model,
-    systemPrompt,
-    tools: [], // AI SDK tools are available via sub-agents; deepagents tools can be added here
-    subagents: [coderSubAgent, reviewerSubAgent],
-    backend: new FilesystemBackend({ rootDir: workDir, virtualMode: true }),
-    // The AI SDK tools are exported for direct use via the tools module:
-    // coderTools, reviewerTools, scoutTools, fetchUrlTool
-  });
+  // Force exit after 10s if draining takes too long
+  setTimeout(() => {
+    console.log("Forced shutdown after timeout");
+    db.close();
+    process.exit(1);
+  }, 10_000);
 }
 
-/** Re-export tools for direct consumption by API routes or other consumers */
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Re-export for consumers
+export { Db } from "./db";
+export type { Machine, Project, Issue, Run } from "./db";
 export {
   ContextBudget,
   makeFilesystemTools,
@@ -82,18 +69,3 @@ export {
   makeVerifyTools,
   fetchUrlTool,
 } from "./tools";
-
-// Dev entry point
-async function main() {
-  console.log("open-swe server starting on http://localhost:3000");
-
-  const agent = createSweAgent();
-
-  const result = await agent.invoke({
-    messages: [new HumanMessage("Hello, what can you do?")],
-  });
-
-  console.log(result.messages[result.messages.length - 1].content);
-}
-
-main().catch(console.error);

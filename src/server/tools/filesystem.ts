@@ -20,7 +20,7 @@ import {
   unlinkSync,
   renameSync,
 } from "fs";
-import { execSync, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import { join, dirname, resolve, isAbsolute, sep, relative } from "path";
 import { ContextBudget } from "./context-budget";
 
@@ -679,11 +679,12 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
     parameters: z.object({}),
     execute: async () => {
       try {
-        const out = execSync("git status --short", {
+        const result = spawnSync("git", ["status", "--short"], {
           cwd: resolvedWorkdir,
           encoding: "utf-8",
           timeout: 10_000,
         });
+        const out = result.stdout ?? "";
         trackSuccess();
         return out.trim() || "Nothing to commit, working tree clean";
       } catch (e) {
