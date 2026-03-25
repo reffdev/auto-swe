@@ -40,6 +40,8 @@ import {
   setRemoteUrl,
 } from "./git";
 import type { Db, Machine, Issue, Project, Run } from "./db";
+import { readFileSync, readdirSync } from "fs";
+import { join } from "path";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -93,6 +95,82 @@ interface PipelineConfig {
   model: ReturnType<ReturnType<typeof createOpenAICompatible>>;
   /** Abort signal for cancellation */
   abortSignal: AbortSignal;
+}
+
+// ─── Auto-injected project context ────────────────────────────────────────────
+
+/** Key files to auto-read from the project root and inject into the scout prompt */
+const AUTO_READ_FILES = [
+  "package.json",
+  "AGENTS.md",
+  "README.md",
+  "ARCHITECTURE.md",
+  "CONTRIBUTING.md",
+  "tsconfig.json",
+  "Makefile",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+];
+
+/** Max chars per auto-read file (prevent huge READMEs from flooding context) */
+const AUTO_READ_MAX_CHARS = 8000;
+
+/**
+ * Read key project files from the worktree and build a context section.
+ * Returns the context string and the total chars injected.
+ */
+function gatherProjectContext(worktreePath: string): { context: string; fileCount: number; totalChars: number } {
+  const sections: string[] = [];
+  let totalChars = 0;
+  let fileCount = 0;
+
+  // Auto-read key files
+  for (const filename of AUTO_READ_FILES) {
+    try {
+      const content = readFileSync(join(worktreePath, filename), "utf-8").replace(/\r\n/g, "\n");
+      const truncated = content.length > AUTO_READ_MAX_CHARS
+        ? content.slice(0, AUTO_READ_MAX_CHARS) + `\n[... truncated at ${AUTO_READ_MAX_CHARS} chars]`
+        : content;
+      sections.push(`### ${filename}\n\`\`\`\n${truncated}\n\`\`\``);
+      totalChars += truncated.length;
+      fileCount++;
+    } catch {
+      // File doesn't exist — skip
+    }
+  }
+
+  // Auto-read directory listing (top-level + 1 depth)
+  try {
+    const listing: string[] = [];
+    const entries = readdirSync(worktreePath, { withFileTypes: true });
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name === ".git") continue;
+      const prefix = e.isDirectory() ? "[dir]" : "[file]";
+      listing.push(`${prefix} ${e.name}`);
+      if (e.isDirectory()) {
+        try {
+          const sub = readdirSync(join(worktreePath, e.name), { withFileTypes: true });
+          for (const s of sub.slice(0, 20)) {
+            if (s.name === "node_modules" || s.name === ".git") continue;
+            listing.push(`  ${s.isDirectory() ? "[dir]" : "[file]"} ${e.name}/${s.name}`);
+          }
+          if (sub.length > 20) listing.push(`  ... (${sub.length - 20} more)`);
+        } catch { /* permission error etc */ }
+      }
+    }
+    if (listing.length > 0) {
+      const dirText = listing.join("\n");
+      sections.push(`### Directory Structure\n\`\`\`\n${dirText}\n\`\`\``);
+      totalChars += dirText.length;
+    }
+  } catch { /* empty or inaccessible */ }
+
+  const context = sections.length > 0
+    ? `## Pre-loaded Project Context\n\nThe following files and structure were auto-loaded from the repository. You do NOT need to re-read these files.\n\n${sections.join("\n\n")}`
+    : "";
+
+  return { context, fileCount, totalChars };
 }
 
 // ─── Scout brief submission tool ──────────────────────────────────────────────
@@ -242,14 +320,14 @@ async function runStage(opts: RunStageOpts): Promise<string> {
     if (toolCalls?.length) {
       stepData.toolCalls = toolCalls.map(tc => ({
         tool: tc.toolName ?? "unknown",
-        args: JSON.stringify(tc.args).slice(0, 2000),
+        args: JSON.stringify(tc.args).slice(0, 10000),
       }));
     }
     const toolResults = step.toolResults as Array<{ toolName?: string; result?: unknown }> | undefined;
     if (toolResults?.length) {
       stepData.toolResults = toolResults.map(tr => ({
         tool: tr.toolName ?? "unknown",
-        result: String(tr.result).slice(0, 2000),
+        result: String(tr.result).slice(0, 10000),
       }));
     }
 
@@ -260,11 +338,11 @@ async function runStage(opts: RunStageOpts): Promise<string> {
 
     // Log to llm_requests table
     try {
-      const inputParts = (toolResults ?? []).map(tr => `[tool_result: ${tr.toolName}] ${String(tr.result).slice(0, 2000)}`);
+      const inputParts = (toolResults ?? []).map(tr => `[tool_result: ${tr.toolName}] ${String(tr.result).slice(0, 10000)}`);
       const outputParts: string[] = [];
       if (step.text) outputParts.push(step.text);
       for (const tc of (toolCalls ?? [])) {
-        outputParts.push(`[tool_call: ${tc.toolName}] ${JSON.stringify(tc.args).slice(0, 2000)}`);
+        outputParts.push(`[tool_call: ${tc.toolName}] ${JSON.stringify(tc.args).slice(0, 10000)}`);
       }
       db.createLlmRequest({
         issue_id: issueId,
@@ -348,6 +426,10 @@ async function scoutNode(
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
 
+  // Gather project context once (auto-read key files)
+  const projectCtx = gatherProjectContext(state.worktreePath);
+  console.log(`Pipeline: scout — auto-loaded ${projectCtx.fileCount} files (${projectCtx.totalChars.toLocaleString()} chars)`);
+
   let compactedSoFar = "";
   const userIssue = `## Issue: ${state.issueTitle}\n\n${state.issueDescription || "(No additional details)"}`;
 
@@ -356,9 +438,20 @@ async function scoutNode(
     const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
     ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
+    // Write info step so frontend shows what was pre-loaded
+    if (cycle === 0) {
+      const infoStep = [{
+        step: 0,
+        text: `**Scout stage starting**\n\n- Auto-loaded ${projectCtx.fileCount} project files (${projectCtx.totalChars.toLocaleString()} chars / ~${Math.round(projectCtx.totalChars / 4).toLocaleString()} tokens)\n- Files: ${AUTO_READ_FILES.filter(f => projectCtx.context.includes(f)).join(", ")}`,
+        tokens: { prompt: 0, completion: 0 },
+        durationMs: 0,
+      }];
+      try { ctx.db.updateRun(run.id, { output: JSON.stringify(infoStep) }); } catch { /* non-critical */ }
+    }
+
     const contextSection = compactedSoFar
       ? `\n\n## Prior Findings (from previous exploration cycles)\n\n${compactedSoFar}\n\nContinue exploring areas not yet covered. Do not re-read files already in the brief.`
-      : "";
+      : (projectCtx.context ? `\n\n${projectCtx.context}` : "");
 
     console.log(`Pipeline: scout cycle ${cycle + 1}/${MAX_SCOUT_CYCLES}`);
 
@@ -373,7 +466,9 @@ async function scoutNode(
       abortSignal,
     });
 
+    console.log(`Pipeline: scout raw output: ${scoutOutput.length} chars`);
     const extracted = extractScoutBrief(scoutOutput);
+    console.log(`Pipeline: scout extracted report: ${extracted.length} chars (via ${_lastSubmittedBrief === null ? 'text' : 'tool'})`);
 
     // If budget was barely used, the scout finished exploring — no need to compact
     if (budget.usage < SCOUT_DONE_THRESHOLD) {
@@ -419,9 +514,22 @@ async function implementNode(
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "implement" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
-  console.log(`Pipeline: implement stage (retry ${state.retryCount}), scout brief: ${state.scoutBrief.length} chars`);
-  if (state.scoutBrief.length < 100) {
-    console.warn("Pipeline: WARNING — scout brief is very short, implement may re-explore");
+  const reportLen = state.scoutBrief.length;
+  const reportTokensEst = Math.round(reportLen / 4);
+  const retryInfo = state.retryCount > 0 ? ` | Retry ${state.retryCount}/3 with review feedback` : "";
+  console.log(`Pipeline: implement stage — scout report: ${reportLen} chars (~${reportTokensEst} tokens)${retryInfo}`);
+
+  // Write an info step to the run so the frontend shows it immediately
+  const infoStep = [{
+    step: 0,
+    text: `**Implement stage starting**\n\n- Scout report injected: ${reportLen.toLocaleString()} chars (~${reportTokensEst.toLocaleString()} tokens)\n- System prompt + report size: ~${Math.round((reportLen + 2000) / 4).toLocaleString()} tokens${retryInfo ? `\n- ${retryInfo.trim().replace("| ", "")}` : ""}`,
+    tokens: { prompt: 0, completion: 0 },
+    durationMs: 0,
+  }];
+  try { ctx.db.updateRun(run.id, { output: JSON.stringify(infoStep) }); } catch { /* non-critical */ }
+
+  if (reportLen < 500) {
+    console.warn("Pipeline: WARNING — scout report is very short (<500 chars), implement will likely re-explore");
   }
 
   const implPrompts = constructImplementPrompts({
@@ -537,11 +645,16 @@ async function gitOpsNode(
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, project, branch } = config.configurable as PipelineConfig;
 
-  console.log("Pipeline: git ops — commit, push, create PR");
+  console.log(`Pipeline: git ops — commit, push, create PR (worktree: ${state.worktreePath}, branch: ${branch})`);
+  console.log(`Pipeline: git ops — reviewVerdict=${state.reviewVerdict}, error=${state.error}`);
 
   const commitHash = await commitAll(state.worktreePath, `[open-swe] ${state.issueTitle}`);
   if (!commitHash) {
-    return { error: "Agent completed but made no file changes" };
+    // No new changes to commit — but there might be commits from prior stages in this run.
+    // Check if we have any commits ahead of origin before giving up.
+    console.log("Pipeline: git ops — nothing to commit, checking for existing commits to push");
+  } else {
+    console.log(`Pipeline: git ops — committed ${commitHash}`);
   }
 
   // Set authenticated remote URL for push
@@ -670,6 +783,8 @@ export async function executePipeline(
       }
     );
 
+    console.log(`Pipeline: graph complete — verdict=${finalState.reviewVerdict}, error=${finalState.error || "(none)"}, retryCount=${finalState.retryCount}`);
+
     // Check for errors from git_ops node
     if (finalState.error) {
       throw new Error(finalState.error);
@@ -687,7 +802,11 @@ export async function executePipeline(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`Pipeline: "${issue.title}" failed:`, errorMsg);
-    ctx.db.updateIssue(issue.id, { status: "failed" });
+    // Don't overwrite status if gitOps already succeeded (awaiting_review/completed)
+    const currentIssue = ctx.db.getIssue(issue.id);
+    if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+    }
   } finally {
     activePipelines.delete(issue.id);
     await removeWorktree(project.workdir, worktreePath).catch(() => {});
