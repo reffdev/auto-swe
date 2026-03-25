@@ -116,6 +116,31 @@ export async function ensureWorkdir(project: Project): Promise<void> {
   console.log(`Git: re-cloned successfully to ${project.workdir}`);
 }
 
+/**
+ * Reset the main workdir to match origin. Discards any local changes,
+ * fetches latest, and hard-resets to the remote default branch.
+ * Call this before creating a worktree to ensure a fresh base.
+ */
+export async function resetToOrigin(project: Project): Promise<void> {
+  const workdir = project.workdir;
+  const defaultBranch = project.git_default_branch || "main";
+
+  try {
+    console.log(`Git: resetting ${workdir} to origin/${defaultBranch}`);
+    await git("fetch origin", workdir);
+    // Discard any local changes
+    await git("checkout -- .", workdir).catch(() => {});
+    await gitSafe(["clean", "-fd"], workdir).catch(() => {});
+    // Hard reset to match origin
+    await gitSafe(["reset", "--hard", `origin/${defaultBranch}`], workdir);
+    const hash = (await git("rev-parse --short HEAD", workdir)).trim();
+    console.log(`Git: reset to origin/${defaultBranch} @ ${hash}`);
+  } catch (err) {
+    console.error("Git: resetToOrigin failed:", err);
+    // Non-fatal — setupWorktree will still work from whatever state the repo is in
+  }
+}
+
 // ─── Naming ───────────────────────────────────────────────────────────────────
 
 export function makeBranchName(issueId: string, title: string): string {

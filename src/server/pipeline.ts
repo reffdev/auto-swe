@@ -32,6 +32,7 @@ import {
   makeBranchName,
   makeWorktreePath,
   ensureWorkdir,
+  resetToOrigin,
   setupWorktree,
   commitAll,
   pushBranch,
@@ -827,8 +828,9 @@ export async function executePipeline(
   });
 
   try {
-    // Setup
+    // Setup: ensure workdir exists, reset to latest origin, create fresh worktree
     await ensureWorkdir(project);
+    await resetToOrigin(project);
     const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
     if (!worktreeResult.ok) {
       throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
@@ -913,6 +915,7 @@ export async function executeStageRetry(
 
   try {
     await ensureWorkdir(project);
+    await resetToOrigin(project);
     const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
     if (!worktreeResult.ok) {
       throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
