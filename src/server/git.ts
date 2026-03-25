@@ -13,7 +13,7 @@
 import { exec, spawn, spawnSync } from "child_process";
 import { promisify } from "util";
 import { resolve, dirname } from "path";
-import { readdirSync, existsSync, mkdirSync } from "fs";
+import { readdirSync, existsSync, mkdirSync, rmSync } from "fs";
 import type { Project } from "./db";
 
 const execAsync = promisify(exec);
@@ -167,28 +167,35 @@ export async function setupWorktree(
       /* no remote yet */
     }
 
-    // If worktree already exists, try to reuse it
-    try {
-      const currentBranch = (
-        await git("rev-parse --abbrev-ref HEAD", worktreePath)
-      ).trim();
-      if (currentBranch === branch) {
-        console.log(`Git: reusing existing worktree for branch ${branch}`);
-        return { ok: true };
+    // If worktree path already exists, try to reuse or clean it up
+    if (existsSync(worktreePath)) {
+      try {
+        const currentBranch = (
+          await git("rev-parse --abbrev-ref HEAD", worktreePath)
+        ).trim();
+        if (currentBranch === branch) {
+          console.log(`Git: reusing existing worktree for branch ${branch}`);
+          return { ok: true };
+        }
+      } catch {
+        // Not a valid git worktree — stale directory
       }
-      // Wrong branch — recreate
+
+      // Remove the stale worktree — try git first, fall back to rm -rf
+      console.log(`Git: removing stale worktree at ${worktreePath}`);
       try {
         await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
       } catch {
-        /* ignore */
+        // git worktree remove failed — force-remove the directory
+        try {
+          rmSync(worktreePath, { recursive: true, force: true });
+          console.log(`Git: force-removed stale worktree directory`);
+        } catch (rmErr) {
+          console.error(`Git: failed to remove stale worktree directory:`, rmErr);
+        }
       }
-    } catch {
-      // Not a valid worktree — remove stale entry
-      try {
-        await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
-      } catch {
-        /* ignore */
-      }
+      // Prune any orphaned worktree entries
+      try { await git("worktree prune", mainWorkdir); } catch { /* best-effort */ }
     }
 
     // Delete stale local branch from prior runs
@@ -232,23 +239,21 @@ export async function removeWorktree(
   try {
     await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
     console.log(`Git: worktree removed ${worktreePath}`);
-    return true;
   } catch {
-    // Check if it's already gone
-    try {
-      await git("rev-parse --git-dir", worktreePath);
-    } catch {
-      // Already gone
+    // git worktree remove failed — force-remove the directory
+    if (existsSync(worktreePath)) {
       try {
-        await git("worktree prune", mainWorkdir);
-      } catch {
-        /* best-effort */
+        rmSync(worktreePath, { recursive: true, force: true });
+        console.log(`Git: force-removed worktree directory ${worktreePath}`);
+      } catch (rmErr) {
+        console.error(`Git: failed to remove worktree directory:`, rmErr);
+        return false;
       }
-      return true;
     }
-    console.error(`Git: failed to remove worktree ${worktreePath}`);
-    return false;
   }
+  // Prune orphaned worktree entries
+  try { await git("worktree prune", mainWorkdir); } catch { /* best-effort */ }
+  return true;
 }
 
 // ─── Commit & push ────────────────────────────────────────────────────────────
