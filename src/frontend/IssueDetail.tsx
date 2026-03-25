@@ -368,18 +368,31 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
         const liveCompletion = liveSteps.reduce((sum, s) => sum + (s.tokens?.completion ?? 0), 0)
         const livePrompt = liveSteps.reduce((sum, s) => sum + (s.tokens?.prompt ?? 0), 0)
         const liveDuration = liveSteps.reduce((sum, s) => sum + s.durationMs, 0)
-        const tokPerSec = liveDuration > 0 ? (liveCompletion / (liveDuration / 1000)).toFixed(1) : null
+
+        // If the model doesn't report token usage, estimate from output text length (~4 chars/token)
+        const estimatedCompletion = liveCompletion > 0 ? liveCompletion
+          : liveSteps.reduce((sum, s) => {
+              let chars = 0
+              if (s.text) chars += s.text.length
+              if (s.toolCalls) chars += s.toolCalls.reduce((c, tc) => c + tc.args.length, 0)
+              return sum + Math.round(chars / 4)
+            }, 0)
+
+        const tokPerSec = liveDuration > 0 && estimatedCompletion > 0
+          ? (estimatedCompletion / (liveDuration / 1000)).toFixed(1)
+          : null
+        const isEstimated = liveCompletion === 0 && estimatedCompletion > 0
         const totalTokens = displayRun.prompt_tokens != null
           ? (displayRun.prompt_tokens + (displayRun.completion_tokens ?? 0))
-          : (livePrompt + liveCompletion) || null
+          : (livePrompt + estimatedCompletion) || null
 
         return (
           <div className="px-6 py-2 border-b border-border flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
             {displayRun.stage && <span>Stage: <strong className="text-foreground">{STAGE_LABELS[displayRun.stage] ?? displayRun.stage}</strong></span>}
             <span>Status: <strong className="text-foreground">{displayRun.status}</strong></span>
             {displayRun.duration_ms != null && <span>Duration: {formatDuration(displayRun.duration_ms)}</span>}
-            {totalTokens != null && <span>Tokens: {totalTokens.toLocaleString()}</span>}
-            {tokPerSec && Number(tokPerSec) > 0 && <span>Speed: <strong className="text-foreground">{tokPerSec} tok/s</strong></span>}
+            {totalTokens != null && <span>Tokens{isEstimated ? '~' : ''}: {totalTokens.toLocaleString()}</span>}
+            {tokPerSec && Number(tokPerSec) > 0 && <span>Speed{isEstimated ? '~' : ''}: <strong className="text-foreground">{tokPerSec} tok/s</strong></span>}
             {liveSteps.length > 0 && <span>Steps: {liveSteps.length}</span>}
             {issue.git_branch && <span>Branch: <code className="text-foreground">{issue.git_branch}</code></span>}
           </div>

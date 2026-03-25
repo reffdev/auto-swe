@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
@@ -7,9 +8,17 @@ import { MachineDetail } from './MachineDetail'
 import type { Issue, Run } from './api'
 
 export function Dashboard() {
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null)
-  const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null)
+  const { projectId, issueId, machineId } = useParams<{
+    projectId?: string
+    issueId?: string
+    machineId?: string
+  }>()
+  const navigate = useNavigate()
+
+  const selectedProjectId = projectId ?? null
+  const selectedIssueId = issueId ?? null
+  const selectedMachineId = machineId ?? null
+
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const { data, error, loading, refresh } = usePoll(selectedProjectId ?? undefined)
 
@@ -33,13 +42,11 @@ export function Dashboard() {
     : issues.filter((i) => i.status === statusFilter)
 
   // Keep a ref to the last known issue so the detail view doesn't flicker
-  // when the issue temporarily disappears during status transitions
   const lastIssueRef = useRef<Issue | null>(null)
   const freshIssue = issues.find((i) => i.id === selectedIssueId) ?? null
   if (freshIssue) lastIssueRef.current = freshIssue
   const selectedIssue = selectedIssueId ? (freshIssue ?? lastIssueRef.current) : null
 
-  const selectedRun = selectedIssue ? runByIssue.get(selectedIssue.id) ?? null : null
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null
 
   // Determine what to show in the main panel
@@ -56,13 +63,12 @@ export function Dashboard() {
         selectedProjectId={selectedProjectId}
         selectedMachineId={selectedMachineId}
         onSelectProject={(id) => {
-          setSelectedProjectId(id)
-          setSelectedIssueId(null)
-          setSelectedMachineId(null)
+          if (id) navigate(`/project/${id}`)
+          else navigate('/')
         }}
         onSelectMachine={(id) => {
-          setSelectedMachineId(id)
-          setSelectedIssueId(null)
+          if (id) navigate(`/machine/${id}`)
+          else navigate('/')
         }}
         onDataChange={refresh}
       />
@@ -85,7 +91,7 @@ export function Dashboard() {
         {showMachineDetail && selectedMachine && (
           <MachineDetail
             machine={selectedMachine}
-            onBack={() => setSelectedMachineId(null)}
+            onBack={() => navigate('/')}
             onDataChange={refresh}
           />
         )}
@@ -95,7 +101,7 @@ export function Dashboard() {
             runByIssue={runByIssue}
             statusFilter={statusFilter}
             onStatusFilter={setStatusFilter}
-            onSelectIssue={setSelectedIssueId}
+            onSelectIssue={(id) => navigate(`/project/${selectedProjectId}/issue/${id}`)}
             projectId={selectedProjectId!}
             onDataChange={refresh}
           />
@@ -104,7 +110,7 @@ export function Dashboard() {
           <IssueDetail
             issue={selectedIssue}
             runs={runs.filter(r => r.issue_id === selectedIssue.id)}
-            onBack={() => setSelectedIssueId(null)}
+            onBack={() => navigate(`/project/${selectedProjectId}`)}
             onDataChange={refresh}
           />
         )}

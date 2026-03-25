@@ -855,7 +855,23 @@ export async function executePipeline(
 
     // Create model once — shared across all pipeline nodes
     const modelId = project.model_id ?? machine.model_id;
-    const provider = createOpenAICompatible({ name: `machine-${machine.id}`, baseURL: machine.base_url });
+    const provider = createOpenAICompatible({
+      name: `machine-${machine.id}`,
+      baseURL: machine.base_url,
+      // Inject stream_options.include_usage into every request so llama.cpp reports token counts
+      fetch: async (url, init) => {
+        if (init?.body && typeof init.body === "string") {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.stream) {
+              body.stream_options = { include_usage: true };
+              init = { ...init, body: JSON.stringify(body) };
+            }
+          } catch { /* not JSON — pass through */ }
+        }
+        return fetch(url as string, init as RequestInit);
+      },
+    });
     const model = provider(modelId);
 
     // Fresh run: unique thread_id so we don't resume stale checkpoints
@@ -948,7 +964,23 @@ export async function executeStageRetry(
     }
 
     const modelId = project.model_id ?? machine.model_id;
-    const provider = createOpenAICompatible({ name: `machine-${machine.id}`, baseURL: machine.base_url });
+    const provider = createOpenAICompatible({
+      name: `machine-${machine.id}`,
+      baseURL: machine.base_url,
+      // Inject stream_options.include_usage into every request so llama.cpp reports token counts
+      fetch: async (url, init) => {
+        if (init?.body && typeof init.body === "string") {
+          try {
+            const body = JSON.parse(init.body);
+            if (body.stream) {
+              body.stream_options = { include_usage: true };
+              init = { ...init, body: JSON.stringify(body) };
+            }
+          } catch { /* not JSON — pass through */ }
+        }
+        return fetch(url as string, init as RequestInit);
+      },
+    });
     const model = provider(modelId);
 
     // Use the thread_id from the last executePipeline run to resume from checkpoint
