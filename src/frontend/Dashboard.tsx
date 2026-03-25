@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
@@ -56,6 +57,7 @@ export function Dashboard() {
   const showEmpty = data && !selectedProjectId && !showMachineDetail
 
   return (
+    <TooltipProvider>
     <div className="flex h-screen bg-background text-foreground">
       <Sidebar
         projects={projects}
@@ -116,5 +118,6 @@ export function Dashboard() {
         )}
       </main>
     </div>
+    </TooltipProvider>
   )
 }
