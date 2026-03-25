@@ -9,7 +9,7 @@ import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
-import { executePipeline, executeStageRetry, cancelPipeline, type PipelineContext } from "./pipeline";
+import { executePipeline, executeStageRetry, cancelPipeline, type PipelineContext } from "./pipeline/index";
 
 import { mergePullRequest, authenticatedRemoteUrl } from "./git";
 

@@ -29,76 +29,56 @@ const CODING_STANDARDS = `
 // ─── Scout ────────────────────────────────────────────────────────────────────
 
 export function constructScoutPrompt(opts: { workingDir: string }): string {
-  return `# Scout Stage — READ ONLY
+  return `# scout_codebase
 
 ${workingEnv(opts.workingDir)}
 
-## Your Role
+You are a read-only research tool. Given an issue, produce a comprehensive report of all relevant existing code so that a code editor can implement the fix directly from your output alone.
 
-You are the **Scout**. You are the FIRST stage of a multi-stage pipeline. A SEPARATE agent will implement the changes later — NOT you.
+You have read-only filesystem access. Only include code that EXISTS in the repo — never write new code or propose implementations.
 
-**Your ONLY job is to READ the codebase and produce a brief. You MUST NOT:**
-- Write any code
-- Create any files
-- Plan an implementation
-- Describe what you "will" create
-- Output code blocks that are new code to be written
+## Procedure
 
-**You MUST:**
-- Read existing files using \`readFile\`, \`listDirectory\`, \`searchFiles\`
-- Produce a structured brief containing the EXISTING code that's relevant
-- Include every line of code the implement agent will need to see
+1. Read project docs if they exist (AGENTS.md, README.md, ARCHITECTURE.md)
+2. Explore the codebase: \`listDirectory\`, \`searchFiles\`, \`readFile\`
+3. Gather every relevant existing code snippet — full function bodies, types, imports
+4. Note build/test commands (package.json scripts, Makefile targets, etc.)
+5. Return your report via the \`submitScoutReport\` tool call
 
-## Steps
-
-1. **Read project documentation**: Check for AGENTS.md, README.md, ARCHITECTURE.md at the repo root. Read them if they exist.
-2. **Understand the issue**: Read the issue title and description carefully.
-3. **Explore the codebase**: Use \`listDirectory\` to understand structure. Use \`searchFiles\` to find relevant code. Use \`readFile\` to read the actual code.
-4. **Gather all relevant EXISTING code**: For every file that will need to change or that the implementer needs to understand, include the full code as it currently exists.
-5. **Note build/test commands**: Find how to build, lint, and test the project (package.json scripts, Makefile targets, etc.).
-
-## Output Format
-
-Your final message MUST end with a structured brief. This brief contains EXISTING code from the repo, NOT new code:
+## Return format
 
 \`\`\`scout_brief
 ## Repository Overview
 [Project structure, tech stack, key directories]
 
 ## Project Documentation
-[Contents of AGENTS.md, README.md, etc. — summarized if very long]
+[Relevant docs — summarized if very long]
 
 ## Build & Test Commands
-[How to build, lint, test the project]
+[How to build, lint, test]
 
 ## Relevant Code
-[For each relevant file: full path, then the EXISTING code from that file.
-Include function signatures, type definitions, imports, and full function bodies.
-This is code that ALREADY EXISTS in the repo — not code to be written.]
+[For each relevant file: full path, then the EXISTING code WITH LINE NUMBERS.
+Include function signatures, type definitions, imports, full function bodies.
+Every code snippet must include line numbers so the editor knows exact positions.]
 
 ## Analysis
-[What needs to change and where. Which files need modification. Your assessment.]
+[What needs to change and where. Which files need modification.]
 \`\`\`
 
-## Submitting Your Brief
+Call \`submitScoutReport\` with the full report (preferred), or output it in a \`\`\`scout_brief fenced block.
 
-When you are done exploring, you have two ways to deliver the brief:
-
-1. **Call the \`submitScoutReport\` tool** with the full report as the \`report\` parameter (preferred)
-2. Output the report in a \`\`\`scout_brief fenced block in your final message
-
-## Rules
-- You have **read-only** access. You CANNOT modify files — you don't have write tools.
-- Do NOT write implementation code. Do NOT say "I'll create..." or "Let me implement...". You are a SCOUT, not an implementer.
-- If you find yourself writing new code, STOP. Go back to reading existing files.
-- Include EVERY LINE OF EXISTING CODE that the implement agent will need.
-- When running low on context, prioritize: code that needs to change > adjacent code > test patterns > distant code.`;
+## Constraints
+- Read only — you cannot create, modify, or delete files
+- Never write new code or describe what you "would" create
+- Include every line of existing code needed to work in the relevant area
+- Prioritize: code that needs to change > adjacent code > test patterns > distant code`;
 }
 
 export function constructScoutCompactPrompt(): string {
-  return `# Compaction Task
+  return `# compact_brief — Merge Scout Findings
 
-You are compacting a scout brief. You have an existing brief from prior exploration and new findings from the latest exploration cycle.
+You are a post-processing function. You receive an existing research brief and new findings from a follow-up exploration pass. Return a single merged brief.
 
 ## Instructions
 
@@ -109,7 +89,7 @@ Rules:
 - Remove redundancy — if the same code appears in both old and new, keep it once
 - Remove content that turned out to be irrelevant after further exploration
 - Keep the structured format (Repository Overview, Project Documentation, Build & Test Commands, Relevant Code, Analysis)
-- The implement agent must be able to work from this brief alone without re-reading files
+- The output must be self-contained — a downstream tool will use it as its sole codebase context
 - Be thorough but not wasteful — every line should earn its place
 
 Output the merged brief in the same \`\`\`scout_brief format.`;
@@ -164,9 +144,9 @@ ${workingEnv(opts.workingDir)}
 
 ## Your Role
 
-You are the **Implementer**. A scout has already explored the codebase and produced a comprehensive report for you. The report is in the user message below — it contains all the code and context you need.
+You are the **Implementer**. The user message below contains a pre-researched scout report with all relevant existing code (with line numbers), project structure, build commands, and analysis. The report is comprehensive — treat it as your primary reference.
 
-**Do NOT re-read files that are already in the scout report.** Start implementing immediately.
+**Trust the report.** The code snippets in it are copied directly from the repo with line numbers. Use them to orient your edits without re-reading those files. Only read a file yourself if you need content the report doesn't cover (e.g., a file it didn't anticipate being relevant).
 
 ${CODING_STANDARDS}
 
@@ -174,9 +154,8 @@ ${CODING_STANDARDS}
 
 - Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files.
 - Use \`runCommand\` to run builds/tests to verify your changes work.
-- You CAN read files not covered by the report if needed, but the report should cover everything important.
-- Do NOT commit or push — later stages handle that.
-- Do NOT write tests — the Test-Write stage handles that.
+- Do NOT commit or push.
+- Do NOT write tests.
 - When done, use \`gitStatus\` and \`gitDiff\` to verify your changes.
 
 ## Output
@@ -204,9 +183,9 @@ ${opts.reviewFeedback}
 `;
   }
 
-  user += `## Scout Report — Codebase Analysis
+  user += `## Scout Report
 
-The following report was produced by the scout stage. It contains all the relevant code, project structure, and analysis you need.
+Pre-researched codebase report. All code snippets below are verbatim from the repo with line numbers. Trust these as your primary reference — only read files directly if you need content not covered here.
 
 ${opts.scoutBrief}`;
 
@@ -237,17 +216,24 @@ ${CODING_STANDARDS}
 ## Instructions
 
 1. Review the git diff and implement output in the user message — these show exactly what changed
-2. Read the changed files if you need to see surrounding code for test setup
-3. Follow the project's existing test patterns (test framework, file naming, directory structure)
-4. Look at existing test files for patterns: imports, test runner, assertion style, mocking approach
-5. Write test files that cover the key behaviors introduced or changed
-6. Run the tests using \`runCommand\` and fix any failures
-7. Do NOT modify implementation files — only create/modify test files
-8. Do NOT commit or push
+2. Determine whether adding tests is applicable. If the story itself is about adding, fixing, or modifying tests, or if the changes are purely non-functional (e.g. docs, config, CI), there may be nothing for you to do — exit early with status \`skipped\` (see below).
+3. Read the changed files if you need to see surrounding code for test setup
+4. Follow the project's existing test patterns (test framework, file naming, directory structure)
+5. Look at existing test files for patterns: imports, test runner, assertion style, mocking approach
+6. Write test files that cover the key behaviors introduced or changed
+7. Run the tests using \`runCommand\` and fix any failures
+8. Do NOT modify implementation files — only create/modify test files
+9. Do NOT commit or push
 
 ## Output
 
-Report what tests you wrote and whether they pass:
+If writing additional tests is not applicable (e.g. the story was itself a test fix, or changes are non-functional), report early:
+\`\`\`result
+status: skipped
+reason: [why additional tests are not needed]
+\`\`\`
+
+Otherwise, report what tests you wrote and whether they pass:
 \`\`\`result
 status: done
 test_files: [list of test files created or modified]

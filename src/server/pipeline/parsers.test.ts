@@ -1,4 +1,4 @@
-import { extractScoutBrief, parseVerdict } from "./pipeline";
+import { extractScoutBrief, parseVerdict } from "./parsers";
 
 // ─── extractScoutBrief ──────────────────────────────────────────────────────
 

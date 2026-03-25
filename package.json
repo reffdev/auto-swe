@@ -1,7 +1,7 @@
 {
-  "name": "open-swe",
+  "name": "auto-swe",
   "version": "0.0.1",
-  "description": "Open SWE",
+  "description": "Auto SWE",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

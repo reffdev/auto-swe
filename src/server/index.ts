@@ -1,5 +1,5 @@
 /**
- * Open-SWE server entry point.
+ * Auto-SWE server entry point.
  *
  * Express app serving the API on port 3001.
  * Initializes the database, runs crash recovery, and mounts routes.
@@ -50,7 +50,7 @@ if (existsSync(clientDir)) {
 
 // 7. Start server
 const server = app.listen(PORT, () => {
-  console.log(`open-swe server listening on http://localhost:${PORT}`);
+  console.log(`auto-swe server listening on http://localhost:${PORT}`);
 });
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {

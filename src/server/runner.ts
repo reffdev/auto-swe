@@ -209,7 +209,7 @@ export async function executeIssue(
     console.log(`Runner: agent finished in ${stepCount} steps`);
 
     // 6. Git operations
-    const commitHash = await commitAll(worktreePath, `[open-swe] ${issue.title}`);
+    const commitHash = await commitAll(worktreePath, `[auto-swe] ${issue.title}`);
     if (!commitHash) {
       throw new Error("Agent completed but made no file changes");
     }
@@ -304,7 +304,6 @@ async function runAgentWithTimeout(
       prompt: userPrompt,
       tools,
       maxSteps: 60,
-      temperature: 0.2,
       onStepFinish: onStep,
     });
 
