@@ -125,15 +125,48 @@ export function constructImplementPrompts(opts: {
   issueDescription: string;
   reviewFeedback?: string;
 }): { system: string; user: string } {
-  const system = `# Implement Stage
+  const isRetry = !!opts.reviewFeedback;
+
+  const system = isRetry
+    ? `# Implement Stage — FIX REQUESTED
 
 ${workingEnv(opts.workingDir)}
 
 ## Your Role
 
-You are the **Implementer**. A scout has already explored the codebase and produced a comprehensive brief for you. The brief is in the user message below — it contains all the code and context you need.
+You are the **Implementer** fixing a previous attempt. Your code changes from the last attempt are ALREADY in the worktree — you are NOT starting from scratch.
 
-**Do NOT re-read files that are already in the scout brief.** Start implementing immediately.
+**The reviewer rejected your previous implementation and provided specific feedback. Your job is to fix ONLY the issues they identified.**
+
+${CODING_STANDARDS}
+
+## Instructions
+
+1. First, run \`gitStatus\` and \`gitDiff\` to see what changes already exist from your previous attempt
+2. Read the review feedback carefully
+3. Fix ONLY the specific issues raised — do NOT rewrite everything
+4. Use \`replaceInFile\` to make targeted fixes to your existing changes
+5. Run builds/tests to verify the fixes work
+6. Do NOT commit or push — later stages handle that
+7. Do NOT write tests — the Test-Write stage handles that
+
+## Output
+
+When done, report what you fixed:
+\`\`\`result
+status: done
+files_changed: [list of files you modified]
+summary: [what was fixed in response to review feedback]
+\`\`\``
+    : `# Implement Stage
+
+${workingEnv(opts.workingDir)}
+
+## Your Role
+
+You are the **Implementer**. A scout has already explored the codebase and produced a comprehensive report for you. The report is in the user message below — it contains all the code and context you need.
+
+**Do NOT re-read files that are already in the scout report.** Start implementing immediately.
 
 ${CODING_STANDARDS}
 
@@ -141,7 +174,7 @@ ${CODING_STANDARDS}
 
 - Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files.
 - Use \`runCommand\` to run builds/tests to verify your changes work.
-- You CAN read files not covered by the brief if needed, but the brief should cover everything important.
+- You CAN read files not covered by the report if needed, but the report should cover everything important.
 - Do NOT commit or push — later stages handle that.
 - Do NOT write tests — the Test-Write stage handles that.
 - When done, use \`gitStatus\` and \`gitDiff\` to verify your changes.
@@ -157,21 +190,23 @@ summary: [brief description of what was changed and why]
 
   let user = `## Issue: ${opts.issueTitle}\n\n${opts.issueDescription || "(No additional details)"}\n\n`;
 
-  if (opts.reviewFeedback) {
-    user += `## IMPORTANT: Review Feedback (Retry)
+  if (isRetry) {
+    user += `## REVIEW FEEDBACK — FIX THESE ISSUES
 
-A previous implementation attempt was **rejected** by the reviewer. The worktree still contains your previous changes. Fix the specific issues identified below:
+Your previous implementation was **rejected**. The worktree ALREADY contains your previous code changes. Do NOT start from scratch. Read the feedback below and make targeted fixes.
+
+### Reviewer's Feedback:
 
 ${opts.reviewFeedback}
 
-Address ONLY the issues raised. Do not start from scratch unless the feedback says to.
+---
 
 `;
   }
 
-  user += `## Scout Brief — Codebase Analysis
+  user += `## Scout Report — Codebase Analysis
 
-The following brief was produced by the scout stage. It contains all the relevant code, project structure, and analysis you need.
+The following report was produced by the scout stage. It contains all the relevant code, project structure, and analysis you need.
 
 ${opts.scoutBrief}`;
 
@@ -186,6 +221,8 @@ export function constructTestWritePrompts(opts: {
   implementOutput: string;
   issueTitle: string;
   issueDescription: string;
+  gitContext?: string;
+  projectContext?: string;
 }): { system: string; user: string } {
   const system = `# Test-Write Stage
 
@@ -199,13 +236,14 @@ ${CODING_STANDARDS}
 
 ## Instructions
 
-1. Review the implement output and scout brief in the user message to understand what changed
-2. Read the changed files to see the actual code
+1. Review the git diff and implement output in the user message — these show exactly what changed
+2. Read the changed files if you need to see surrounding code for test setup
 3. Follow the project's existing test patterns (test framework, file naming, directory structure)
-4. Write test files that cover the key behaviors introduced or changed
-5. Run the tests using \`runCommand\` and fix any failures
-6. Do NOT modify implementation files — only create/modify test files
-7. Do NOT commit or push
+4. Look at existing test files for patterns: imports, test runner, assertion style, mocking approach
+5. Write test files that cover the key behaviors introduced or changed
+6. Run the tests using \`runCommand\` and fix any failures
+7. Do NOT modify implementation files — only create/modify test files
+8. Do NOT commit or push
 
 ## Output
 
@@ -217,11 +255,21 @@ run_command: [command to run just these tests]
 summary: [what's tested and the results]
 \`\`\``;
 
-  const user = `## Issue: ${opts.issueTitle}
+  let user = `## Issue: ${opts.issueTitle}
 
 ${opts.issueDescription || "(No additional details)"}
 
-## Scout Brief
+`;
+
+  if (opts.gitContext) {
+    user += `${opts.gitContext}\n\n`;
+  }
+
+  if (opts.projectContext) {
+    user += `${opts.projectContext}\n\n`;
+  }
+
+  user += `## Scout Report
 
 ${opts.scoutBrief}
 
@@ -234,12 +282,6 @@ ${opts.implementOutput}`;
 
 // ─── Review ───────────────────────────────────────────────────────────────────
 
-/** Truncate text to a rough token limit (1 token ≈ 4 chars), keeping the end for relevance */
-function truncateForContext(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars) + `\n\n[... truncated ${text.length - maxChars} chars. Use readFile to see full content if needed.]`;
-}
-
 export function constructReviewPrompts(opts: {
   workingDir: string;
   scoutBrief: string;
@@ -247,6 +289,8 @@ export function constructReviewPrompts(opts: {
   testWriteOutput: string;
   issueTitle: string;
   issueDescription: string;
+  gitContext?: string;
+  projectContext?: string;
 }): { system: string; user: string } {
   const system = `# Review Stage
 
@@ -256,16 +300,26 @@ ${workingEnv(opts.workingDir)}
 
 You are the **Reviewer**. Verify the implementation is correct and the tests pass. You have read-only access plus \`runCommand\` — use them to read files and run tests directly rather than relying solely on the summaries in the user message.
 
+## FORBIDDEN Actions
+
+**NEVER do any of the following:**
+- Do NOT start, stop, or restart any servers or services (npm start, npm run dev, node server, etc.)
+- Do NOT kill or signal any processes (kill, pkill, taskkill, etc.)
+- Do NOT run long-lived commands that listen on ports or block indefinitely
+- Do NOT try to open browsers or make HTTP requests to localhost
+- You are reviewing CODE, not running the application
+
 ## Steps
 
 1. Read the changed files to understand what was implemented
-2. Run the tests to confirm they pass: check the test-write output for the run command
-3. Check for obvious issues:
+2. Run the UNIT TESTS to confirm they pass: check the test-write output for the specific test run command (e.g., \`npx jest path/to/test.ts\`, NOT \`npm test\` or \`npm start\`)
+3. Optionally run the linter or build command (\`npm run build\`, \`npm run lint\`) to check for compilation errors
+4. Check for obvious issues:
    - Does the code actually address the issue described?
    - Are there broken imports, missing dependencies, or syntax errors?
    - Is there debug code, console.logs, or commented-out code that shouldn't be there?
    - Are the tests actually testing the right things?
-4. Produce your verdict
+5. Produce your verdict
 
 ## Verdict
 
@@ -286,15 +340,25 @@ Be precise — the implement agent will use this to make corrections.
 Include file names, function names, and what's wrong.]
 \`\`\``;
 
-  const brief = truncateForContext(opts.scoutBrief, 15000);
-  const impl = truncateForContext(opts.implementOutput, 15000);
-  const test = truncateForContext(opts.testWriteOutput, 15000);
+  const brief = opts.scoutBrief;
+  const impl = opts.implementOutput;
+  const test = opts.testWriteOutput;
 
-  const user = `## Issue: ${opts.issueTitle}
+  let user = `## Issue: ${opts.issueTitle}
 
 ${opts.issueDescription || "(No additional details)"}
 
-## Scout Brief
+`;
+
+  if (opts.gitContext) {
+    user += `${opts.gitContext}\n\n`;
+  }
+
+  if (opts.projectContext) {
+    user += `${opts.projectContext}\n\n`;
+  }
+
+  user += `## Scout Report
 
 ${brief}
 

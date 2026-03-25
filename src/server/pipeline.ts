@@ -9,6 +9,7 @@
  */
 
 import { Annotation, StateGraph, START, END } from "@langchain/langgraph";
+import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { streamText, type StepResult, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LangGraphRunnableConfig } from "@langchain/langgraph";
@@ -41,7 +42,11 @@ import {
 } from "./git";
 import type { Db, Machine, Issue, Project, Run } from "./db";
 import { readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
+import { spawnSync as nodeSpawnSync } from "child_process";
+
+// Re-alias to avoid conflict with git.ts's spawn
+const spawnSync = nodeSpawnSync;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -113,9 +118,6 @@ const AUTO_READ_FILES = [
   "go.mod",
 ];
 
-/** Max chars per auto-read file (prevent huge READMEs from flooding context) */
-const AUTO_READ_MAX_CHARS = 8000;
-
 /**
  * Read key project files from the worktree and build a context section.
  * Returns the context string and the total chars injected.
@@ -129,11 +131,8 @@ function gatherProjectContext(worktreePath: string): { context: string; fileCoun
   for (const filename of AUTO_READ_FILES) {
     try {
       const content = readFileSync(join(worktreePath, filename), "utf-8").replace(/\r\n/g, "\n");
-      const truncated = content.length > AUTO_READ_MAX_CHARS
-        ? content.slice(0, AUTO_READ_MAX_CHARS) + `\n[... truncated at ${AUTO_READ_MAX_CHARS} chars]`
-        : content;
-      sections.push(`### ${filename}\n\`\`\`\n${truncated}\n\`\`\``);
-      totalChars += truncated.length;
+      sections.push(`### ${filename}\n\`\`\`\n${content}\n\`\`\``);
+      totalChars += content.length;
       fileCount++;
     } catch {
       // File doesn't exist — skip
@@ -260,6 +259,15 @@ export function parseVerdict(output: string): {
 
 // ─── Shared agent executor ────────────────────────────────────────────────────
 
+interface StepData {
+  step: number;
+  text?: string;
+  toolCalls?: Array<{ tool: string; args: string }>;
+  toolResults?: Array<{ tool: string; result: string }>;
+  tokens: { prompt: number; completion: number };
+  durationMs: number;
+}
+
 interface RunStageOpts {
   db: Db;
   runId: string;
@@ -273,6 +281,8 @@ interface RunStageOpts {
   maxSteps: number;
   timeoutMs: number;
   abortSignal?: AbortSignal;
+  /** Pre-populated steps shown before the LLM starts (e.g., info about injected context) */
+  initialSteps?: StepData[];
 }
 
 /**
@@ -280,25 +290,19 @@ interface RunStageOpts {
  * output, log LLM requests. Returns the final text output.
  */
 async function runStage(opts: RunStageOpts): Promise<string> {
-  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, timeoutMs, abortSignal } = opts;
+  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, timeoutMs, abortSignal, initialSteps } = opts;
 
   if (abortSignal?.aborted) throw new Error("Pipeline cancelled");
 
   db.updateRun(runId, { status: "running", started_at: new Date().toISOString() });
 
-  let stepCount = 0;
+  let stepCount = initialSteps?.length ?? 0;
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let stepStartTime = Date.now();
 
-  const liveSteps: Array<{
-    step: number;
-    text?: string;
-    toolCalls?: Array<{ tool: string; args: string }>;
-    toolResults?: Array<{ tool: string; result: string }>;
-    tokens: { prompt: number; completion: number };
-    durationMs: number;
-  }> = [];
+  // Pre-populate with initial info steps (e.g., injected context summary)
+  const liveSteps: StepData[] = [...(initialSteps ?? [])];
 
   const onStep = (step: StepResult<ToolSet>) => {
     stepCount++;
@@ -438,16 +442,12 @@ async function scoutNode(
     const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
     ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
-    // Write info step so frontend shows what was pre-loaded
-    if (cycle === 0) {
-      const infoStep = [{
-        step: 0,
-        text: `**Scout stage starting**\n\n- Auto-loaded ${projectCtx.fileCount} project files (${projectCtx.totalChars.toLocaleString()} chars / ~${Math.round(projectCtx.totalChars / 4).toLocaleString()} tokens)\n- Files: ${AUTO_READ_FILES.filter(f => projectCtx.context.includes(f)).join(", ")}`,
-        tokens: { prompt: 0, completion: 0 },
-        durationMs: 0,
-      }];
-      try { ctx.db.updateRun(run.id, { output: JSON.stringify(infoStep) }); } catch { /* non-critical */ }
-    }
+    const scoutInfoSteps: StepData[] = cycle === 0 ? [{
+      step: 0,
+      text: `**Scout stage starting**\n\n- Auto-loaded ${projectCtx.fileCount} project files (${projectCtx.totalChars.toLocaleString()} chars / ~${Math.round(projectCtx.totalChars / 4).toLocaleString()} tokens)\n- Files: ${AUTO_READ_FILES.filter(f => projectCtx.context.includes(f)).join(", ")}`,
+      tokens: { prompt: 0, completion: 0 },
+      durationMs: 0,
+    }] : [];
 
     const contextSection = compactedSoFar
       ? `\n\n## Prior Findings (from previous exploration cycles)\n\n${compactedSoFar}\n\nContinue exploring areas not yet covered. Do not re-read files already in the brief.`
@@ -464,6 +464,7 @@ async function scoutNode(
       maxSteps: SCOUT_STEP_LIMIT,
       timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
       abortSignal,
+      initialSteps: scoutInfoSteps,
     });
 
     console.log(`Pipeline: scout raw output: ${scoutOutput.length} chars`);
@@ -519,18 +520,16 @@ async function implementNode(
   const retryInfo = state.retryCount > 0 ? ` | Retry ${state.retryCount}/3 with review feedback` : "";
   console.log(`Pipeline: implement stage — scout report: ${reportLen} chars (~${reportTokensEst} tokens)${retryInfo}`);
 
-  // Write an info step to the run so the frontend shows it immediately
-  const infoStep = [{
+  if (reportLen < 500) {
+    console.warn("Pipeline: WARNING — scout report is very short (<500 chars), implement will likely re-explore");
+  }
+
+  const infoSteps: StepData[] = [{
     step: 0,
     text: `**Implement stage starting**\n\n- Scout report injected: ${reportLen.toLocaleString()} chars (~${reportTokensEst.toLocaleString()} tokens)\n- System prompt + report size: ~${Math.round((reportLen + 2000) / 4).toLocaleString()} tokens${retryInfo ? `\n- ${retryInfo.trim().replace("| ", "")}` : ""}`,
     tokens: { prompt: 0, completion: 0 },
     durationMs: 0,
   }];
-  try { ctx.db.updateRun(run.id, { output: JSON.stringify(infoStep) }); } catch { /* non-critical */ }
-
-  if (reportLen < 500) {
-    console.warn("Pipeline: WARNING — scout report is very short (<500 chars), implement will likely re-explore");
-  }
 
   const implPrompts = constructImplementPrompts({
     workingDir: state.worktreePath,
@@ -549,6 +548,7 @@ async function implementNode(
     maxSteps: IMPLEMENT_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
+    initialSteps: infoSteps,
   });
 
   return { implementOutput: output };
@@ -567,12 +567,31 @@ async function testWriteNode(
 
   console.log("Pipeline: test-write stage");
 
+  // Capture git context so test writer can see what files changed without needing git tools
+  let gitContext = "";
+  try {
+    const statusResult = spawnSync("git", ["status", "--short"], { cwd: state.worktreePath, encoding: "utf-8", shell: true });
+    const diffStatResult = spawnSync("git", ["diff", "--stat"], { cwd: state.worktreePath, encoding: "utf-8", shell: true });
+    const diffResult = spawnSync("git", ["diff"], { cwd: state.worktreePath, encoding: "utf-8", shell: true });
+    const status = statusResult.stdout?.trim() || "(no changes)";
+    const diffStat = diffStatResult.stdout?.trim() || "";
+    const diff = (diffResult.stdout || "").trim();
+    // Truncate full diff if huge
+    const fullDiff = diff;
+    gitContext = `## Git Changes (from implement stage)\n\n### Modified files:\n\`\`\`\n${status}\n\`\`\`\n\n### Diff summary:\n\`\`\`\n${diffStat}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${fullDiff}\n\`\`\``;
+  } catch { /* non-critical */ }
+
+  // Gather project context for test patterns
+  const projectCtx = gatherProjectContext(state.worktreePath);
+
   const testPrompts = constructTestWritePrompts({
     workingDir: state.worktreePath,
     scoutBrief: state.scoutBrief,
     implementOutput: state.implementOutput,
     issueTitle: state.issueTitle,
     issueDescription: state.issueDescription,
+    gitContext,
+    projectContext: projectCtx.context,
   });
 
   const output = await runStage({
@@ -602,6 +621,21 @@ async function reviewNode(
 
   console.log(`Pipeline: review stage`);
 
+  // Capture git context for the reviewer
+  let gitContext = "";
+  try {
+    const statusResult = spawnSync("git", ["status", "--short"], { cwd: state.worktreePath, encoding: "utf-8", shell: true });
+    const diffStatResult = spawnSync("git", ["diff", "--stat"], { cwd: state.worktreePath, encoding: "utf-8", shell: true });
+    const diffResult = spawnSync("git", ["diff"], { cwd: state.worktreePath, encoding: "utf-8", shell: true });
+    const status = statusResult.stdout?.trim() || "(no changes)";
+    const diffStat = diffStatResult.stdout?.trim() || "";
+    const diff = (diffResult.stdout || "").trim();
+    const fullDiff = diff;
+    gitContext = `## Git Changes\n\n### Modified files:\n\`\`\`\n${status}\n\`\`\`\n\n### Diff summary:\n\`\`\`\n${diffStat}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${fullDiff}\n\`\`\``;
+  } catch { /* non-critical */ }
+
+  const projectCtxReview = gatherProjectContext(state.worktreePath);
+
   const reviewPrompts = constructReviewPrompts({
     workingDir: state.worktreePath,
     scoutBrief: state.scoutBrief,
@@ -609,6 +643,8 @@ async function reviewNode(
     testWriteOutput: state.testWriteOutput,
     issueTitle: state.issueTitle,
     issueDescription: state.issueDescription,
+    gitContext,
+    projectContext: projectCtxReview.context,
   });
 
   const output = await runStage({
@@ -694,7 +730,11 @@ async function routeAfterReview(state: PipelineStateType): Promise<string> {
   return "implement";
 }
 
-// ─── Graph Definition ─────────────────────────────────────────────────────────
+// ─── Graph Definition (with persistent SQLite checkpointing) ──────────────────
+
+// Uses the same DB file as the main app — SqliteSaver creates its own tables
+const dbPath = resolve(process.env.DB_PATH ?? "./open-swe.db");
+const checkpointer = SqliteSaver.fromConnString(dbPath);
 
 const graph = new StateGraph(PipelineState)
   .addNode("scout", scoutNode)
@@ -708,7 +748,7 @@ const graph = new StateGraph(PipelineState)
   .addEdge("test_write", "review")
   .addConditionalEdges("review", routeAfterReview)
   .addEdge("git_ops", END)
-  .compile();
+  .compile({ checkpointer });
 
 // ─── Active pipeline tracking (for cancellation) ─────────────────────────────
 
@@ -766,7 +806,7 @@ export async function executePipeline(
     const provider = createOpenAICompatible({ name: `machine-${machine.id}`, baseURL: machine.base_url });
     const model = provider(modelId);
 
-    // Run the graph
+    // Run the graph with checkpointing (thread_id = issue ID for resume on retry)
     const finalState = await graph.invoke(
       {
         issueId: issue.id,
@@ -779,7 +819,10 @@ export async function executePipeline(
       },
       {
         recursionLimit: 30,
-        configurable: { ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig,
+        configurable: {
+          thread_id: `pipeline-${issue.id}`,
+          ...({ ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig),
+        },
       }
     );
 
@@ -803,6 +846,94 @@ export async function executePipeline(
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`Pipeline: "${issue.title}" failed:`, errorMsg);
     // Don't overwrite status if gitOps already succeeded (awaiting_review/completed)
+    const currentIssue = ctx.db.getIssue(issue.id);
+    if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+    }
+  } finally {
+    activePipelines.delete(issue.id);
+    await removeWorktree(project.workdir, worktreePath).catch(() => {});
+    ctx.db.updateMachine(machine.id, { status: "idle", current_run_id: null });
+  }
+}
+
+/**
+ * Retry from the last checkpoint. LangGraph's MemorySaver stores state after
+ * each node. On retry, we re-invoke with the same thread_id — the graph
+ * resumes from where it left off (the failed node re-executes).
+ */
+export async function executeStageRetry(
+  ctx: PipelineContext,
+  machine: Machine,
+  issue: Issue,
+  project: Project,
+): Promise<void> {
+  const branch = issue.git_branch || makeBranchName(issue.id, issue.title);
+  const worktreePath = issue.git_worktree || makeWorktreePath(project.workdir, issue.id);
+  const abortController = new AbortController();
+  activePipelines.set(issue.id, abortController);
+
+  ctx.db.updateMachine(machine.id, { status: "working", current_run_id: issue.id });
+  ctx.db.updateIssue(issue.id, { status: "running" });
+
+  try {
+    await ensureWorkdir(project);
+    const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
+    if (!worktreeResult.ok) {
+      throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
+    }
+
+    const modelId = project.model_id ?? machine.model_id;
+    const provider = createOpenAICompatible({ name: `machine-${machine.id}`, baseURL: machine.base_url });
+    const model = provider(modelId);
+
+    const threadId = `pipeline-${issue.id}`;
+
+    // Check if we have a checkpoint to resume from
+    const existingState = await graph.getState({ configurable: { thread_id: threadId } });
+    if (existingState?.values) {
+      console.log(`Pipeline: resuming from checkpoint for "${issue.title}" (thread: ${threadId})`);
+    } else {
+      console.log(`Pipeline: no checkpoint found, starting fresh for "${issue.title}"`);
+    }
+
+    // Re-invoke with same thread_id — LangGraph resumes from the last successful checkpoint
+    // Pass null as input to resume (don't overwrite checkpointed state)
+    const finalState = await graph.invoke(
+      existingState?.values ? null : {
+        issueId: issue.id,
+        issueTitle: issue.title,
+        issueDescription: issue.description,
+        worktreePath,
+        modelId,
+        machineBaseUrl: machine.base_url,
+        machineId: machine.id,
+      },
+      {
+        recursionLimit: 30,
+        configurable: {
+          thread_id: threadId,
+          ...({ ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig),
+        },
+      }
+    );
+
+    console.log(`Pipeline: stage retry complete — verdict=${finalState.reviewVerdict}, error=${finalState.error || "(none)"}`);
+
+    if (finalState.error) {
+      throw new Error(finalState.error);
+    }
+
+    if (finalState.reviewVerdict !== "accept" && finalState.reviewVerdict !== "") {
+      ctx.db.updateIssue(issue.id, {
+        status: "failed",
+        retry_count: finalState.retryCount,
+      });
+    }
+
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`Pipeline: stage retry "${issue.title}" failed:`, errorMsg);
     const currentIssue = ctx.db.getIssue(issue.id);
     if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
       ctx.db.updateIssue(issue.id, { status: "failed" });

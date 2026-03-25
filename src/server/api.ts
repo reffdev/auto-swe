@@ -9,7 +9,8 @@ import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
-import { executePipeline, cancelPipeline, type PipelineContext } from "./pipeline";
+import { executePipeline, executeStageRetry, cancelPipeline, type PipelineContext } from "./pipeline";
+
 import { mergePullRequest, authenticatedRemoteUrl } from "./git";
 
 /** Base directory for auto-created project clones */
@@ -322,6 +323,32 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     // If cancelled, the pipeline's catch block will set status to "failed"
     res.json({ cancelled: true, issue: db.getIssue(issue.id) });
+  });
+
+  router.post("/issues/:id/retry-stage", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    if (issue.status !== "failed") {
+      res.status(409).json({ error: `cannot retry stage for issue in status '${issue.status}'` });
+      return;
+    }
+    const machine = db.getIdleMachine();
+    if (!machine) {
+      res.status(409).json({ error: "no idle machine available" });
+      return;
+    }
+    const project = db.getProject(issue.project_id)!;
+    const freshIssue = db.getIssue(issue.id)!;
+    res.status(202).json({ issue: freshIssue });
+
+    if (options?.pipelineCtx) {
+      executeStageRetry(options.pipelineCtx, machine, freshIssue, project).catch((err) => {
+        console.error(`Pipeline error (retry-stage):`, err);
+      });
+    }
   });
 
   router.post("/issues/:id/approve-pr", async (req, res) => {

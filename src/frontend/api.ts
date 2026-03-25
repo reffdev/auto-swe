@@ -166,6 +166,10 @@ export function cancelIssue(id: string): Promise<{ cancelled: boolean; issue: Is
   return json(`/api/issues/${id}/cancel`, { method: "POST" });
 }
 
+export function retryStage(id: string): Promise<{ issue: Issue }> {
+  return json(`/api/issues/${id}/retry-stage`, { method: "POST" });
+}
+
 // ─── Issue runs (all stages) ──────────────────────────────────────────────────
 
 export function getIssueRuns(issueId: string): Promise<Run[]> {

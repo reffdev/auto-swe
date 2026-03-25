@@ -312,10 +312,23 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           </Button>
         )}
         {issue.status === 'failed' && (
-          <Button size="sm" onClick={() => doAction('retry', () => api.retryIssue(issue.id))} disabled={!!actionLoading}>
-            <RotateCcw className="size-3.5 mr-1" />
-            {actionLoading === 'retry' ? 'Retrying...' : 'Retry'}
-          </Button>
+          <>
+            <Button size="sm" onClick={() => doAction('retry', () => api.retryIssue(issue.id))} disabled={!!actionLoading}>
+              <RotateCcw className="size-3.5 mr-1" />
+              {actionLoading === 'retry' ? 'Retrying...' : 'Retry All'}
+            </Button>
+            {allRuns.some(r => r.stage) && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => doAction('retry-stage', () => api.retryStage(issue.id))}
+                disabled={!!actionLoading}
+              >
+                <RotateCcw className="size-3.5 mr-1" />
+                {actionLoading === 'retry-stage' ? 'Resuming...' : 'Resume from Checkpoint'}
+              </Button>
+            )}
+          </>
         )}
         {issue.git_pr_url && (
           <a href={issue.git_pr_url} target="_blank" rel="noopener noreferrer"
