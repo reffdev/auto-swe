@@ -95,13 +95,48 @@ interface PipelineConfig {
   abortSignal: AbortSignal;
 }
 
+// ─── Scout brief submission tool ──────────────────────────────────────────────
+
+import { z } from "zod";
+import { tool as aiTool } from "ai";
+
+/**
+ * A tool the scout can call to submit its brief. This gives models that prefer
+ * tool-call output a clean way to deliver the brief instead of relying on
+ * fenced code blocks in free text.
+ *
+ * The tool stores the brief in a closure variable that extractScoutBrief reads.
+ */
+let _lastSubmittedBrief: string | null = null;
+
+function createSubmitScoutReportTool() {
+  _lastSubmittedBrief = null;
+  return aiTool({
+    description: "Submit your completed scout report. Call this when you have finished exploring the codebase and are ready to hand off to the implement stage. The report must be comprehensive — include ALL relevant code, not a summary.",
+    parameters: z.object({
+      report: z.string().describe("The complete, detailed scout report containing repository overview, ALL relevant existing code (full function bodies, types, imports), build commands, and analysis. This is NOT a summary — include every line the implement agent needs."),
+    }),
+    execute: async ({ report }) => {
+      _lastSubmittedBrief = report;
+      return "Scout report submitted successfully. Your work is done — the implement stage will take over.";
+    },
+  });
+}
+
 // ─── Parsing helpers ──────────────────────────────────────────────────────────
 
-/** Extract content from ```scout_brief ... ``` fenced block */
+/** Extract scout brief — checks tool submission first, then fenced block, then full output */
 export function extractScoutBrief(output: string): string {
+  // 1. Check if the scout used the submitScoutReport tool
+  if (_lastSubmittedBrief) {
+    const brief = _lastSubmittedBrief;
+    _lastSubmittedBrief = null;
+    return brief.trim();
+  }
+  // 2. Check for fenced block
   const match = output.match(/```scout_brief\s*\n([\s\S]*?)```/);
   if (match) return match[1].trim();
-  // Fallback: if no fenced block, use the full output
+  // 3. Fallback: use the full output
   return output.trim();
 }
 
@@ -332,7 +367,7 @@ async function scoutNode(
       model, modelId: state.modelId,
       systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
       userPrompt: userIssue + contextSection,
-      tools: { ...makeReadOnlyTools(state.worktreePath, budget), fetchUrl: fetchUrlTool } as ToolSet,
+      tools: { ...makeReadOnlyTools(state.worktreePath, budget), submitScoutReport: createSubmitScoutReportTool() } as ToolSet,
       maxSteps: SCOUT_STEP_LIMIT,
       timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
       abortSignal,
