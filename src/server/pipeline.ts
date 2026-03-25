@@ -803,6 +803,7 @@ const graph = new StateGraph(PipelineState)
 // ─── Active pipeline tracking (for cancellation) ─────────────────────────────
 
 const activePipelines = new Map<string, AbortController>(); // issueId → abort controller
+const lastThreadIds = new Map<string, string>(); // issueId → last thread_id (for stage retry resume)
 
 export function cancelPipeline(issueId: string): boolean {
   const controller = activePipelines.get(issueId);
@@ -857,7 +858,18 @@ export async function executePipeline(
     const provider = createOpenAICompatible({ name: `machine-${machine.id}`, baseURL: machine.base_url });
     const model = provider(modelId);
 
-    // Run the graph with checkpointing (thread_id = issue ID for resume on retry)
+    // Fresh run: unique thread_id so we don't resume stale checkpoints
+    const threadId = `pipeline-${issue.id}-${Date.now()}`;
+
+    // Delete old checkpoint data for this issue
+    const oldThreadId = lastThreadIds.get(issue.id);
+    if (oldThreadId) {
+      try { await checkpointer.deleteThread(oldThreadId); } catch { /* best-effort */ }
+    }
+
+    lastThreadIds.set(issue.id, threadId);
+    console.log(`Pipeline: thread_id = ${threadId}`);
+
     const finalState = await graph.invoke(
       {
         issueId: issue.id,
@@ -871,7 +883,7 @@ export async function executePipeline(
       {
         recursionLimit: 30,
         configurable: {
-          thread_id: `pipeline-${issue.id}`,
+          thread_id: threadId,
           ...({ ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig),
         },
       }
@@ -939,28 +951,23 @@ export async function executeStageRetry(
     const provider = createOpenAICompatible({ name: `machine-${machine.id}`, baseURL: machine.base_url });
     const model = provider(modelId);
 
-    const threadId = `pipeline-${issue.id}`;
+    // Use the thread_id from the last executePipeline run to resume from checkpoint
+    const threadId = lastThreadIds.get(issue.id);
+    if (!threadId) {
+      throw new Error("No checkpoint found — use 'Retry All' to start a fresh pipeline");
+    }
 
     // Check if we have a checkpoint to resume from
     const existingState = await graph.getState({ configurable: { thread_id: threadId } });
     if (existingState?.values) {
       console.log(`Pipeline: resuming from checkpoint for "${issue.title}" (thread: ${threadId})`);
     } else {
-      console.log(`Pipeline: no checkpoint found, starting fresh for "${issue.title}"`);
+      throw new Error("Checkpoint state is empty — use 'Retry All' to start a fresh pipeline");
     }
 
     // Re-invoke with same thread_id — LangGraph resumes from the last successful checkpoint
-    // Pass null as input to resume (don't overwrite checkpointed state)
     const finalState = await graph.invoke(
-      existingState?.values ? null : {
-        issueId: issue.id,
-        issueTitle: issue.title,
-        issueDescription: issue.description,
-        worktreePath,
-        modelId,
-        machineBaseUrl: machine.base_url,
-        machineId: machine.id,
-      },
+      null, // null = resume from checkpoint, don't overwrite state
       {
         recursionLimit: 30,
         configurable: {
