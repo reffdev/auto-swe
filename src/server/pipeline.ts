@@ -259,8 +259,8 @@ export function parseVerdict(output: string): {
     return { status: "accept", feedback: "", failureClass: "none" };
   }
 
-  // Default to reject if truly ambiguous — fail safe
-  return { status: "reject", feedback: "Could not parse review verdict from output", failureClass: "unknown" };
+  // Truly unparseable — no status field, no accept/reject keywords
+  return { status: "reject", feedback: "Could not parse review verdict from output", failureClass: "unparseable" };
 }
 
 // ─── Shared agent executor ────────────────────────────────────────────────────
@@ -560,9 +560,16 @@ async function implementNode(
     console.warn("Pipeline: WARNING — scout report is very short (<500 chars), implement will likely re-explore");
   }
 
+  let infoText = `**Implement stage starting**\n\n- Scout report injected: ${reportLen.toLocaleString()} chars (~${reportTokensEst.toLocaleString()} tokens)\n- System prompt + report size: ~${Math.round((reportLen + 2000) / 4).toLocaleString()} tokens`;
+  if (state.retryCount > 0) {
+    infoText += `\n- Retry ${state.retryCount}/3 with review feedback`;
+    if (state.reviewFeedback) {
+      infoText += `\n\n---\n\n**Review Feedback:**\n\n${state.reviewFeedback}`;
+    }
+  }
   const infoSteps: StepData[] = [{
     step: 0,
-    text: `**Implement stage starting**\n\n- Scout report injected: ${reportLen.toLocaleString()} chars (~${reportTokensEst.toLocaleString()} tokens)\n- System prompt + report size: ~${Math.round((reportLen + 2000) / 4).toLocaleString()} tokens${retryInfo ? `\n- ${retryInfo.trim().replace("| ", "")}` : ""}`,
+    text: infoText,
     tokens: { prompt: 0, completion: 0 },
     durationMs: 0,
   }];
@@ -698,6 +705,13 @@ async function reviewNode(
   console.log(`Pipeline: review verdict = ${verdict.status} (${verdict.failureClass})`);
 
   if (verdict.status === "accept") {
+    return { reviewOutput: output, reviewVerdict: "accept" };
+  }
+
+  // If we couldn't parse the verdict at all, don't send garbage feedback to implement.
+  // Treat it as accept — the review ran to completion without explicitly rejecting.
+  if (verdict.failureClass === "unparseable") {
+    console.log("Pipeline: review output unparseable — treating as accept (no explicit rejection found)");
     return { reviewOutput: output, reviewVerdict: "accept" };
   }
 

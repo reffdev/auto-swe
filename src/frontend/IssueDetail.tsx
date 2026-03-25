@@ -69,9 +69,16 @@ function StageStepper({ runs, activeRunId, onSelectRun }: {
   activeRunId: string | null
   onSelectRun: (runId: string) => void
 }) {
-  // Group runs by stage, pick latest per stage
+  // Only show runs from the current pipeline execution.
+  // Current execution starts from the latest scout run — anything before it is a prior attempt.
+  const latestScout = [...runs].reverse().find(r => r.stage === 'scout')
+  const currentRuns = latestScout
+    ? runs.filter(r => r.created_at >= latestScout.created_at)
+    : runs
+
+  // Group by stage, pick latest per stage
   const stageRuns = new Map<string, Run>()
-  for (const r of runs) {
+  for (const r of currentRuns) {
     if (r.stage) stageRuns.set(r.stage, r)
   }
 
@@ -190,6 +197,7 @@ function StepMessage({ step }: { step: StepData }) {
 /** Uses runs from poll data (no extra API call), only fetches output for the active run */
 function useLiveOutput(runs: Run[]) {
   const [activeRunOutput, setActiveRunOutput] = useState<{ steps: StepData[] | null; raw: string | null }>({ steps: null, raw: null })
+  const prevRunId = useRef<string | null>(null)
 
   // Sort by creation time — runs from poll may be in any order
   const sortedRuns = [...runs].sort((a, b) => a.created_at.localeCompare(b.created_at))
@@ -198,6 +206,12 @@ function useLiveOutput(runs: Run[]) {
   const activeRun = sortedRuns.find(r => r.status === 'running' || r.status === 'pending')
     ?? sortedRuns[sortedRuns.length - 1]
     ?? null
+
+  // Clear output immediately when the active run changes (new stage started)
+  if (activeRun?.id !== prevRunId.current) {
+    prevRunId.current = activeRun?.id ?? null
+    setActiveRunOutput({ steps: null, raw: null })
+  }
 
   const fetchOutput = useCallback(() => {
     if (!activeRun) return
@@ -348,18 +362,29 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
         />
       )}
 
-      {/* Run metadata */}
-      {displayRun && (
-        <div className="px-6 py-2 border-b border-border flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
-          {displayRun.stage && <span>Stage: <strong className="text-foreground">{STAGE_LABELS[displayRun.stage] ?? displayRun.stage}</strong></span>}
-          <span>Status: <strong className="text-foreground">{displayRun.status}</strong></span>
-          {displayRun.duration_ms != null && <span>Duration: {formatDuration(displayRun.duration_ms)}</span>}
-          {displayRun.prompt_tokens != null && (
-            <span>Tokens: {(displayRun.prompt_tokens + (displayRun.completion_tokens ?? 0)).toLocaleString()}</span>
-          )}
-          {issue.git_branch && <span>Branch: <code className="text-foreground">{issue.git_branch}</code></span>}
-        </div>
-      )}
+      {/* Run metadata + live stats */}
+      {displayRun && (() => {
+        const liveSteps = steps?.filter(s => s.durationMs > 0) ?? []
+        const liveCompletion = liveSteps.reduce((sum, s) => sum + (s.tokens?.completion ?? 0), 0)
+        const livePrompt = liveSteps.reduce((sum, s) => sum + (s.tokens?.prompt ?? 0), 0)
+        const liveDuration = liveSteps.reduce((sum, s) => sum + s.durationMs, 0)
+        const tokPerSec = liveDuration > 0 ? (liveCompletion / (liveDuration / 1000)).toFixed(1) : null
+        const totalTokens = displayRun.prompt_tokens != null
+          ? (displayRun.prompt_tokens + (displayRun.completion_tokens ?? 0))
+          : (livePrompt + liveCompletion) || null
+
+        return (
+          <div className="px-6 py-2 border-b border-border flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+            {displayRun.stage && <span>Stage: <strong className="text-foreground">{STAGE_LABELS[displayRun.stage] ?? displayRun.stage}</strong></span>}
+            <span>Status: <strong className="text-foreground">{displayRun.status}</strong></span>
+            {displayRun.duration_ms != null && <span>Duration: {formatDuration(displayRun.duration_ms)}</span>}
+            {totalTokens != null && <span>Tokens: {totalTokens.toLocaleString()}</span>}
+            {tokPerSec && Number(tokPerSec) > 0 && <span>Speed: <strong className="text-foreground">{tokPerSec} tok/s</strong></span>}
+            {liveSteps.length > 0 && <span>Steps: {liveSteps.length}</span>}
+            {issue.git_branch && <span>Branch: <code className="text-foreground">{issue.git_branch}</code></span>}
+          </div>
+        )
+      })()}
 
       {/* Output */}
       {allRuns.length === 0 && (
