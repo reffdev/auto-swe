@@ -8,6 +8,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import * as api from './api'
+import { navigateToIssue } from './router'
 import type { Issue, Run } from './api'
 
 // ─── Status badge ────────────────────────────────────────────────────────────
@@ -149,7 +150,10 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
           return (
             <button
               key={issue.id}
-              onClick={() => onSelectIssue(issue.id)}
+              onClick={() => {
+                onSelectIssue(issue.id)
+                navigateToIssue(projectId, issue.id)
+              }}
               className="w-full text-left px-6 py-4 border-b border-border hover:bg-accent/50 transition-colors"
             >
               <div className="flex items-start justify-between gap-4">

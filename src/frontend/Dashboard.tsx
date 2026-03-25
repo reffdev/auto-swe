@@ -1,9 +1,10 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
+import { useHashRouting, navigateToProject, navigateToIssue, navigateToMachine, navigateToEmpty } from './router'
 import type { Issue, Run } from './api'
 
 export function Dashboard() {
@@ -47,6 +48,47 @@ export function Dashboard() {
   const showIssueDetail = selectedIssue
   const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail
   const showEmpty = data && !selectedProjectId && !showMachineDetail
+
+  // Hash routing handler
+  const handleHashNavigation = (viewState: any) => {
+    switch (viewState.type) {
+      case 'empty':
+        setSelectedProjectId(null)
+        setSelectedIssueId(null)
+        setSelectedMachineId(null)
+        break
+      case 'project':
+        setSelectedProjectId(viewState.projectId)
+        setSelectedIssueId(null)
+        setSelectedMachineId(null)
+        break
+      case 'project-issue':
+        setSelectedProjectId(viewState.projectId)
+        setSelectedIssueId(viewState.issueId)
+        setSelectedMachineId(null)
+        break
+      case 'machine':
+        setSelectedProjectId(null)
+        setSelectedIssueId(null)
+        setSelectedMachineId(viewState.machineId)
+        break
+    }
+  }
+
+  useHashRouting(handleHashNavigation)
+
+  // Sync URL when selection changes
+  useEffect(() => {
+    if (selectedMachineId && !selectedIssueId) {
+      navigateToMachine(selectedMachineId)
+    } else if (selectedIssueId && selectedProjectId) {
+      navigateToIssue(selectedProjectId, selectedIssueId)
+    } else if (selectedProjectId) {
+      navigateToProject(selectedProjectId)
+    } else {
+      navigateToEmpty()
+    }
+  }, [selectedProjectId, selectedIssueId, selectedMachineId])
 
   return (
     <div className="flex h-screen bg-background text-foreground">

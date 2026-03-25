@@ -7,6 +7,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import * as api from './api'
+import { navigateToProject, navigateToMachine } from './router'
 import type { Project, Machine } from './api'
 
 // ─── Restart Overlay ─────────────────────────────────────────────────────────
@@ -252,7 +253,15 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
         {projects.map((p) => (
           <button
             key={p.id}
-            onClick={() => onSelectProject(p.id === selectedProjectId ? null : p.id)}
+            onClick={() => {
+              const newId = p.id === selectedProjectId ? null : p.id
+              onSelectProject(newId)
+              if (newId) {
+                navigateToProject(newId)
+              } else {
+                navigateToProject('')
+              }
+            }}
             className={cn(
               'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
               'hover:bg-accent',
@@ -281,7 +290,15 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
         {machines.map((m) => (
           <button
             key={m.id}
-            onClick={() => onSelectMachine(m.id === selectedMachineId ? null : m.id)}
+            onClick={() => {
+              const newId = m.id === selectedMachineId ? null : m.id
+              onSelectMachine(newId)
+              if (newId) {
+                navigateToMachine(newId)
+              } else {
+                navigateToMachine('')
+              }
+            }}
             className={cn(
               'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
               'hover:bg-accent',

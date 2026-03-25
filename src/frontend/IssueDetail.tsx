@@ -15,6 +15,7 @@ import {
 } from '@/components/ai-elements/message'
 import { StatusBadge } from './IssueList'
 import * as api from './api'
+import { navigateToProject } from './router'
 import type { Issue, Run, StepData } from './api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -283,7 +284,10 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
       {/* Header */}
       <div className="px-6 py-4 border-b border-border">
         <div className="flex items-center gap-3 mb-2">
-          <Button variant="ghost" size="icon-sm" onClick={onBack}>
+          <Button variant="ghost" size="icon-sm" onClick={() => {
+            onBack()
+            navigateToProject(issue.project_id)
+          }}>
             <ArrowLeft className="size-4" />
           </Button>
           <h2 className="text-base font-semibold flex-1 truncate">{issue.title}</h2>

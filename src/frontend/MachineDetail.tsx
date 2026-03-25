@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import * as api from './api'
+import { navigateToEmpty } from './router'
 import type { Machine } from './api'
 
 interface MachineDetailProps {
@@ -81,7 +82,10 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
       {/* Header */}
       <div className="px-6 py-4 border-b border-border">
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon-sm" onClick={onBack}>
+          <Button variant="ghost" size="icon-sm" onClick={() => {
+            onBack()
+            navigateToEmpty()
+          }}>
             <ArrowLeft className="size-4" />
           </Button>
           <h2 className="text-base font-semibold flex-1">Machine Settings</h2>
