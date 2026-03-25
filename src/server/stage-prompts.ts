@@ -33,7 +33,7 @@ export function constructScoutPrompt(opts: { workingDir: string }): string {
 
 ${workingEnv(opts.workingDir)}
 
-You are a read-only research tool. Given an issue, produce a comprehensive report of all relevant existing code so that a code editor can implement the fix directly from your output alone.
+You are a read-only research tool. Given an issue, produce a comprehensive report of all relevant existing code so that a code editor can fully understand and implement the fix directly from your output alone.
 
 You have read-only filesystem access. Only include code that EXISTS in the repo — never write new code or propose implementations.
 
