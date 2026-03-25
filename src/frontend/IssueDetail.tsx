@@ -207,11 +207,13 @@ function useLiveOutput(runs: Run[]) {
     ?? sortedRuns[sortedRuns.length - 1]
     ?? null
 
-  // Clear output immediately when the active run changes (new stage started)
-  if (activeRun?.id !== prevRunId.current) {
-    prevRunId.current = activeRun?.id ?? null
-    setActiveRunOutput({ steps: null, raw: null })
-  }
+  // Clear output when the active run changes (new stage started)
+  useEffect(() => {
+    if (activeRun?.id !== prevRunId.current) {
+      prevRunId.current = activeRun?.id ?? null
+      setActiveRunOutput({ steps: null, raw: null })
+    }
+  }, [activeRun?.id])
 
   const fetchOutput = useCallback(() => {
     if (!activeRun) return
