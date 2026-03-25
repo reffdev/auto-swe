@@ -6,6 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { useNavigate } from 'react-router-dom'
 import * as api from './api'
 import type { Project, Machine } from './api'
 
@@ -222,6 +223,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
 }
 
 export function Sidebar({ projects, machines, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
+  const navigate = useNavigate()
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -234,8 +236,13 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
   return (
     <aside className="w-72 border-r border-border flex flex-col shrink-0">
       <div className="p-4 border-b border-border">
-        <h1 className="text-lg font-semibold tracking-tight">Auto-SWE</h1>
-        <p className="text-xs text-muted-foreground">Autonomous Coding Agents</p>
+        <button
+          onClick={() => navigate('/')}
+          className="block text-left"
+        >
+          <h1 className="text-lg font-semibold tracking-tight hover:text-primary transition-colors cursor-pointer">Auto-SWE</h1>
+          <p className="text-xs text-muted-foreground">Autonomous Coding Agents</p>
+        </button>
       </div>
 
       {/* Projects */}
