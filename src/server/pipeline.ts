@@ -186,16 +186,23 @@ import { tool as aiTool } from "ai";
  */
 let _lastSubmittedBrief: string | null = null;
 
-function createSubmitScoutReportTool() {
+/**
+ * Creates the submitScoutReport tool with an AbortController.
+ * When the tool is called, it stores the report and aborts the stream
+ * so the scout stage ends immediately.
+ */
+function createSubmitScoutReportTool(stageAbort: AbortController) {
   _lastSubmittedBrief = null;
   return aiTool({
-    description: "Submit your completed scout report. Call this when you have finished exploring the codebase and are ready to hand off to the implement stage. The report must be comprehensive — include ALL relevant code, not a summary.",
+    description: "Submit your completed scout report. Call this when you have finished exploring the codebase and are ready to hand off to the implement stage. The report must be comprehensive — include ALL relevant code, not a summary. Calling this tool immediately ends the scout stage.",
     parameters: z.object({
       report: z.string().describe("The complete, detailed scout report containing repository overview, ALL relevant existing code (full function bodies, types, imports), build commands, and analysis. This is NOT a summary — include every line the implement agent needs."),
     }),
     execute: async ({ report }) => {
       _lastSubmittedBrief = report;
-      return "Scout report submitted successfully. Your work is done — the implement stage will take over.";
+      // Abort the stream — scout is done
+      stageAbort.abort();
+      return "Scout report submitted. Stage complete.";
     },
   });
 }
@@ -206,9 +213,7 @@ function createSubmitScoutReportTool() {
 export function extractScoutBrief(output: string): string {
   // 1. Check if the scout used the submitScoutReport tool
   if (_lastSubmittedBrief) {
-    const brief = _lastSubmittedBrief;
-    _lastSubmittedBrief = null;
-    return brief.trim();
+    return _lastSubmittedBrief.trim();
   }
   // 2. Check for fenced block
   const match = output.match(/```scout_brief\s*\n([\s\S]*?)```/);
@@ -455,21 +460,51 @@ async function scoutNode(
 
     console.log(`Pipeline: scout cycle ${cycle + 1}/${MAX_SCOUT_CYCLES}`);
 
-    const scoutOutput = await runStage({
-      db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "scout",
-      model, modelId: state.modelId,
-      systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
-      userPrompt: userIssue + contextSection,
-      tools: { ...makeReadOnlyTools(state.worktreePath, budget), submitScoutReport: createSubmitScoutReportTool() } as ToolSet,
-      maxSteps: SCOUT_STEP_LIMIT,
-      timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
-      abortSignal,
-      initialSteps: scoutInfoSteps,
-    });
+    // Create a per-cycle abort controller that submitScoutReport can trigger
+    const scoutStageAbort = new AbortController();
+    // Chain: if the pipeline-level abort fires, also abort this stage
+    if (abortSignal) {
+      abortSignal.addEventListener("abort", () => scoutStageAbort.abort(), { once: true });
+    }
+
+    let scoutOutput: string;
+    try {
+      scoutOutput = await runStage({
+        db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "scout",
+        model, modelId: state.modelId,
+        systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
+        userPrompt: userIssue + contextSection,
+        tools: { ...makeReadOnlyTools(state.worktreePath, budget), submitScoutReport: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
+        maxSteps: SCOUT_STEP_LIMIT,
+        timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
+        abortSignal: scoutStageAbort.signal,
+        initialSteps: scoutInfoSteps,
+      });
+    } catch (err) {
+      // If the abort was triggered by submitScoutReport (not by pipeline cancel), that's success
+      if (_lastSubmittedBrief && scoutStageAbort.signal.aborted) {
+        console.log("Pipeline: scout stage ended via submitScoutReport");
+        scoutOutput = "";
+        // Fix the run status — runStage marked it as "fail" due to the abort
+        ctx.db.updateRun(run.id, { status: "pass", completed_at: new Date().toISOString() });
+      } else {
+        throw err; // real error — propagate
+      }
+    }
 
     console.log(`Pipeline: scout raw output: ${scoutOutput.length} chars`);
     const extracted = extractScoutBrief(scoutOutput);
-    console.log(`Pipeline: scout extracted report: ${extracted.length} chars (via ${_lastSubmittedBrief === null ? 'text' : 'tool'})`);
+    const submittedViaTool = _lastSubmittedBrief !== null;
+    // Reset after extraction so next cycle starts clean
+    _lastSubmittedBrief = null;
+    console.log(`Pipeline: scout extracted report: ${extracted.length} chars (via ${submittedViaTool ? 'tool' : 'text'})`);
+
+    // If submitted via tool, the report is final — no compaction needed
+    if (submittedViaTool) {
+      console.log("Pipeline: scout report submitted via tool — done");
+      compactedSoFar = extracted;
+      break;
+    }
 
     // If budget was barely used, the scout finished exploring — no need to compact
     if (budget.usage < SCOUT_DONE_THRESHOLD) {

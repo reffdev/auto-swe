@@ -234,7 +234,7 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
   return (
     <aside className="w-72 border-r border-border flex flex-col shrink-0">
       <div className="p-4 border-b border-border">
-        <h1 className="text-lg font-semibold tracking-tight">Open SWE</h1>
+        <h1 className="text-lg font-semibold tracking-tight">Auto-SWE</h1>
         <p className="text-xs text-muted-foreground">Autonomous Coding Agents</p>
       </div>
 
