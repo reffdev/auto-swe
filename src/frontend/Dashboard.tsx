@@ -6,6 +6,7 @@ import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
+import { DashboardLanding } from './DashboardLanding'
 import type { Issue, Run } from './api'
 
 export function Dashboard() {
@@ -54,7 +55,7 @@ export function Dashboard() {
   const showMachineDetail = selectedMachine && !selectedIssue
   const showIssueDetail = selectedIssue
   const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail
-  const showEmpty = data && !selectedProjectId && !showMachineDetail
+  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail
 
   return (
     <TooltipProvider>
@@ -85,10 +86,11 @@ export function Dashboard() {
             Loading...
           </div>
         )}
-        {showEmpty && (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            Select a project to get started
-          </div>
+        {showLanding && (
+          <DashboardLanding
+            counts={{ projects: projects.length, machines: machines.length, issues: issues.length }}
+            onRefresh={refresh}
+          />
         )}
         {showMachineDetail && selectedMachine && (
           <MachineDetail
