@@ -8,7 +8,7 @@
     "dist"
   ],
   "scripts": {
-    "start": "npm run build && tsx src/server/index.ts",
+    "start": "tsx src/server/index.ts",
     "dev": "concurrently -n server,dashboard -c blue,green \"npm run dev:server\" \"npm run dev:dashboard\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:dashboard": "vite",

@@ -454,6 +454,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     // 4. Fallback: process.exit(0) and let Restart=always in the service file handle it
     const script = [
       "set -e",
+      "BEFORE=$(git rev-parse HEAD)",
       "echo '=== Fetching origin ==='",
       "git fetch origin",
       "BRANCH=$(git rev-parse --abbrev-ref HEAD)",
@@ -461,10 +462,21 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       "git checkout -- . 2>/dev/null || true",
       "git clean -fd 2>/dev/null || true",
       'git merge --ff-only "origin/$BRANCH" 2>/dev/null || git reset --hard "origin/$BRANCH"',
-      "echo '=== Installing dependencies ==='",
-      "npm install",
-      "echo '=== Rebuilding frontend ==='",
-      "npx vite build",
+      "AFTER=$(git rev-parse HEAD)",
+      // Only run npm ci if package-lock.json changed
+      'if git diff --name-only "$BEFORE" "$AFTER" | grep -q "package-lock.json"; then',
+      "  echo '=== Installing dependencies (package-lock changed) ==='",
+      "  npm ci",
+      "else",
+      "  echo '=== Skipping npm install (no dependency changes) ==='",
+      "fi",
+      // Only rebuild frontend if frontend files changed
+      'if git diff --name-only "$BEFORE" "$AFTER" | grep -qE "^(src/frontend/|src/components/|index.html|vite.config|tailwind)"; then',
+      "  echo '=== Rebuilding frontend ==='",
+      "  npx vite build",
+      "else",
+      "  echo '=== Skipping frontend build (no frontend changes) ==='",
+      "fi",
       "echo '=== Restarting service ==='",
       `sudo systemctl restart ${serviceName} 2>/dev/null && exit 0 || true`,
       "echo '=== No systemctl or no sudo, exiting for auto-restart ==='",
