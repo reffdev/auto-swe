@@ -164,34 +164,34 @@ function ToolCallDetail({ call, result, duration }: {
   )
 }
 
-function PromptsDetail({ prompts }: { prompts: { system: string; user: string } }) {
+function PromptSection({ label, content, tokenEst }: { label: string; content: string; tokenEst: number }) {
   const [open, setOpen] = useState(false)
 
   return (
-    <div className="border border-border rounded-md overflow-hidden text-xs max-w-[95%]">
+    <div className="border border-border rounded-md overflow-hidden text-xs">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-2 px-3 py-1.5 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
       >
         <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
         <Code className="size-3 shrink-0 text-muted-foreground" />
-        <span className="font-medium text-foreground">Stage Prompts</span>
-        <span className="ml-auto text-muted-foreground opacity-60">
-          {Math.round((prompts.system.length + prompts.user.length) / 4).toLocaleString()} est. tokens
-        </span>
+        <span className="font-medium text-foreground">{label}</span>
+        <span className="ml-auto text-muted-foreground opacity-60">~{tokenEst.toLocaleString()} tokens</span>
       </button>
       {open && (
-        <div className="px-3 py-2 space-y-3 border-t border-border">
-          <div>
-            <span className="text-muted-foreground font-medium">System Prompt:</span>
-            <pre className="mt-1 bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto text-[11px]">{prompts.system}</pre>
-          </div>
-          <div>
-            <span className="text-muted-foreground font-medium">User Prompt:</span>
-            <pre className="mt-1 bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto text-[11px]">{prompts.user}</pre>
-          </div>
+        <div className="border-t border-border">
+          <pre className="p-3 overflow-x-auto whitespace-pre-wrap overflow-y-auto max-h-[70vh] text-[11px]">{content}</pre>
         </div>
       )}
+    </div>
+  )
+}
+
+function PromptsDetail({ prompts }: { prompts: { system: string; user: string } }) {
+  return (
+    <div className="flex flex-col gap-1 max-w-[95%]">
+      <PromptSection label="System Prompt" content={prompts.system} tokenEst={Math.round(prompts.system.length / 4)} />
+      <PromptSection label="User Prompt (includes checkpoint)" content={prompts.user} tokenEst={Math.round(prompts.user.length / 4)} />
     </div>
   )
 }

@@ -47,30 +47,28 @@ Make the checkpoint comprehensive: anything you don't include, you won't have ac
 
 ## Checkpoint format
 
-Think of this as saving your working memory. Include everything you'd need to resume cold:
+The checkpoint is your ONLY reference when implementing. The most important part is the actual code — without it, you'll have to re-read every file again.
+
+**The checkpoint MUST contain verbatim code from every file you'll need to modify or reference.** A checkpoint without code blocks is useless. Summaries, overviews, and plans are secondary — code is primary.
 
 \`\`\`checkpoint
-## Repository Overview
-[Project structure, tech stack, key directories — what you learned about the repo.
-Do not repeat the pre-loaded docs verbatim — just reference key details you'll need.]
-
-## Build & Test Commands
-[How to build, lint, test — pulled from the pre-loaded project files]
-
-## Relevant Code
-[For each code snippet, use this format:
+## Code
+[This is the bulk of the checkpoint. For EVERY file relevant to the implementation:]
 
 ### path/to/file.ts (lines 42-87)
 \\\`\\\`\\\`
-<raw code from the file — NO line number prefixes, exactly as it appears in the file>
+<exact code from the file — copy-pasteable, no line numbers, no modifications>
 \\\`\\\`\\\`
 
-The header gives the complete relative path from project root and the line range.
-The code block is the EXACT file content — copy-pasteable, no modifications.
-Include everything you'll need: function bodies, type definitions, imports, adjacent code.]
+[Include: the full functions you'll modify, their imports, type definitions they depend on,
+adjacent functions for context, test patterns from existing test files.
+More files is better — you cannot read files after this checkpoint.]
 
-## Implementation Plan
-[What needs to change, where, and in what order. Be specific — file paths, function names, what to add/modify/remove.]
+## Build & Test
+[How to build, lint, test]
+
+## Plan
+[What to change, where, in what order. Reference the code above by file path and function name.]
 \`\`\`
 
 Call \`saveCheckpoint\` with the full checkpoint (preferred), or output it in a \`\`\`checkpoint fenced block.
@@ -78,9 +76,9 @@ Call \`saveCheckpoint\` with the full checkpoint (preferred), or output it in a 
 ## Constraints
 - Read only for now — you cannot modify files yet
 - Do not write new code or describe what you "would" create — just gather what exists
-- Include every line of existing code you'll need when implementing
+- A checkpoint without code blocks will fail. You MUST include verbatim code from the files you read.
 - Prioritize: code that needs to change > adjacent code > test patterns > distant code
-- When in doubt, include too much rather than too little — you won't be able to read these files again`;
+- When in doubt, include too much code rather than too little — you won't be able to read these files again`;
 }
 
 export function constructScoutCompactPrompt(): string {
