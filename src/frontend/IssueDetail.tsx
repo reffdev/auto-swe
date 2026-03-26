@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
@@ -244,6 +244,8 @@ const ALL_LENSES = [
   { key: 'security', label: 'Security', icon: Shield, color: 'text-orange-400 bg-orange-500/20' },
   { key: 'ui', label: 'UI', icon: Monitor, color: 'text-purple-400 bg-purple-500/20' },
   { key: 'performance', label: 'Performance', icon: Zap, color: 'text-cyan-400 bg-cyan-500/20' },
+  { key: 'testing', label: 'Testing', icon: FlaskConical, color: 'text-green-400 bg-green-500/20' },
+  { key: 'error_handling', label: 'Errors', icon: ShieldAlert, color: 'text-red-400 bg-red-500/20' },
 ] as const
 
 function LensChips({ issue, editable, onDataChange }: { issue: Issue; editable: boolean; onDataChange: () => void }) {

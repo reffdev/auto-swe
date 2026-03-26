@@ -317,6 +317,27 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
    - Bundle size impact (large imports that could be lazy-loaded)
    - Only reject for genuine performance issues, not style or correctness.`,
   },
+  testing: {
+    name: "Testing Review",
+    focus: `Focus exclusively on test quality and coverage:
+   - Do the tests verify actual behavior, or just implementation details that break on refactor?
+   - Are edge cases covered (empty input, null, boundary values, error paths)?
+   - Could these tests pass while the feature is actually broken?
+   - Are there missing test cases for the requirements described in the issue?
+   - Are tests isolated — no hidden dependencies on execution order or external state?
+   - Only reject for genuine testing gaps, not style or code correctness.`,
+  },
+  error_handling: {
+    name: "Error Handling Review",
+    focus: `Focus exclusively on failure modes and error handling:
+   - What happens when external calls fail (network, DB, file system, APIs)?
+   - Are errors caught at the right level — not too broad (swallowing), not too narrow (missing)?
+   - Are error messages useful for debugging — do they include context (what failed, with what input)?
+   - Are there silent failures (empty catch blocks, ignored return values, unchecked nulls)?
+   - Can partial failures leave the system in an inconsistent state?
+   - Are timeouts set for operations that could hang?
+   - Only reject for genuine error handling gaps, not style or feature correctness.`,
+  },
 };
 
 // ─── Review ───────────────────────────────────────────────────────────────────

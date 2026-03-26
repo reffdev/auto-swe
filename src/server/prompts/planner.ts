@@ -41,7 +41,7 @@ description:
 - Acceptance criteria as a checklist
 - Any constraints or non-goals
 
-review_lenses: [comma-separated list from: general, security, ui, performance]
+review_lenses: [comma-separated list from: general, security, ui, performance, testing, error_handling]
 \`\`\`
 
 ## Review Lens Selection
@@ -50,6 +50,8 @@ Always include "general". Also include:
 - **security**: when the change involves user input, auth, file access, network requests, or data storage
 - **ui**: when the change involves frontend components, styling, layout, or user interactions
 - **performance**: when the change involves data processing, database queries, rendering, or large data sets
+- **testing**: when the change has testable behavior — verify tests are meaningful and cover edge cases
+- **error_handling**: when the change involves external calls, I/O, or failure-prone operations
 
 ## Rules
 
