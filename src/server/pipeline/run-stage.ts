@@ -128,6 +128,51 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   };
 
   const startTime = Date.now();
+  const INACTIVITY_TIMEOUT_MS = 60_000; // 60 seconds without any tokens → abort and retry
+  const MIN_THROUGHPUT_WINDOW_MS = 120_000; // check throughput over 2-minute windows
+  const MIN_TOKENS_PER_WINDOW = 10; // must produce at least 10 tokens per window
+
+  // Inactivity abort — resets on every chunk and step
+  const inactivityAbort = new AbortController();
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  let windowTokenCount = 0;
+  let throughputTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const resetInactivity = () => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      console.log(`Pipeline [${stageName}]: no activity for ${INACTIVITY_TIMEOUT_MS / 1000}s — aborting`);
+      inactivityAbort.abort();
+    }, INACTIVITY_TIMEOUT_MS);
+  };
+
+  // Throughput check — if producing tokens too slowly, abort
+  const startThroughputCheck = () => {
+    throughputTimer = setInterval(() => {
+      if (windowTokenCount < MIN_TOKENS_PER_WINDOW) {
+        console.log(`Pipeline [${stageName}]: throughput too low (${windowTokenCount} tokens in ${MIN_THROUGHPUT_WINDOW_MS / 1000}s) — aborting`);
+        inactivityAbort.abort();
+      }
+      windowTokenCount = 0;
+    }, MIN_THROUGHPUT_WINDOW_MS);
+  };
+
+  const trackChunk = () => {
+    windowTokenCount++;
+    resetInactivity();
+  };
+
+  // Chain: if the pipeline-level abort fires, also clear inactivity timer
+  const combinedSignal = abortSignal
+    ? AbortSignal.any([abortSignal, inactivityAbort.signal])
+    : inactivityAbort.signal;
+
+  // Reset inactivity on each step completion
+  const originalOnStep = onStep;
+  const onStepWithInactivity = (step: StepResult<ToolSet>) => {
+    resetInactivity();
+    originalOnStep(step);
+  };
 
   // Promise.race for hard timeout — timer is cleared on success or failure
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -135,17 +180,23 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     timeoutTimer = setTimeout(() => reject(new Error(`${stageName} stage timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
   });
 
+  resetInactivity(); // start the inactivity clock
+  startThroughputCheck(); // start the throughput monitor
+
   let fullText: string;
   try {
     const agentPromise = (async () => {
       const result = streamText({
         model, system: systemPrompt, prompt: userPrompt,
         tools, maxSteps,
-        abortSignal,
-        onStepFinish: onStep,
+        abortSignal: combinedSignal,
+        onStepFinish: onStepWithInactivity,
       });
       let text = "";
-      for await (const chunk of result.textStream) { text += chunk; }
+      for await (const chunk of result.textStream) {
+        text += chunk;
+        trackChunk();
+      }
       await result.steps;
       return text || "(no output)";
     })();
@@ -153,6 +204,8 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     fullText = await Promise.race([agentPromise, timeoutPromise]);
   } catch (err) {
     if (timeoutTimer) clearTimeout(timeoutTimer);
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    if (throughputTimer) clearInterval(throughputTimer);
     const durationMs = Date.now() - startTime;
     db.updateRun(runId, {
       status: "fail",
@@ -167,6 +220,8 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
   // Success
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  if (inactivityTimer) clearTimeout(inactivityTimer);
+  if (throughputTimer) clearInterval(throughputTimer);
   const durationMs = Date.now() - startTime;
   if (fullText && !liveSteps.some(s => s.text === fullText)) {
     liveSteps.push({ step: stepCount + 1, text: fullText, tokens: { prompt: 0, completion: 0 }, durationMs: 0 });
