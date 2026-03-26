@@ -457,11 +457,13 @@ describe("tool set factories", () => {
     expect(tools.readFile).toBeDefined();
   });
 
-  it("budget tracks usage", async () => {
-    const budget = new ContextBudget(1000); // small budget: 2800 chars
+  it("budget parameter is accepted without error", async () => {
+    const budget = new ContextBudget(1000);
     const tools = makeFilesystemTools(workdir, budget);
-    await tools.readFile.execute({ path: "hello.txt" }, { toolCallId: "t1", messages: [] });
-    expect(budget.usage).toBeGreaterThan(0);
+    const result = await tools.readFile.execute({ path: "hello.txt" }, { toolCallId: "t1", messages: [] });
+    expect(result).toContain("line1");
+    // Budget tracking is disabled — cap() no longer truncates or tracks
+    expect(budget.usage).toBe(0);
   });
 });
 

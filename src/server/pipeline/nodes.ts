@@ -6,7 +6,7 @@ import type { LangGraphRunnableConfig } from "@langchain/langgraph";
 import { END } from "@langchain/langgraph";
 import type { ToolSet } from "ai";
 import { readFileSync, readdirSync } from "fs";
-import { join, resolve, relative } from "path";
+import { join, resolve } from "path";
 import { spawnSync } from "child_process";
 
 import type { PipelineStateType, PipelineConfig } from "./state";
@@ -34,8 +34,6 @@ import {
   makeReadOnlyTools,
   makeTestWriteTools,
   makeVerifyTools,
-  fetchUrlTool,
-  makeTodoTool,
 } from "../tools";
 import {
   constructScoutPrompt,
@@ -138,19 +136,15 @@ interface ScoutManifest {
   notes: string;
 }
 
-const MAX_FILE_SIZE = 200_000; // 200KB — truncate individual files larger than this
-const MAX_TOTAL_INJECTED = 2_000_000; // 2MB total — stop loading files after this
-
 /**
- * Parse the scout's manifest and read the actual file contents from the worktree.
- * Returns a formatted string with each file's content ready for the implementer.
+ * Parse the scout's manifest and build a file summary with line counts.
+ * Does NOT inject file contents — the implementer will read files itself.
  */
-function resolveScoutManifest(worktreePath: string, scoutBrief: string): string {
+export function resolveScoutManifest(worktreePath: string, scoutBrief: string): string {
   let manifest: ScoutManifest;
   try {
     manifest = JSON.parse(scoutBrief);
   } catch {
-    // Not a JSON manifest — fall back to using the raw scout brief (legacy format)
     console.log("Pipeline: scout output is not a manifest — using raw brief");
     return scoutBrief;
   }
@@ -160,48 +154,31 @@ function resolveScoutManifest(worktreePath: string, scoutBrief: string): string 
     return scoutBrief;
   }
 
-  const sections: string[] = [];
-  let totalChars = 0;
-  let loadedCount = 0;
-  let failedCount = 0;
+  const lines: string[] = [];
+  let validCount = 0;
 
   for (const file of manifest.files) {
-    try {
-      // Path traversal protection
-      const fullPath = resolve(worktreePath, file.path);
-      if (!fullPath.startsWith(resolve(worktreePath))) {
-        sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n*Rejected — path is outside the project*`);
-        failedCount++;
-        continue;
-      }
-
-      // Total size cap
-      if (totalChars >= MAX_TOTAL_INJECTED) {
-        sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n*Skipped — total injected content limit reached (${Math.round(MAX_TOTAL_INJECTED / 1024)}KB)*`);
-        continue;
-      }
-
-      let content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
-
-      if (content.length > MAX_FILE_SIZE) {
-        content = content.slice(0, MAX_FILE_SIZE) + `\n\n... [truncated — file is ${Math.round(content.length / 1024)}KB, showing first ${Math.round(MAX_FILE_SIZE / 1024)}KB]`;
-      }
-
-      const ext = file.path.split(".").pop() ?? "";
-      const lang = { ts: "typescript", tsx: "typescript", js: "javascript", json: "json", py: "python", go: "go", rs: "rust", toml: "toml", md: "markdown", css: "css", html: "html" }[ext] ?? "";
-
-      sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n\`\`\`${lang}\n${content}\n\`\`\``);
-      totalChars += content.length;
-      loadedCount++;
-    } catch {
-      sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n*File not found or unreadable*`);
-      failedCount++;
+    // Path traversal protection
+    const fullPath = resolve(worktreePath, file.path);
+    if (!fullPath.startsWith(resolve(worktreePath))) {
+      continue;
     }
+
+    let lineCount = "?";
+    try {
+      const content = readFileSync(fullPath, "utf-8");
+      lineCount = String(content.split("\n").length);
+      validCount++;
+    } catch {
+      lineCount = "not found";
+    }
+
+    lines.push(`- \`${file.path}\` (${lineCount} lines) — ${file.reason}`);
   }
 
-  console.log(`Pipeline: resolved scout manifest — ${loadedCount} files loaded (${failedCount} failed), ${totalChars.toLocaleString()} chars total`);
+  console.log(`Pipeline: scout manifest — ${validCount} valid files of ${manifest.files.length} listed`);
 
-  let result = `## Relevant Files\n\n${sections.join("\n\n")}`;
+  let result = `## Relevant Files\n\nThe following files were identified as relevant. Read them as needed.\n\n${lines.join("\n")}`;
 
   if (manifest.notes) {
     result += `\n\n## Notes\n\n${manifest.notes}`;
@@ -365,11 +342,10 @@ export async function implementNode(
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
-  const budget = new ContextBudget(machine.context_limit ?? undefined);
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "implement" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
-  // Resolve scout manifest → actual file contents
+  // Resolve scout manifest → file list with line counts
   const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
   const reportLen = resolvedBrief.length;
   const reportTokensEst = Math.round(reportLen / 4);
@@ -407,7 +383,7 @@ export async function implementNode(
     model, modelId: state.modelId,
     systemPrompt: implPrompts.system,
     userPrompt: implPrompts.user,
-    tools: { ...makeFilesystemTools(state.worktreePath, budget), ...makeTodoTool(), fetchUrl: fetchUrlTool } as ToolSet,
+    tools: { ...makeFilesystemTools(state.worktreePath) } as ToolSet,
     maxSteps: IMPLEMENT_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
@@ -424,7 +400,6 @@ export async function testWriteNode(
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
-  const budget = new ContextBudget(machine.context_limit ?? undefined);
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "test_write" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
@@ -450,7 +425,7 @@ export async function testWriteNode(
     model, modelId: state.modelId,
     systemPrompt: testPrompts.system,
     userPrompt: testPrompts.user,
-    tools: { ...makeTestWriteTools(state.worktreePath, budget), ...makeTodoTool() } as ToolSet,
+    tools: { ...makeTestWriteTools(state.worktreePath) } as ToolSet,
     maxSteps: TEST_WRITE_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
@@ -466,7 +441,6 @@ export async function reviewNode(
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
-  const budget = new ContextBudget(machine.context_limit ?? undefined);
   const lensKey = state.reviewLenses[state.currentLensIndex] ?? "general";
   const lens = REVIEW_LENSES[lensKey] ?? REVIEW_LENSES.general;
 
@@ -495,7 +469,7 @@ export async function reviewNode(
     model, modelId: state.modelId,
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.user,
-    tools: { ...makeVerifyTools(state.worktreePath, budget), ...makeTodoTool() } as ToolSet,
+    tools: { ...makeVerifyTools(state.worktreePath) } as ToolSet,
     maxSteps: REVIEW_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,

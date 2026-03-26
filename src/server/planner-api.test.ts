@@ -1,4 +1,4 @@
-import { parseIssueProposal } from "./planner-api";
+import { parseIssueProposal, parseEpicProposal } from "./planner-api";
 
 // ─── parseIssueProposal ────────────────────────────────────────────────────
 
@@ -166,5 +166,169 @@ review_lenses: general, ui
     expect(result!.title).toBe("Compact format");
     expect(result!.description).toBe("Short description.");
     expect(result!.lenses).toEqual(["general", "ui"]);
+  });
+});
+
+// ─── parseEpicProposal ─────────────────────────────────────────────────────
+
+describe("parseEpicProposal", () => {
+  it("parses a well-formed epic with multiple stories", () => {
+    const content = `Here's the breakdown:
+
+\`\`\`epic_proposal
+title: Add authentication system
+description:
+Full auth system with login, registration, and session management.
+
+story: 1
+title: Add user model and database schema
+description:
+Create the users table and Drizzle schema.
+review_lenses: general, security
+
+story: 2
+title: Add login API endpoint
+depends_on: 1
+description:
+POST /api/auth/login endpoint with JWT.
+review_lenses: general, security
+
+story: 3
+title: Add registration UI
+depends_on: 1
+description:
+Frontend registration form.
+review_lenses: general, ui
+\`\`\``;
+
+    const result = parseEpicProposal(content);
+    expect(result).not.toBeNull();
+    expect(result!.title).toBe("Add authentication system");
+    expect(result!.description).toContain("Full auth system");
+    expect(result!.stories).toHaveLength(3);
+
+    expect(result!.stories[0].title).toBe("Add user model and database schema");
+    expect(result!.stories[0].lenses).toEqual(["general", "security"]);
+    expect(result!.stories[0].dependsOn).toEqual([]);
+
+    expect(result!.stories[1].title).toBe("Add login API endpoint");
+    expect(result!.stories[1].dependsOn).toEqual([1]);
+
+    expect(result!.stories[2].title).toBe("Add registration UI");
+    expect(result!.stories[2].dependsOn).toEqual([1]);
+    expect(result!.stories[2].lenses).toEqual(["general", "ui"]);
+  });
+
+  it("returns null when no epic_proposal block exists", () => {
+    expect(parseEpicProposal("Just text.")).toBeNull();
+    expect(parseEpicProposal("```issue_proposal\ntitle: not epic\n```")).toBeNull();
+  });
+
+  it("returns null when title is missing", () => {
+    const content = `\`\`\`epic_proposal
+description:
+Some feature
+
+story: 1
+title: First story
+description:
+Do something
+review_lenses: general
+\`\`\``;
+    expect(parseEpicProposal(content)).toBeNull();
+  });
+
+  it("returns null when no stories exist", () => {
+    const content = `\`\`\`epic_proposal
+title: Empty epic
+description:
+No stories here.
+\`\`\``;
+    expect(parseEpicProposal(content)).toBeNull();
+  });
+
+  it("parses depends_on with multiple dependencies", () => {
+    const content = `\`\`\`epic_proposal
+title: Complex feature
+description:
+Multi-dependency feature.
+
+story: 1
+title: Foundation
+description:
+Base work.
+review_lenses: general
+
+story: 2
+title: Part A
+depends_on: 1
+description:
+Depends on foundation.
+review_lenses: general
+
+story: 3
+title: Part B
+depends_on: 1
+description:
+Also depends on foundation.
+review_lenses: general
+
+story: 4
+title: Integration
+depends_on: 2, 3
+description:
+Depends on both A and B.
+review_lenses: general, testing
+\`\`\``;
+
+    const result = parseEpicProposal(content);
+    expect(result!.stories).toHaveLength(4);
+    expect(result!.stories[3].title).toBe("Integration");
+    expect(result!.stories[3].dependsOn).toEqual([2, 3]);
+  });
+
+  it("defaults to general lens when review_lenses is missing on a story", () => {
+    const content = `\`\`\`epic_proposal
+title: Simple epic
+description:
+Two stories.
+
+story: 1
+title: First
+description:
+Do first thing.
+
+story: 2
+title: Second
+description:
+Do second thing.
+\`\`\``;
+
+    const result = parseEpicProposal(content);
+    expect(result!.stories[0].lenses).toEqual(["general"]);
+    expect(result!.stories[1].lenses).toEqual(["general"]);
+  });
+
+  it("skips stories with no title", () => {
+    const content = `\`\`\`epic_proposal
+title: Partial epic
+description:
+Some work.
+
+story: 1
+title: Valid story
+description:
+Has a title.
+review_lenses: general
+
+story: 2
+description:
+Missing title — should be skipped.
+review_lenses: general
+\`\`\``;
+
+    const result = parseEpicProposal(content);
+    expect(result!.stories).toHaveLength(1);
+    expect(result!.stories[0].title).toBe("Valid story");
   });
 });

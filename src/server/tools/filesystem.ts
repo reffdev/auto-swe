@@ -32,14 +32,9 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
 
   /** Track recent tool calls for loop detection */
   const recentCalls: string[] = [];
-  /** Track per-file read counts and which ranges have been read */
-  const fileReadCounts = new Map<string, number>();
-  const fileReadRanges = new Map<string, Set<string>>();
-  const MAX_FILE_READS = 6;
-  /** Reset read tracking for a file after it's been modified */
-  function resetFileReadCount(path: string) {
-    fileReadCounts.delete(path);
-    fileReadRanges.delete(path);
+  /** Reset read tracking for a file after it's been modified (used by replaceInFile/writeFile) */
+  function resetFileReadCount(_path: string) {
+    // No-op — read tracking removed, but callers still reference this
   }
 
   /** Track consecutive errors to detect agents stuck in error loops */
@@ -106,27 +101,10 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
     consecutiveErrors = 0;
   }
 
-  /** Truncate and track a tool result against the context budget.
-   *  Always truncates at a line boundary.
-   *  Small files (≤50 lines) are never truncated — always worth returning in full. */
+  /** Track a tool result — no truncation. */
   function cap(result: string): string {
     trackSuccess();
-    if (!budget) return result;
-    const max = budget.maxResultChars;
-    const lineCount = result.split("\n").length;
-    let truncated: string;
-    if (result.length > max && lineCount > 50) {
-      const cutPoint = result.lastIndexOf("\n", max);
-      const safeCut = cutPoint > 0 ? cutPoint : max;
-      const shownLines = result.slice(0, safeCut).split("\n").length;
-      truncated =
-        result.slice(0, safeCut) +
-        `\n\n[TRUNCATED at line ${shownLines} of ${lineCount}. To continue reading, call readFile with offset=${shownLines}, limit=200.${budget.shouldStop ? " Context is nearly full — stop reading and produce your output NOW." : ""}]`;
-    } else {
-      truncated = result;
-    }
-    budget.add(truncated.length);
-    return maybeWarnExcessiveReads(truncated);
+    return result;
   }
 
   /** Detect and break tool call loops */
@@ -217,21 +195,6 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         .describe("Maximum number of lines to read."),
     }),
     execute: async ({ path, offset, limit }) => {
-      const readCount = (fileReadCounts.get(path) ?? 0) + 1;
-      fileReadCounts.set(path, readCount);
-
-      const rangeKey = `${offset ?? "full"}:${limit ?? "all"}`;
-      const readRanges = fileReadRanges.get(path) ?? new Set();
-      const isNewRange = !readRanges.has(rangeKey);
-      readRanges.add(rangeKey);
-      fileReadRanges.set(path, readRanges);
-
-      if (readCount > MAX_FILE_READS) {
-        return trackResult(
-          `ERROR: You have read "${path}" ${readCount} times. Work with what you have, or use searchFiles to find specific patterns.`
-        );
-      }
-
       const loopMsg = loopGuard("readFile", { path, offset, limit });
       if (loopMsg) return trackResult(loopMsg);
       try {
@@ -247,17 +210,6 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
           const slice = lines.slice(start, end).join("\n");
           const header = `[lines ${start + 1}-${Math.min(end, lines.length)} of ${lines.length}]\n`;
           return cap(header + slice);
-        }
-
-        if (readCount >= 3 && !isNewRange) {
-          const previewLines = Math.min(30, lines.length);
-          const remaining = lines.length - previewLines;
-          const summary =
-            lines.slice(0, previewLines).join("\n") +
-            (remaining > 0
-              ? `\n\n[... ${remaining} more lines. You have already read this file ${readCount} times. Use searchFiles or readFile with offset/limit.]`
-              : `\n\n[End of file. You have already read this file ${readCount} times.]`);
-          return cap(summary);
         }
 
         return cap(content);
@@ -411,16 +363,6 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         .trim();
       if (result.status !== 0) {
         const errOutput = `Exit ${result.status ?? 1}: ${out || result.error?.message || "unknown error"}`;
-        if (budget) {
-          const max = budget.maxResultChars;
-          if (errOutput.length > max) {
-            budget.add(max);
-            return errOutput.slice(0, max) + "\n[truncated]";
-          }
-          budget.add(errOutput.length);
-        }
-        // Don't count command failures as consecutive errors — non-zero exit
-        // codes are normal (test failures, missing commands, etc.)
         return errOutput;
       }
       return cap(out || "(no output)");

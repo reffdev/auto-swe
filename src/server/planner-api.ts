@@ -45,13 +45,14 @@ export function parseEpicProposal(content: string): {
 
   const block = match[1];
 
-  // Parse epic title
-  const titleMatch = block.match(/^title:\s*(.+)$/m);
+  // Parse epic title — must appear before the first "story:" line
+  const headerBlock = block.split(/^story:\s*\d+\s*$/m)[0] ?? "";
+  const titleMatch = headerBlock.match(/^title:\s*(.+)$/m);
   if (!titleMatch) return null;
   const title = titleMatch[1].trim();
 
   // Parse epic description — text between title and first "story:"
-  const descMatch = block.match(/description:\s*\n?([\s\S]*?)(?=\nstory:\s*\d|$)/);
+  const descMatch = headerBlock.match(/description:\s*\n?([\s\S]*?)$/);
   const description = descMatch ? descMatch[1].trim() : "";
 
   // Split into stories on "story: N" boundaries (line must start with "story:")

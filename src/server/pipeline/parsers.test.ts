@@ -36,6 +36,17 @@ Some trailing text.`;
     const output = "```scout_brief\n  \n  content here  \n  \n```";
     expect(extractScoutBrief(output)).toBe("content here");
   });
+
+  it("extracts from checkpoint fenced block", () => {
+    const output = "```checkpoint\nsome checkpoint content\n```";
+    expect(extractScoutBrief(output)).toBe("some checkpoint content");
+  });
+
+  it("returns raw JSON manifest as-is when no fenced block", () => {
+    const manifest = JSON.stringify({ files: [{ path: "a.ts", reason: "test" }], notes: "" });
+    // No fenced block — falls back to full output
+    expect(extractScoutBrief(manifest)).toBe(manifest);
+  });
 });
 
 // ─── parseVerdict ───────────────────────────────────────────────────────────

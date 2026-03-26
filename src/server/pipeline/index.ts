@@ -39,8 +39,7 @@ export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
 // ─── LLM provider with per-request timeout + retry ────────────────────────────
 
-const LLM_REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per individual LLM request
-const LLM_MAX_RETRIES = 2;
+const LLM_REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per-chunk inactivity timeout on streaming responses
 
 function createModelProvider(machine: Machine) {
   const provider = createOpenAICompatible({
@@ -59,58 +58,45 @@ function createModelProvider(machine: Machine) {
       }
 
       const callerSignal = (init as RequestInit)?.signal;
+      if (callerSignal?.aborted) throw new Error("Aborted");
 
-      for (let attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
-        if (callerSignal?.aborted) throw new Error("Aborted");
+      // For streaming responses, wrap the body with a per-chunk inactivity timeout.
+      // If no data arrives for LLM_REQUEST_TIMEOUT_MS, the stream errors out.
+      // The error propagates to streamText which throws, caught by runStage.
+      // No retry at the fetch level — the stage-level hard timeout handles retries.
+      const res = await fetch(url as string, init as RequestInit);
 
-        try {
-          const res = await fetch(url as string, init as RequestInit);
+      if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {
+        const reader = res.body.getReader();
+        const watchedStream = new ReadableStream({
+          async pull(controller) {
+            const timeoutId = setTimeout(() => {
+              console.log(`Pipeline: LLM stream inactive for ${LLM_REQUEST_TIMEOUT_MS / 1000}s — aborting stream`);
+              reader.cancel("LLM stream inactivity timeout");
+              controller.error(new Error("LLM stream timed out — no data received"));
+            }, LLM_REQUEST_TIMEOUT_MS);
 
-          // For streaming responses, wrap the body with an inactivity monitor
-          // that aborts if no data arrives within the timeout
-          if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {
-            const reader = res.body.getReader();
-            const watchedStream = new ReadableStream({
-              async pull(controller) {
-                const timeoutId = setTimeout(() => {
-                  reader.cancel("LLM stream inactivity timeout");
-                  controller.error(new Error("LLM_STREAM_TIMEOUT"));
-                }, LLM_REQUEST_TIMEOUT_MS);
+            try {
+              const { done, value } = await reader.read();
+              clearTimeout(timeoutId);
+              if (done) { controller.close(); return; }
+              controller.enqueue(value);
+            } catch (err) {
+              clearTimeout(timeoutId);
+              controller.error(err);
+            }
+          },
+          cancel() { reader.cancel(); },
+        });
 
-                try {
-                  const { done, value } = await reader.read();
-                  clearTimeout(timeoutId);
-                  if (done) { controller.close(); return; }
-                  controller.enqueue(value);
-                } catch (err) {
-                  clearTimeout(timeoutId);
-                  controller.error(err);
-                }
-              },
-              cancel() { reader.cancel(); },
-            });
-
-            return new Response(watchedStream, {
-              status: res.status,
-              statusText: res.statusText,
-              headers: res.headers,
-            });
-          }
-
-          return res;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const isStreamTimeout = msg === "LLM_STREAM_TIMEOUT";
-          const isCallerAbort = callerSignal?.aborted;
-
-          if (isStreamTimeout && !isCallerAbort && attempt < LLM_MAX_RETRIES) {
-            console.log(`Pipeline: LLM stream timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s — retrying (attempt ${attempt + 2}/${LLM_MAX_RETRIES + 1})`);
-            continue;
-          }
-          throw err;
-        }
+        return new Response(watchedStream, {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        });
       }
-      throw new Error("LLM request failed after retries");
+
+      return res;
     },
   });
   return provider;

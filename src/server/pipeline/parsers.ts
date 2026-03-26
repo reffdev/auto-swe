@@ -17,19 +17,18 @@ let _lastSubmittedBrief: string | null = null;
 export function createSubmitScoutReportTool(stageAbort: AbortController) {
   _lastSubmittedBrief = null;
   return aiTool({
-    description: "Submit your file manifest — the list of files relevant to this issue and what each is needed for. The actual file contents will be loaded automatically from the manifest. Call this when you've identified all relevant files.",
+    description: "Submit your file list. Call this when you've identified all relevant files for the issue.",
     parameters: z.object({
       files: z.array(z.object({
         path: z.string().describe("File path relative to project root, e.g. src/server/db.ts"),
-        reason: z.string().describe("Why this file is relevant — what needs to change or what pattern it provides"),
-      })).describe("List of files the implementer will need. Include files to modify, files with patterns to follow, type definitions, test files, etc."),
-      notes: z.string().optional().describe("Brief implementation notes — only if something non-obvious needs to be called out. Do NOT write a design doc."),
+        reason: z.string().describe("Why this file is relevant"),
+      })).describe("All relevant files"),
+      notes: z.string().optional().describe("Brief notes only if something non-obvious needs calling out"),
     }),
     execute: async ({ files, notes }) => {
-      // Serialize the structured manifest so extractScoutBrief can parse it
       _lastSubmittedBrief = JSON.stringify({ files, notes: notes ?? "" });
       stageAbort.abort();
-      return `Manifest submitted: ${files.length} files.`;
+      return `File list submitted: ${files.length} files.`;
     },
   });
 }

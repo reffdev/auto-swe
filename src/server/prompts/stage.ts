@@ -38,28 +38,27 @@ export function constructScoutPrompt(opts: { workingDir: string }): string {
 
 ${workingEnv(opts.workingDir)}
 
-Identify every file relevant to implementing the issue. The full contents of the files you list will be automatically loaded for the implementer — you do not need to copy code into your output.
+Find every file relevant to implementing the issue. You are building a file map for an implementer who will read and modify the code.
 
 ## Procedure
 
 1. Read the issue to understand what needs to be built
-2. Explore the codebase to find relevant files: \`searchFiles\`, \`listDirectory\`, \`readFile\`
-3. Read candidate files to confirm they're relevant — check that they contain the functions, types, or patterns needed
-4. Call \`saveCheckpoint\` with your file manifest
+2. Explore the codebase: \`searchFiles\`, \`listDirectory\`, \`readFile\`
+3. Confirm each candidate file is relevant by reading it
+4. Call \`saveCheckpoint\` with your file list
 
-## What to include in the manifest
+## What to include
 
-- Files that will be **modified** (where the new code goes)
-- Files with **patterns to follow** (e.g., how existing endpoints/methods are structured)
-- Files with **type definitions** the new code will use
-- Files with **test patterns** to follow
-- Be thorough — the implementer only sees files you list. Missing a file means they work blind.
+- Files to **modify** (where new code goes)
+- Files with **patterns to follow** (how similar things are already done)
+- **Type definitions** and **schemas** the new code will use
+- **Test files** showing the testing pattern
+- Be thorough — missing a file means the implementer works blind
 
 ## What NOT to do
 
-- Do not copy code into your output — the files are loaded automatically
-- Do not write implementation plans or design docs
-- Do not propose new code`;
+- Do not copy file contents into your output
+- Do not write plans, designs, or proposed code`;
 }
 
 export function constructScoutCompactPrompt(): string {
@@ -121,7 +120,7 @@ summary: [what was fixed]
 
 ${workingEnv(opts.workingDir)}
 
-The full contents of all relevant files are in the user message — verbatim from the repo, safe to use directly in \`replaceInFile\` \`old_str\`. Only read additional files if you need something not already provided.
+A list of relevant files is in the user message — read them with \`readFile\` before making changes.
 
 ${CODING_STANDARDS}
 
@@ -156,11 +155,7 @@ ${opts.reviewFeedback}
 `;
   }
 
-  user += `## Relevant Files
-
-The full contents of every file identified as relevant to this issue. Code is verbatim from the repo — safe to use directly in \`replaceInFile\` \`old_str\`. Each file includes a note on why it's relevant.
-
-${opts.scoutBrief}`;
+  user += `${opts.scoutBrief}`;
 
   return { system, user };
 }
@@ -221,9 +216,7 @@ ${opts.issueDescription || "(No additional details)"}
     user += `${opts.projectContext}\n\n`;
   }
 
-  user += `## Research Checkpoint
-
-${opts.scoutBrief}
+  user += `${opts.scoutBrief}
 
 ## Implementation Output
 
@@ -242,11 +235,15 @@ export interface ReviewLens {
 export const REVIEW_LENSES: Record<string, ReviewLens> = {
   general: {
     name: "General Review",
-    focus: `Focus on correctness and completeness:
+    focus: `Focus on correctness, completeness, and scope:
    - Does the code actually address the issue described?
    - Are there broken imports, missing dependencies, or syntax errors?
    - Is there debug code, console.logs, or commented-out code that shouldn't be there?
-   - Are the tests actually testing the right things?`,
+   - Are the tests actually testing the right things?
+   - REJECT if the change rewrites, restructures, or reorganizes existing files beyond what the issue requires
+   - REJECT if existing function signatures, constructor parameters, return types, or exports were changed unless the issue specifically requires it
+   - REJECT if files were rewritten entirely instead of making targeted additions
+   - Changes should be additive — new functions/methods/endpoints added alongside existing code, not replacing it`,
   },
   security: {
     name: "Security Review",
