@@ -13,7 +13,8 @@ function workingEnv(workingDir: string): string {
 
 All file paths are **relative to the project root** — never use absolute paths.
 Shell commands via \`runCommand\` run in an isolated shell rooted at the project directory.
-Do not use shell commands to read files — use \`readFile\` instead.`;
+Do not use shell commands to read files — use \`readFile\` instead.
+You can call multiple tools in a single response — do this whenever calls are independent of each other.`;
 }
 
 const CODING_STANDARDS = `
