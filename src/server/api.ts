@@ -290,8 +290,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
-    if (issue.status !== "pending") {
-      res.status(409).json({ error: "can only decompose pending issues" });
+    if (issue.status !== "pending" && issue.status !== "failed") {
+      res.status(409).json({ error: "can only decompose pending or failed issues" });
       return;
     }
 
@@ -323,8 +323,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         return;
       }
 
-      // Convert original issue to epic
-      db.updateIssue(issue.id, { status: "epic" });
+      // Convert original issue to epic — clear stale git state from any previous run
+      db.updateIssue(issue.id, {
+        status: "epic",
+        git_branch: null,
+        git_worktree: null,
+        git_pr_url: null,
+        git_pr_number: null,
+        github_issue_number: null,
+        github_issue_url: null,
+        retry_count: 0,
+      });
 
       // Create child stories
       const storyIdBySeq = new Map<number, string>();

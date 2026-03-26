@@ -426,24 +426,24 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
       {issue.status !== 'epic' && <>
       <div className="px-6 py-3 border-b border-border flex items-center gap-2 flex-wrap">
         {issue.status === 'pending' && (
-          <>
-            <Button size="sm" onClick={() => doAction('approve', () => api.approveIssue(issue.id))} disabled={!!actionLoading}>
-              <Play className="size-3.5 mr-1" />
-              {actionLoading === 'approve' ? 'Approving...' : 'Approve & Run'}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => doAction('decompose', async () => {
-                await api.decomposeIssue(issue.id)
-                onDataChange()
-              })}
-              disabled={!!actionLoading}
-            >
-              <Scissors className="size-3.5 mr-1" />
-              {actionLoading === 'decompose' ? 'Breaking down...' : 'Break into Stories'}
-            </Button>
-          </>
+          <Button size="sm" onClick={() => doAction('approve', () => api.approveIssue(issue.id))} disabled={!!actionLoading}>
+            <Play className="size-3.5 mr-1" />
+            {actionLoading === 'approve' ? 'Approving...' : 'Approve & Run'}
+          </Button>
+        )}
+        {(issue.status === 'pending' || issue.status === 'failed') && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => doAction('decompose', async () => {
+              await api.decomposeIssue(issue.id)
+              onDataChange()
+            })}
+            disabled={!!actionLoading}
+          >
+            <Scissors className="size-3.5 mr-1" />
+            {actionLoading === 'decompose' ? 'Breaking down...' : 'Break into Stories'}
+          </Button>
         )}
         {issue.status === 'awaiting_review' && (
           <>

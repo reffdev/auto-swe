@@ -76,9 +76,9 @@ export interface PollResponse {
 
 const API_TIMEOUT_MS = 30_000;
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
+async function json<T>(url: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), init?.timeoutMs ?? API_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       ...init,
@@ -207,7 +207,7 @@ export function getChildIssues(parentId: string): Promise<Issue[]> {
 // ─── Issue Decompose ──────────────────────────────────────────────────────────
 
 export function decomposeIssue(id: string): Promise<{ epic: Issue; stories: Issue[] }> {
-  return json(`/api/issues/${id}/decompose`, { method: "POST" });
+  return json(`/api/issues/${id}/decompose`, { method: "POST", timeoutMs: 120_000 });
 }
 
 // ─── Issue Lenses ─────────────────────────────────────────────────────────────
