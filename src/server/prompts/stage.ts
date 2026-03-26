@@ -18,11 +18,16 @@ Do not use shell commands to read files — use \`readFile\` instead.`;
 
 const CODING_STANDARDS = `
 ### Coding Standards
+- Make ADDITIVE changes — add new functions, methods, and endpoints alongside existing code
+- NEVER rewrite, restructure, or reorganize existing files. If you need to change more than a few lines in a function, something is wrong — stop and reconsider.
+- NEVER change function signatures, constructor parameters, return types, or export shapes of existing code — other code depends on them
+- Use \`replaceInFile\` for modifying existing files. Only use \`writeFile\` for creating brand new files.
 - Read files before modifying them
 - Fix root causes, not symptoms
-- Maintain existing code style
+- Maintain existing code style — match the patterns already in the file
 - Write concise, clear code
 - NEVER add inline comments unless a core maintainer would not understand the code without them
+- After making changes, run the build (\`runCommand\`) to verify your changes compile
 - Any docstrings must be VERY concise (1 line preferred)
 - Never add copyright/license headers unless requested`;
 
