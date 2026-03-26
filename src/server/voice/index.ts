@@ -32,6 +32,9 @@ export interface VoiceConfig {
 
 // ─── Sentence splitter ─────��──────────────────────────────────────────────────
 
+// Common abbreviations that end in '.' but aren't sentence endings
+const ABBREVIATIONS = /(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e|approx|dept|est|govt|inc|ltd|no|vol|rev|gen|sgt|cpl|pvt|st|ave|blvd|ft|oz|lb)\./gi;
+
 /** Yields complete sentences from a stream of text chunks */
 async function* sentenceSplitter(chunks: AsyncIterable<string>): AsyncIterable<string> {
   let buffer = "";
@@ -39,12 +42,28 @@ async function* sentenceSplitter(chunks: AsyncIterable<string>): AsyncIterable<s
   for await (const chunk of chunks) {
     buffer += chunk;
 
-    // Split on sentence-ending punctuation followed by a space or end
+    // Split on sentence-ending punctuation followed by whitespace,
+    // but not after common abbreviations
     while (true) {
-      const match = buffer.match(/^(.*?[.!?])(\s+|$)(.*)/s);
-      if (!match || !match[2]) break; // no complete sentence yet
+      // Find the next . ! or ? followed by a space
+      const match = buffer.match(/^(.*?[.!?])(\s+)(.*)/s);
+      if (!match) break;
 
-      const sentence = match[1].trim();
+      const candidate = match[1];
+
+      // Check if this is just an abbreviation, not a real sentence end
+      const lastWord = candidate.match(/\S+$/)?.[0] ?? "";
+      if (ABBREVIATIONS.test(lastWord) && match[2] === " ") {
+        // Not a real sentence boundary — include the space and keep buffering
+        buffer = candidate + match[2] + match[3];
+        // Advance past this false match by consuming up to the next potential split
+        const nextSplit = match[3].search(/[.!?]\s/);
+        if (nextSplit === -1) break; // no more candidates, wait for more text
+        buffer = candidate + match[2] + match[3];
+        break;
+      }
+
+      const sentence = candidate.trim();
       buffer = match[3];
 
       if (sentence.length > 0) {
@@ -122,8 +141,17 @@ export function createVoiceRouter(config: VoiceConfig): Router {
         const textStream = config.llm.chatStream!(session.messages, systemPrompt);
         let fullResponse = "";
         let sentenceCount = 0;
+        let clientDisconnected = false;
+
+        // Detect client disconnect to stop generating
+        req.on("close", () => { clientDisconnected = true; });
 
         for await (const sentence of sentenceSplitter(textStream)) {
+          if (clientDisconnected) {
+            console.log(`Voice: client disconnected, stopping after ${sentenceCount} sentences`);
+            break;
+          }
+
           fullResponse += (sentenceCount > 0 ? " " : "") + sentence;
           sentenceCount++;
 
@@ -131,16 +159,17 @@ export function createVoiceRouter(config: VoiceConfig): Router {
 
           try {
             const chunkPcm = await config.tts.synthesize(sentence, sampleRate);
-            if (chunkPcm.length > 0) {
+            if (chunkPcm.length > 0 && !clientDisconnected) {
               res.write(chunkPcm);
             }
           } catch (ttsErr) {
             console.error(`Voice: TTS error on chunk ${sentenceCount}:`, ttsErr);
-            // Continue with remaining sentences — skip this chunk
           }
         }
 
-        session.messages.push({ role: "assistant", content: fullResponse });
+        if (fullResponse) {
+          session.messages.push({ role: "assistant", content: fullResponse });
+        }
         console.log(`Voice: streaming complete (${sentenceCount} sentences, ${fullResponse.length} chars)`);
 
         // Set response text header (only useful if client reads trailing headers, otherwise for logs)

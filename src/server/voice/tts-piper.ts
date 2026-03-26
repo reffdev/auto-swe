@@ -10,7 +10,8 @@
 
 import type { TtsAdapter } from "./types";
 import { wavToPcm, pcmToWav } from "./wav";
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
+import { readFileSync } from "fs";
 
 // ─── HTTP mode ────────────────────────────────────────────────────────────────
 
@@ -58,29 +59,28 @@ export class PiperCliTts implements TtsAdapter {
    * @param modelPath — path to the .onnx voice model
    * @param configPath — optional path to the model's .json config
    */
+  private cachedSampleRate: number;
+
   constructor(
     private piperPath: string,
     private modelPath: string,
     private configPath?: string,
-  ) {}
+  ) {
+    // Cache sample rate at construction — config file doesn't change at runtime
+    this.cachedSampleRate = 22050;
+    if (configPath) {
+      try {
+        const json = readFileSync(configPath, "utf-8");
+        const config = JSON.parse(json);
+        if (config.audio?.sample_rate) this.cachedSampleRate = config.audio.sample_rate;
+      } catch { /* fall through */ }
+    }
+  }
 
   async synthesize(text: string, _sampleRate: number): Promise<Buffer> {
     const rawPcm = await this.runPiper(text);
     const normalized = normalizeVolume(rawPcm);
-    // Wrap in WAV so the device knows sample rate, bit depth, etc.
-    return pcmToWav(normalized, this.getPiperSampleRate(), 1, 16);
-  }
-
-  private getPiperSampleRate(): number {
-    // Try to read from config file
-    if (this.configPath) {
-      try {
-        const json = require("fs").readFileSync(this.configPath, "utf-8");
-        const config = JSON.parse(json);
-        if (config.audio?.sample_rate) return config.audio.sample_rate;
-      } catch { /* fall through */ }
-    }
-    return 22050; // Piper default
+    return pcmToWav(normalized, this.cachedSampleRate, 1, 16);
   }
 
   private runPiper(text: string): Promise<Buffer> {
@@ -120,28 +120,6 @@ export class PiperCliTts implements TtsAdapter {
 }
 
 // ─── Audio processing helpers ─────────────────────────────────────────────────
-
-/** Linear interpolation resample — 16-bit signed PCM */
-function resample(pcm: Buffer, fromRate: number, toRate: number): Buffer {
-  const ratio = fromRate / toRate;
-  const srcSamples = pcm.length / 2;
-  const dstSamples = Math.floor(srcSamples / ratio);
-  const out = Buffer.alloc(dstSamples * 2);
-
-  for (let i = 0; i < dstSamples; i++) {
-    const srcPos = i * ratio;
-    const srcIdx = Math.floor(srcPos);
-    const frac = srcPos - srcIdx;
-
-    const s0 = pcm.readInt16LE(Math.min(srcIdx, srcSamples - 1) * 2);
-    const s1 = pcm.readInt16LE(Math.min(srcIdx + 1, srcSamples - 1) * 2);
-    const sample = Math.round(s0 + (s1 - s0) * frac);
-
-    out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i * 2);
-  }
-
-  return out;
-}
 
 /** Normalize volume to use ~80% of the 16-bit range */
 function normalizeVolume(pcm: Buffer): Buffer {
