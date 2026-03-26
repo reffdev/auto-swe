@@ -17,9 +17,9 @@ let _lastSubmittedBrief: string | null = null;
 export function createSubmitScoutReportTool(stageAbort: AbortController) {
   _lastSubmittedBrief = null;
   return aiTool({
-    description: "Submit your codebase analysis for review. The analysis MUST contain verbatim code snippets from every relevant file. An analysis without code blocks will be rejected.",
+    description: "Submit your codebase analysis. Must be at least 80% verbatim existing code from the repo. An analysis that is mostly text will be rejected.",
     parameters: z.object({
-      report: z.string().describe("Your complete codebase analysis: verbatim EXISTING code from every relevant file (full function bodies, types, imports), build/test commands, and your findings describing what needs to change (without writing the new code). Existing code is the primary content — include more than you think necessary."),
+      report: z.string().describe("Codebase analysis: mostly verbatim EXISTING code (full functions, types, imports, patterns) with minimal notes. The engineer reading this needs to see the code, not your description of it."),
     }),
     execute: async ({ report }) => {
       _lastSubmittedBrief = report;

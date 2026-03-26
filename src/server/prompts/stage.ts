@@ -33,54 +33,61 @@ export function constructScoutPrompt(opts: { workingDir: string }): string {
 
 ${workingEnv(opts.workingDir)}
 
-You are conducting an in-depth codebase analysis for a senior engineer to review. Your analysis must include the actual code — verbatim snippets from every relevant file — not just descriptions of what you found. The reviewing engineer will use your analysis to implement the change, so completeness and accuracy are critical.
+A senior engineer will use your analysis to implement a change. They need to see the EXISTING code they'll be working with — the files they'll modify, the functions they'll call, the patterns they'll follow. Your job is to gather that code, not to design the solution.
 
-Submit your analysis via \`saveCheckpoint\` when complete. You have read-only access.
+Submit via \`saveCheckpoint\` when complete. You have read-only access.
 
 ## Procedure
 
-1. Review the project files, directory listing, and issue description already in your context
-2. Explore the codebase for code relevant to the issue: \`listDirectory\`, \`searchFiles\`, \`readFile\`
-3. Read every file you'll need to modify or understand — get the full code, not summaries
-4. Note build/test commands from the pre-loaded project files
-5. Save your checkpoint via the \`saveCheckpoint\` tool call
+1. Read the issue description to understand what needs to be built
+2. Identify which EXISTING files, functions, and types are relevant — what will be modified, extended, or used as a pattern
+3. Read those files thoroughly: \`readFile\`, \`searchFiles\`, \`listDirectory\`
+4. Include generous amounts of existing code — full functions, not snippets
+5. Submit via \`saveCheckpoint\`
 
-## Analysis format
+## Output format
 
-Your analysis will be rejected if it lacks verbatim code. The reviewer needs to see the actual code, not your description of it.
+Your output must be at least 80% verbatim existing code. Design notes, plans, and descriptions should be minimal — the engineer will figure out what to build. They need to see what already exists.
 
 \`\`\`checkpoint
 ## Build & Test
 [How to build, lint, test]
 
-## Analysis
-[For each area that needs to change, include BOTH the finding AND the relevant code together:]
+## Existing Code
 
-### Finding: [what needs to change and why]
-File: path/to/file.ts (lines 42-87)
+### src/server/db.ts — existing LLM request methods (lines 320-347)
 \\\`\\\`\\\`
-<exact existing code from the file — copy-pasteable, no line numbers, no modifications>
+[exact code from the file, copy-pasteable]
 \\\`\\\`\\\`
-[Brief note: what about this code needs to change — do NOT write the new code]
 
-### Finding: [next change needed]
-File: path/to/other-file.ts (lines 10-35)
+### src/server/api.ts — existing endpoint pattern to follow (lines 451-458)
 \\\`\\\`\\\`
-<exact existing code>
+[exact code]
 \\\`\\\`\\\`
-[What needs to change here]
 
-[Also include supporting context — types, imports, adjacent functions, test patterns —
-as their own entries so the reviewer has everything in one place.
-The reviewer will reject an analysis that makes them go read the files themselves.]
+### src/server/schema.ts — relevant table definitions (lines 71-84)
+\\\`\\\`\\\`
+[exact code]
+\\\`\\\`\\\`
+
+[Continue for every relevant file. Include:
+- Every function that will be modified or extended
+- Every type/interface/schema the new code will use
+- Existing patterns to follow (e.g., how other endpoints are structured)
+- Related test files showing the testing pattern
+- Import statements the new code will need]
+
+## Notes
+[Brief notes ONLY if something non-obvious needs to be called out.
+Do NOT write a design doc, implementation plan, or proposed code.]
 \`\`\`
 
 ## Constraints
-- Read only — you cannot modify files
-- Submit only EXISTING code from the repo — never write new code, proposed implementations, or code you "would" create
-- An analysis without verbatim code blocks will be rejected
-- Prioritize: code that needs to change > adjacent code > test patterns > distant code
-- When in doubt, include too much code rather than too little`;
+- Gather EXISTING code — never write new code, proposed implementations, or design specs
+- An analysis that is mostly text with little code will be rejected
+- Include full functions, not just signatures — the engineer needs the complete context
+- More code is always better — they cannot read files after this
+- If the issue asks for something entirely new, find the closest existing patterns to follow`;
 }
 
 export function constructScoutCompactPrompt(): string {
