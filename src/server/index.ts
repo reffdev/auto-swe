@@ -12,6 +12,12 @@ import { existsSync } from "fs";
 import { Db } from "./db";
 import { createApiRouter } from "./api";
 import { createPlannerRouter } from "./planner-api";
+import { createVoiceRouter } from "./voice";
+import { LlamaCppStt } from "./voice/stt-llamacpp";
+import { LlamaCppLlm } from "./voice/llm-llamacpp";
+import { LlamaCppTts } from "./voice/tts-llamacpp";
+import { PiperHttpTts, PiperCliTts } from "./voice/tts-piper";
+import type { TtsAdapter } from "./voice/types";
 
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
 
@@ -27,8 +33,33 @@ if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0) {
 // 3. Create Express app
 const app = express();
 app.use(cors());
-app.use(express.json());
 
+// Voice pipeline (STT → LLM → TTS) — mounted BEFORE express.json() so binary body parsing works
+if (process.env.STT_URL || process.env.VOICE_LLM_URL || process.env.TTS_URL || process.env.PIPER_PATH) {
+  // Select TTS adapter: Piper CLI > Piper HTTP > llama.cpp
+  let tts: TtsAdapter;
+  if (process.env.PIPER_PATH && process.env.PIPER_MODEL) {
+    tts = new PiperCliTts(process.env.PIPER_PATH, process.env.PIPER_MODEL, process.env.PIPER_CONFIG);
+    console.log(`Voice TTS: Piper CLI (${process.env.PIPER_MODEL})`);
+  } else if (process.env.PIPER_URL) {
+    tts = new PiperHttpTts(process.env.PIPER_URL);
+    console.log(`Voice TTS: Piper HTTP (${process.env.PIPER_URL})`);
+  } else {
+    tts = new LlamaCppTts(process.env.TTS_URL ?? "http://localhost:8082");
+    console.log(`Voice TTS: llama.cpp (${process.env.TTS_URL ?? "http://localhost:8082"})`);
+  }
+
+  const voiceRouter = createVoiceRouter({
+    stt: new LlamaCppStt(process.env.STT_URL ?? "http://localhost:8080"),
+    llm: new LlamaCppLlm(process.env.VOICE_LLM_URL ?? "http://localhost:8081", process.env.VOICE_MODEL_ID ?? "default"),
+    tts,
+    systemPrompt: process.env.VOICE_SYSTEM_PROMPT,
+  });
+  app.use("/api/voice", voiceRouter);
+  console.log("Voice endpoint enabled at /api/voice");
+}
+
+app.use(express.json());
 
 // 4. Mount API routes (with runner context for approve/retry)
 app.use("/api", createApiRouter(db, { pipelineCtx: { db } }));

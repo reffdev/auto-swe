@@ -28,8 +28,9 @@ async function fetchMachineMetrics(baseUrl: string): Promise<{
   promptTps: number;
   completionTps: number;
 } | null> {
-  // Strip trailing slash, append /metrics
-  const metricsUrl = baseUrl.replace(/\/+$/, "") + "/metrics";
+  // base_url is typically "http://host:port/v1" — metrics is at the server root, not under /v1
+  const url = new URL(baseUrl);
+  const metricsUrl = `${url.protocol}//${url.host}/api/metrics`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
