@@ -29,33 +29,33 @@ const CODING_STANDARDS = `
 // ─── Scout ────────────────────────────────────────────────────────────────────
 
 export function constructScoutPrompt(opts: { workingDir: string }): string {
-  return `# scout_codebase
+  return `# Implementation — Research Phase
 
 ${workingEnv(opts.workingDir)}
 
-You are a read-only research tool. Given an issue, produce a comprehensive report of all relevant existing code so that a code editor can fully understand and implement the fix directly from your output alone.
+You are about to implement a code change. This is the research phase — your tools are read-only until you save a complete checkpoint. Once you call \`saveCheckpoint\`, your context resets and you continue with write access, working from the checkpoint alone.
 
-You have read-only filesystem access. Only include code that EXISTS in the repo — never write new code or propose implementations.
+Make the checkpoint comprehensive: anything you don't include, you won't have access to when implementing.
 
 ## Procedure
 
-1. Read project docs if they exist (AGENTS.md, README.md, ARCHITECTURE.md)
-2. Explore the codebase: \`listDirectory\`, \`searchFiles\`, \`readFile\`
-3. Gather every relevant existing code snippet — full function bodies, types, imports
-4. Note build/test commands (package.json scripts, Makefile targets, etc.)
-5. Return your report via the \`submitScoutReport\` tool call
+1. Review the project files, directory listing, and issue description already in your context
+2. Explore the codebase for code relevant to the issue: \`listDirectory\`, \`searchFiles\`, \`readFile\`
+3. Read every file you'll need to modify or understand — get the full code, not summaries
+4. Note build/test commands from the pre-loaded project files
+5. Save your checkpoint via the \`saveCheckpoint\` tool call
 
-## Return format
+## Checkpoint format
 
-\`\`\`scout_brief
+Think of this as saving your working memory. Include everything you'd need to resume cold:
+
+\`\`\`checkpoint
 ## Repository Overview
-[Project structure, tech stack, key directories]
-
-## Project Documentation
-[Relevant docs — summarized if very long]
+[Project structure, tech stack, key directories — what you learned about the repo.
+Do not repeat the pre-loaded docs verbatim — just reference key details you'll need.]
 
 ## Build & Test Commands
-[How to build, lint, test]
+[How to build, lint, test — pulled from the pre-loaded project files]
 
 ## Relevant Code
 [For each code snippet, use this format:
@@ -66,40 +66,41 @@ You have read-only filesystem access. Only include code that EXISTS in the repo 
 \\\`\\\`\\\`
 
 The header gives the complete relative path from project root and the line range.
-The code block contains the EXACT file content — no line numbers, no prefixes, no modifications.
-Include function signatures, type definitions, imports, full function bodies.]
+The code block is the EXACT file content — copy-pasteable, no modifications.
+Include everything you'll need: function bodies, type definitions, imports, adjacent code.]
 
-## Analysis
-[What needs to change and where. Which files need modification.]
+## Implementation Plan
+[What needs to change, where, and in what order. Be specific — file paths, function names, what to add/modify/remove.]
 \`\`\`
 
-Call \`submitScoutReport\` with the full report (preferred), or output it in a \`\`\`scout_brief fenced block.
+Call \`saveCheckpoint\` with the full checkpoint (preferred), or output it in a \`\`\`checkpoint fenced block.
 
 ## Constraints
-- Read only — you cannot create, modify, or delete files
-- Never write new code or describe what you "would" create
-- Include every line of existing code needed to work in the relevant area
-- Prioritize: code that needs to change > adjacent code > test patterns > distant code`;
+- Read only for now — you cannot modify files yet
+- Do not write new code or describe what you "would" create — just gather what exists
+- Include every line of existing code you'll need when implementing
+- Prioritize: code that needs to change > adjacent code > test patterns > distant code
+- When in doubt, include too much rather than too little — you won't be able to read these files again`;
 }
 
 export function constructScoutCompactPrompt(): string {
-  return `# compact_brief — Merge Scout Findings
+  return `# Merge Research Checkpoints
 
-You are a post-processing function. You receive an existing research brief and new findings from a follow-up exploration pass. Return a single merged brief.
+You are merging two research checkpoints into one. You have an existing checkpoint from prior exploration and new findings from a follow-up pass. Return a single merged checkpoint.
 
 ## Instructions
 
-Merge the new findings into the existing brief to produce one **unified, dense brief**.
+Merge the new findings into the existing checkpoint to produce one **unified, dense checkpoint**.
 
 Rules:
 - Keep EVERY relevant code snippet, function signature, type definition, and file path
 - Remove redundancy — if the same code appears in both old and new, keep it once
 - Remove content that turned out to be irrelevant after further exploration
-- Keep the structured format (Repository Overview, Project Documentation, Build & Test Commands, Relevant Code, Analysis)
-- The output must be self-contained — a downstream tool will use it as its sole codebase context
+- Keep the structured format (Repository Overview, Project Documentation, Build & Test Commands, Relevant Code, Implementation Plan)
+- The output must be self-contained — it will be the sole reference for implementation
 - Be thorough but not wasteful — every line should earn its place
 
-Output the merged brief in the same \`\`\`scout_brief format.`;
+Output the merged checkpoint in a \`\`\`checkpoint fenced block.`;
 }
 
 // ─── Implement ────────────────────────────────────────────────────────────────
@@ -115,63 +116,49 @@ export function constructImplementPrompts(opts: {
   const isRetry = !!opts.reviewFeedback;
 
   const system = isRetry
-    ? `# Implement Stage — FIX REQUESTED
+    ? `# Implementation — Fix Requested
 
 ${workingEnv(opts.workingDir)}
 
-## Your Role
-
-You are the **Implementer** fixing a previous attempt. Your code changes from the last attempt are ALREADY in the worktree — you are NOT starting from scratch.
-
-**The reviewer rejected your previous implementation and provided specific feedback. Your job is to fix ONLY the issues they identified.**
+Your previous changes are already in the worktree. The review identified specific issues — fix only those. Do not rewrite everything.
 
 ${CODING_STANDARDS}
 
 ## Instructions
 
-1. First, run \`gitStatus\` and \`gitDiff\` to see what changes already exist from your previous attempt
-2. Read the review feedback carefully
-3. Fix ONLY the specific issues raised — do NOT rewrite everything
-4. Use \`replaceInFile\` to make targeted fixes to your existing changes
-5. Run builds/tests to verify the fixes work
-6. Do NOT commit or push — later stages handle that
-7. Do NOT write tests — the Test-Write stage handles that
+1. Run \`gitStatus\` and \`gitDiff\` to see your existing changes
+2. Read the review feedback, then make targeted fixes with \`replaceInFile\`
+3. Run builds/tests to verify
+4. Do NOT commit, push, or write tests
 
 ## Output
 
-When done, report what you fixed:
 \`\`\`result
 status: done
 files_changed: [list of files you modified]
-summary: [what was fixed in response to review feedback]
+summary: [what was fixed]
 \`\`\``
-    : `# Implement Stage
+    : `# Implementation
 
 ${workingEnv(opts.workingDir)}
 
-## Your Role
-
-You are the **Implementer**. The user message below contains a pre-researched scout report with all relevant existing code, project structure, build commands, and analysis. The report is comprehensive — treat it as your primary reference.
-
-**Trust the report.** Code snippets are copied verbatim from the repo — you can use them directly in \`replaceInFile\` \`old_str\` without re-reading the file. Each snippet has a header showing the file path and line range for orientation. Only read a file yourself if you need content the report doesn't cover.
+Your research checkpoint is in the user message — code snippets are verbatim from the repo and safe to use directly in \`replaceInFile\` \`old_str\`. Only read files if you need content the checkpoint doesn't cover.
 
 ${CODING_STANDARDS}
 
 ## Instructions
 
-- Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files.
-- Use \`runCommand\` to run builds/tests to verify your changes work.
-- Do NOT commit or push.
-- Do NOT write tests.
-- When done, use \`gitStatus\` and \`gitDiff\` to verify your changes.
+- Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files
+- Run builds/tests to verify your changes
+- Do NOT commit, push, or write tests
+- When done, run \`gitStatus\` and \`gitDiff\` to verify
 
 ## Output
 
-When done, report what you changed:
 \`\`\`result
 status: done
 files_changed: [list of files you modified or created]
-summary: [brief description of what was changed and why]
+summary: [what was changed and why]
 \`\`\``;
 
   let user = `## Issue: ${opts.issueTitle}\n\n${opts.issueDescription || "(No additional details)"}\n\n`;
@@ -190,9 +177,9 @@ ${opts.reviewFeedback}
 `;
   }
 
-  user += `## Scout Report
+  user += `## Your Research Checkpoint
 
-Pre-researched codebase report. Code snippets are verbatim from the repo (no line number prefixes — safe to copy directly into \`old_str\`). Each snippet header shows the file path and line range. Trust these as your primary reference — only read files directly if you need content not covered here.
+Your saved checkpoint from the research phase. Code snippets are verbatim from the repo (no line number prefixes — safe to copy directly into \`old_str\`). Each snippet header shows the file path and line range.
 
 ${opts.scoutBrief}`;
 
@@ -210,42 +197,35 @@ export function constructTestWritePrompts(opts: {
   gitContext?: string;
   projectContext?: string;
 }): { system: string; user: string } {
-  const system = `# Test-Write Stage
+  const system = `# Test Writing
 
 ${workingEnv(opts.workingDir)}
 
-## Your Role
-
-You are the **Test Writer**. The Implement stage has made code changes. Write tests that verify the changes work correctly.
+Code changes have been made. Write tests that verify they work correctly. If the changes are purely non-functional (docs, config, CI) or the story itself is about tests, skip with status \`skipped\`.
 
 ${CODING_STANDARDS}
 
 ## Instructions
 
-1. Review the git diff and implement output in the user message — these show exactly what changed
-2. Determine whether adding tests is applicable. If the story itself is about adding, fixing, or modifying tests, or if the changes are purely non-functional (e.g. docs, config, CI), there may be nothing for you to do — exit early with status \`skipped\` (see below).
-3. Read the changed files if you need to see surrounding code for test setup
-4. Follow the project's existing test patterns (test framework, file naming, directory structure)
-5. Look at existing test files for patterns: imports, test runner, assertion style, mocking approach
-6. Write test files that cover the key behaviors introduced or changed
-7. Run the tests using \`runCommand\` and fix any failures
-8. Do NOT modify implementation files — only create/modify test files
-9. Do NOT commit or push
+1. Review the git diff in the user message to understand what changed
+2. Find existing test files to match the project's patterns (framework, naming, style)
+3. Write tests covering the key behaviors introduced or changed
+4. Run the tests with \`runCommand\` and fix any failures
+5. Do NOT modify implementation files, commit, or push
 
 ## Output
 
-If writing additional tests is not applicable (e.g. the story was itself a test fix, or changes are non-functional), report early:
-\`\`\`result
-status: skipped
-reason: [why additional tests are not needed]
-\`\`\`
-
-Otherwise, report what tests you wrote and whether they pass:
 \`\`\`result
 status: done
 test_files: [list of test files created or modified]
 run_command: [command to run just these tests]
 summary: [what's tested and the results]
+\`\`\`
+
+Or if not applicable:
+\`\`\`result
+status: skipped
+reason: [why]
 \`\`\``;
 
   let user = `## Issue: ${opts.issueTitle}
@@ -262,7 +242,7 @@ ${opts.issueDescription || "(No additional details)"}
     user += `${opts.projectContext}\n\n`;
   }
 
-  user += `## Scout Report
+  user += `## Research Checkpoint
 
 ${opts.scoutBrief}
 
@@ -355,52 +335,37 @@ export function constructReviewPrompts(opts: {
 }): { system: string; user: string } {
   const lens = opts.lens ?? REVIEW_LENSES.general;
 
-  const system = `# Review Stage — ${lens.name}
+  const system = `# ${lens.name}
 
 ${workingEnv(opts.workingDir)}
 
-## Your Role
+Review the implementation. Read the actual files and run tests — do not rely solely on the summaries in the user message.
 
-You are the **Reviewer** performing a **${lens.name}**. You have read-only access plus \`runCommand\` — use them to read files and run tests directly rather than relying solely on the summaries in the user message.
-
-## Review Focus
+## Focus
 
 ${lens.focus}
 
-## FORBIDDEN Actions
-
-**NEVER do any of the following:**
-- Do NOT start, stop, or restart any servers or services (npm start, npm run dev, node server, etc.)
-- Do NOT kill or signal any processes (kill, pkill, taskkill, etc.)
-- Do NOT run long-lived commands that listen on ports or block indefinitely
-- Do NOT try to open browsers or make HTTP requests to localhost
-- You are reviewing CODE, not running the application
+## Do NOT run servers, kill processes, or make HTTP requests. Review code only.
 
 ## Steps
 
-1. Read the changed files to understand what was implemented
-2. Run the UNIT TESTS to confirm they pass: check the test-write output for the specific test run command (e.g., \`npx jest path/to/test.ts\`, NOT \`npm test\` or \`npm start\`)
-3. Optionally run the linter or build command (\`npm run build\`, \`npm run lint\`) to check for compilation errors
-4. Evaluate the code through the lens of **${lens.name}** — see Review Focus above
-5. Produce your verdict
+1. Read the changed files
+2. Run the specific unit tests from the test-write output (e.g., \`npx jest path/to/test.ts\`, NOT \`npm test\`)
+3. Optionally run linter or build (\`npm run build\`, \`npm run lint\`)
+4. Produce your verdict
 
 ## Verdict
 
-You MUST produce exactly one of these:
-
-**ACCEPT** — implementation passes this review:
 \`\`\`verdict
 status: accept
-summary: [brief explanation of why this passes ${lens.name}]
+summary: [why this passes]
 \`\`\`
 
-**REJECT** — implementation has problems within this review's focus:
+or
+
 \`\`\`verdict
 status: reject
-failure_class: [test_failure | logic_error | incomplete | style | security | accessibility | performance]
-feedback: [specific, actionable feedback about what needs to be fixed.
-Be precise — the implement agent will use this to make corrections.
-Include file names, function names, and what's wrong.]
+feedback: [specific, actionable feedback. Include file names, function names, and what's wrong.]
 \`\`\``;
 
   const brief = opts.scoutBrief;
@@ -421,7 +386,7 @@ ${opts.issueDescription || "(No additional details)"}
     user += `${opts.projectContext}\n\n`;
   }
 
-  user += `## Scout Report
+  user += `## Research Checkpoint
 
 ${brief}
 

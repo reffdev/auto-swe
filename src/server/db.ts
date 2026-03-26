@@ -58,6 +58,7 @@ export class Db {
         git_pr_url TEXT, git_pr_number INTEGER,
         github_issue_number INTEGER, github_issue_url TEXT,
         review_lenses TEXT,
+        parent_id TEXT, sequence INTEGER, depends_on TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT
       );
@@ -100,6 +101,9 @@ export class Db {
       "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
       "ALTER TABLE issues ADD COLUMN github_issue_url TEXT",
       "ALTER TABLE issues ADD COLUMN review_lenses TEXT",
+      "ALTER TABLE issues ADD COLUMN parent_id TEXT",
+      "ALTER TABLE issues ADD COLUMN sequence INTEGER",
+      "ALTER TABLE issues ADD COLUMN depends_on TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -230,7 +234,11 @@ export class Db {
     return this.drizzle.select().from(schema.issues).where(eq(schema.issues.id, id)).get() ?? null;
   }
 
-  createIssue(data: { project_id: string; title: string; description?: string; review_lenses?: string[] }): Issue {
+  createIssue(data: {
+    project_id: string; title: string; description?: string;
+    review_lenses?: string[]; parent_id?: string; sequence?: number;
+    depends_on?: string[]; status?: string;
+  }): Issue {
     const id = randomUUID();
     this.drizzle.insert(schema.issues).values({
       id,
@@ -238,13 +246,24 @@ export class Db {
       title: data.title,
       description: data.description ?? "",
       review_lenses: data.review_lenses ? JSON.stringify(data.review_lenses) : null,
+      parent_id: data.parent_id ?? null,
+      sequence: data.sequence ?? null,
+      depends_on: data.depends_on?.length ? JSON.stringify(data.depends_on) : null,
+      status: data.status ?? "pending",
     }).run();
     return this.getIssue(id)!;
   }
 
+  getChildIssues(parentId: string): Issue[] {
+    return this.drizzle.select().from(schema.issues)
+      .where(eq(schema.issues.parent_id, parentId))
+      .orderBy(schema.issues.sequence)
+      .all();
+  }
+
   updateIssue(
     id: string,
-    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "review_lenses" | "completed_at" | "retry_count">>
+    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "review_lenses" | "parent_id" | "sequence" | "depends_on" | "completed_at" | "retry_count">>
   ): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;

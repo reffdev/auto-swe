@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert } from 'lucide-react'
+import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<Issue['status'], string> = {
   awaiting_review: 'bg-yellow-500/20 text-yellow-400',
   completed: 'bg-emerald-500/20 text-emerald-400',
   failed: 'bg-destructive/20 text-destructive',
+  epic: 'bg-indigo-500/20 text-indigo-400',
 }
 
 function StatusBadge({ status }: { status: Issue['status'] }) {
@@ -155,6 +156,97 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remaining}s`
 }
 
+function IssueRow({ issue, run, indent, onSelect }: { issue: Issue; run?: Run; indent?: boolean; onSelect: (id: string) => void }) {
+  return (
+    <button
+      onClick={() => onSelect(issue.id)}
+      className={cn(
+        "w-full text-left py-3 border-b border-border hover:bg-accent/50 transition-colors",
+        indent ? "pl-12 pr-6" : "px-6 py-4"
+      )}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            {indent && issue.sequence != null && (
+              <span className="text-xs text-muted-foreground font-mono w-4 shrink-0">{issue.sequence}.</span>
+            )}
+            <span className={cn("font-medium truncate", indent ? "text-xs" : "text-sm")}>{issue.title}</span>
+            <StatusBadge status={issue.status} />
+            {run?.stage && (issue.status === 'running' || issue.status === 'approved') && (
+              <span className="text-xs text-muted-foreground capitalize">{run.stage.replace('_', '-')}</span>
+            )}
+          </div>
+          {!indent && issue.description && (
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{issue.description}</p>
+          )}
+        </div>
+        <div className="text-right shrink-0">
+          {run?.duration_ms != null && (
+            <span className="text-xs text-muted-foreground">{formatDuration(run.duration_ms)}</span>
+          )}
+          {issue.git_pr_url && (
+            <span className="text-xs text-blue-400 block">PR #{issue.git_pr_number}</span>
+          )}
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue }: {
+  issue: Issue; children: Issue[]; isEpic: boolean;
+  runByIssue: Map<string, Run>; onSelectIssue: (id: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(true)
+
+  if (!isEpic) {
+    return <IssueRow issue={issue} run={runByIssue.get(issue.id)} onSelect={onSelectIssue} />
+  }
+
+  // Derive epic status from children
+  const childStatuses = children.map(c => c.status)
+  const derivedStatus = childStatuses.every(s => s === 'completed') ? 'completed'
+    : childStatuses.some(s => s === 'failed') ? 'failed'
+    : childStatuses.some(s => s === 'running' || s === 'approved') ? 'running'
+    : 'pending'
+
+  const completedCount = childStatuses.filter(s => s === 'completed').length
+
+  return (
+    <div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full text-left px-6 py-4 border-b border-border hover:bg-accent/50 transition-colors"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <ChevronRight className={cn('size-3.5 shrink-0 transition-transform text-muted-foreground', expanded && 'rotate-90')} />
+              <Layers className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="font-medium text-sm truncate">{issue.title}</span>
+              <StatusBadge status={derivedStatus} />
+              <span className="text-xs text-muted-foreground">{completedCount}/{children.length} stories</span>
+            </div>
+            {issue.description && (
+              <p className="text-xs text-muted-foreground mt-1 ml-9 line-clamp-1">{issue.description}</p>
+            )}
+          </div>
+        </div>
+      </button>
+      {expanded && children.map(child => (
+        <IssueRow
+          key={child.id}
+          issue={child}
+          run={runByIssue.get(child.id)}
+          indent
+          onSelect={onSelectIssue}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, onSelectIssue, projectId, onDataChange }: IssueListProps) {
   const [showNewIssue, setShowNewIssue] = useState(false)
   const navigate = useNavigate()
@@ -196,39 +288,33 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
             {statusFilter === 'all' ? 'No issues yet. Create one to get started.' : `No ${statusFilter.replace('_', ' ')} issues.`}
           </p>
         )}
-        {issues.map((issue) => {
-          const run = runByIssue.get(issue.id)
-          return (
-            <button
-              key={issue.id}
-              onClick={() => onSelectIssue(issue.id)}
-              className="w-full text-left px-6 py-4 border-b border-border hover:bg-accent/50 transition-colors"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm truncate">{issue.title}</span>
-                    <StatusBadge status={issue.status} />
-                    {run?.stage && (issue.status === 'running' || issue.status === 'approved') && (
-                      <span className="text-xs text-muted-foreground capitalize">{run.stage.replace('_', '-')}</span>
-                    )}
-                  </div>
-                  {issue.description && (
-                    <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{issue.description}</p>
-                  )}
-                </div>
-                <div className="text-right shrink-0">
-                  {run?.duration_ms != null && (
-                    <span className="text-xs text-muted-foreground">{formatDuration(run.duration_ms)}</span>
-                  )}
-                  {issue.git_pr_url && (
-                    <span className="text-xs text-blue-400 block">PR #{issue.git_pr_number}</span>
-                  )}
-                </div>
-              </div>
-            </button>
-          )
-        })}
+        {(() => {
+          // Group: show top-level issues and epics, children nested under their parent
+          const topLevel = issues.filter(i => !i.parent_id)
+          const childrenByParent = new Map<string, Issue[]>()
+          for (const issue of issues) {
+            if (issue.parent_id) {
+              const list = childrenByParent.get(issue.parent_id) ?? []
+              list.push(issue)
+              childrenByParent.set(issue.parent_id, list)
+            }
+          }
+
+          return topLevel.map((issue) => {
+            const children = (childrenByParent.get(issue.id) ?? []).sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0))
+            const isEpic = issue.status === 'epic' || children.length > 0
+            return (
+              <EpicOrIssueRow
+                key={issue.id}
+                issue={issue}
+                children={children}
+                isEpic={isEpic}
+                runByIssue={runByIssue}
+                onSelectIssue={onSelectIssue}
+              />
+            )
+          })
+        })()}
       </div>
 
       <NewIssueDialog

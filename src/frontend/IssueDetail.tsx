@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert, Layers, Scissors } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
@@ -289,6 +289,41 @@ function LensChips({ issue, editable, onDataChange }: { issue: Issue; editable: 
   )
 }
 
+// ─── Epic story list ──────────────────────────────────────────────────────────
+
+function EpicStoryList({ epicId, projectId, onSelectIssue }: { epicId: string; projectId: string; onSelectIssue: (id: string) => void }) {
+  const [children, setChildren] = useState<Issue[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    api.getChildIssues(epicId).then(setChildren).finally(() => setLoading(false))
+  }, [epicId])
+
+  if (loading) return <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">Loading stories...</div>
+  if (children.length === 0) return <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">No stories</div>
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {children.map(child => (
+        <button
+          key={child.id}
+          onClick={() => onSelectIssue(child.id)}
+          className="w-full text-left px-6 py-3 border-b border-border hover:bg-accent/50 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground font-mono w-6 shrink-0">{child.sequence ?? '—'}.</span>
+            <span className="font-medium text-sm truncate flex-1">{child.title}</span>
+            <StatusBadge status={child.status} />
+          </div>
+          {child.description && (
+            <p className="text-xs text-muted-foreground mt-1 ml-9 line-clamp-1">{child.description}</p>
+          )}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: IssueDetailProps) {
@@ -364,15 +399,51 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           <p className="text-sm text-muted-foreground ml-9">{issue.description}</p>
         )}
         <LensChips issue={issue} editable={issue.status === 'pending'} onDataChange={onDataChange} />
+        {issue.parent_id && (
+          <button
+            onClick={() => onBack()}
+            className="flex items-center gap-1.5 ml-9 mt-2 text-xs text-blue-400 hover:underline"
+          >
+            <Layers className="size-3" />
+            Part of epic
+          </button>
+        )}
       </div>
 
-      {/* Actions */}
+      {/* Epic view — show stories instead of pipeline output */}
+      {issue.status === 'epic' && (
+        <EpicStoryList
+          epicId={issue.id}
+          projectId={issue.project_id}
+          onSelectIssue={(id) => {
+            const nav = `/project/${issue.project_id}/issue/${id}`
+            window.location.hash = nav
+          }}
+        />
+      )}
+
+      {/* Actions + pipeline view (only for non-epic issues) */}
+      {issue.status !== 'epic' && <>
       <div className="px-6 py-3 border-b border-border flex items-center gap-2 flex-wrap">
         {issue.status === 'pending' && (
-          <Button size="sm" onClick={() => doAction('approve', () => api.approveIssue(issue.id))} disabled={!!actionLoading}>
-            <Play className="size-3.5 mr-1" />
-            {actionLoading === 'approve' ? 'Approving...' : 'Approve & Run'}
-          </Button>
+          <>
+            <Button size="sm" onClick={() => doAction('approve', () => api.approveIssue(issue.id))} disabled={!!actionLoading}>
+              <Play className="size-3.5 mr-1" />
+              {actionLoading === 'approve' ? 'Approving...' : 'Approve & Run'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => doAction('decompose', async () => {
+                await api.decomposeIssue(issue.id)
+                onDataChange()
+              })}
+              disabled={!!actionLoading}
+            >
+              <Scissors className="size-3.5 mr-1" />
+              {actionLoading === 'decompose' ? 'Breaking down...' : 'Break into Stories'}
+            </Button>
+          </>
         )}
         {issue.status === 'awaiting_review' && (
           <>
@@ -534,6 +605,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           <ConversationScrollButton />
         </Conversation>
       )}
+      </>}
       </>}
     </div>
   )

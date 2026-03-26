@@ -124,19 +124,18 @@ describe("constructReviewPrompts with lens", () => {
     expect(system).toContain("Input validation");
   });
 
-  it("includes lens name in verdict format", () => {
+  it("includes lens name in title", () => {
     const { system } = constructReviewPrompts({
       ...baseOpts,
       lens: REVIEW_LENSES.ui,
     });
     expect(system).toContain("UI Review");
-    expect(system).toContain("passes UI Review");
   });
 
-  it("includes all standard review steps", () => {
+  it("includes verdict format with accept and reject", () => {
     const { system } = constructReviewPrompts(baseOpts);
-    expect(system).toContain("FORBIDDEN Actions");
     expect(system).toContain("status: accept");
     expect(system).toContain("status: reject");
+    expect(system).toContain("Do NOT run servers");
   });
 });

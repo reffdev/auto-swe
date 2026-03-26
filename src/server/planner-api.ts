@@ -35,6 +35,56 @@ export function parseIssueProposal(content: string): {
   return { title, description, lenses };
 }
 
+export function parseEpicProposal(content: string): {
+  title: string;
+  description: string;
+  stories: Array<{ title: string; description: string; lenses: string[]; dependsOn: number[] }>;
+} | null {
+  const match = content.match(/```epic_proposal\s*\n([\s\S]*?)```/);
+  if (!match) return null;
+
+  const block = match[1];
+
+  // Parse epic title
+  const titleMatch = block.match(/^title:\s*(.+)$/m);
+  if (!titleMatch) return null;
+  const title = titleMatch[1].trim();
+
+  // Parse epic description — text between title and first "story:"
+  const descMatch = block.match(/description:\s*\n?([\s\S]*?)(?=\nstory:\s*\d|$)/);
+  const description = descMatch ? descMatch[1].trim() : "";
+
+  // Split into stories on "story: N" boundaries (line must start with "story:")
+  const storyBlocks = block.split(/^story:\s*\d+\s*$/m).slice(1);
+  if (storyBlocks.length === 0) return null;
+
+  const stories: Array<{ title: string; description: string; lenses: string[]; dependsOn: number[] }> = [];
+  for (const storyBlock of storyBlocks) {
+    const storyTitle = storyBlock.match(/^title:\s*(.+)$/m);
+    if (!storyTitle) continue;
+
+    // Parse depends_on — comma-separated story numbers
+    const depsMatch = storyBlock.match(/depends_on:\s*(.+)$/m);
+    const dependsOn = depsMatch
+      ? depsMatch[1].split(/[,\s]+/).map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
+      : [];
+
+    const storyDesc = storyBlock.match(/description:\s*\n?([\s\S]*?)(?=\n?review_lenses:|$)/);
+    const storyLenses = storyBlock.match(/review_lenses:\s*(.+)$/m);
+    const lensStr = storyLenses?.[1]?.trim() ?? "general";
+
+    stories.push({
+      title: storyTitle[1].trim(),
+      description: storyDesc ? storyDesc[1].trim() : "",
+      lenses: lensStr.split(/[,\s]+/).map(s => s.trim()).filter(Boolean),
+      dependsOn,
+    });
+  }
+
+  if (stories.length === 0) return null;
+  return { title, description, stories };
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 export function createPlannerRouter(db: Db): Router {
@@ -149,39 +199,95 @@ export function createPlannerRouter(db: Db): Router {
       return res.status(409).json({ error: "Wait for the response to finish before approving" });
     }
 
-    // Find the last assistant message with an issue_proposal
+    // Find the last assistant message with a proposal
+    // Search for epic first (takes priority), then single
     const messages = db.getPlannerMessages(conversation.id);
-    let proposal: ReturnType<typeof parseIssueProposal> = null;
+    let epicProposal: ReturnType<typeof parseEpicProposal> = null;
+    let singleProposal: ReturnType<typeof parseIssueProposal> = null;
+
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "assistant") {
-        proposal = parseIssueProposal(messages[i].content);
-        if (proposal) break;
+        epicProposal = parseEpicProposal(messages[i].content);
+        if (epicProposal) break;
+      }
+    }
+    if (!epicProposal) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "assistant") {
+          singleProposal = parseIssueProposal(messages[i].content);
+          if (singleProposal) break;
+        }
       }
     }
 
-    if (!proposal) {
+    if (!epicProposal && !singleProposal) {
       return res.status(400).json({ error: "No issue proposal found in conversation. Ask the planner to produce one first." });
     }
 
-    // Allow caller to override lenses
-    const lenses = req.body.reviewLenses?.length ? req.body.reviewLenses : proposal.lenses;
+    if (epicProposal) {
+      // Create epic parent issue (status "epic" — not runnable through pipeline)
+      const epic = db.createIssue({
+        project_id: conversation.project_id,
+        title: epicProposal.title,
+        description: epicProposal.description,
+        status: "epic",
+      });
 
-    // Create the issue with lenses
-    const issue = db.createIssue({
-      project_id: conversation.project_id,
-      title: proposal.title,
-      description: proposal.description,
-      review_lenses: lenses,
-    });
+      // Create child stories — two passes: create all first, then wire up depends_on
+      const storyIdBySeq = new Map<number, string>(); // story number → issue UUID
 
-    // Mark conversation as approved
-    db.updatePlannerConversation(conversation.id, {
-      status: "approved",
-      issue_id: issue.id,
-      updated_at: new Date().toISOString(),
-    });
+      // Pass 1: create issues without depends_on
+      const stories = epicProposal.stories.map((story, i) => {
+        const lenses = req.body.reviewLenses?.length ? req.body.reviewLenses : story.lenses;
+        const issue = db.createIssue({
+          project_id: conversation.project_id,
+          title: story.title,
+          description: story.description,
+          review_lenses: lenses,
+          parent_id: epic.id,
+          sequence: i + 1,
+        });
+        storyIdBySeq.set(i + 1, issue.id);
+        return { issue, dependsOn: story.dependsOn };
+      });
 
-    res.status(201).json({ issue, reviewLenses: lenses });
+      // Pass 2: set depends_on with resolved UUIDs
+      for (const { issue, dependsOn } of stories) {
+        if (dependsOn.length > 0) {
+          const depIds = dependsOn.map(n => storyIdBySeq.get(n)).filter((id): id is string => !!id);
+          if (depIds.length > 0) {
+            db.updateIssue(issue.id, { depends_on: JSON.stringify(depIds) });
+          }
+        }
+      }
+
+      const storyIssues = stories.map(s => db.getIssue(s.issue.id)!);  // re-read with depends_on set
+
+      db.updatePlannerConversation(conversation.id, {
+        status: "approved",
+        issue_id: epic.id,
+        updated_at: new Date().toISOString(),
+      });
+
+      res.status(201).json({ epic, stories: storyIssues });
+    } else {
+      // Single issue
+      const lenses = req.body.reviewLenses?.length ? req.body.reviewLenses : singleProposal!.lenses;
+      const issue = db.createIssue({
+        project_id: conversation.project_id,
+        title: singleProposal!.title,
+        description: singleProposal!.description,
+        review_lenses: lenses,
+      });
+
+      db.updatePlannerConversation(conversation.id, {
+        status: "approved",
+        issue_id: issue.id,
+        updated_at: new Date().toISOString(),
+      });
+
+      res.status(201).json({ issue, reviewLenses: lenses });
+    }
   });
 
   // DELETE /conversations/:id — abandon a conversation

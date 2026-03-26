@@ -10,22 +10,21 @@ import { tool as aiTool } from "ai";
 let _lastSubmittedBrief: string | null = null;
 
 /**
- * Creates the submitScoutReport tool with an AbortController.
- * When the tool is called, it stores the report and aborts the stream
- * so the scout stage ends immediately.
+ * Creates the saveCheckpoint tool with an AbortController.
+ * When the tool is called, it stores the checkpoint and aborts the stream
+ * so the research phase ends immediately.
  */
 export function createSubmitScoutReportTool(stageAbort: AbortController) {
   _lastSubmittedBrief = null;
   return aiTool({
-    description: "Submit your completed scout report. Call this when you have finished exploring the codebase and are ready to hand off to the implement stage. The report must be comprehensive — include ALL relevant code, not a summary. Calling this tool immediately ends the scout stage.",
+    description: "Save your research checkpoint and begin implementation. Call this when you've gathered everything you need from the codebase. Your context will be cleared after this — include ALL code and notes you'll need to implement the change without reading any files again.",
     parameters: z.object({
-      report: z.string().describe("The complete, detailed scout report containing repository overview, ALL relevant existing code (full function bodies, types, imports), build commands, and analysis. This is NOT a summary — include every line the implement agent needs."),
+      report: z.string().describe("Your complete research checkpoint: repository overview, ALL relevant existing code (full function bodies, types, imports), build commands, and your implementation plan. This is your only reference when you resume — include everything."),
     }),
     execute: async ({ report }) => {
       _lastSubmittedBrief = report;
-      // Abort the stream — scout is done
       stageAbort.abort();
-      return "Scout report submitted. Stage complete.";
+      return "Checkpoint saved. Proceeding to implementation.";
     },
   });
 }
@@ -44,14 +43,14 @@ export function hasSubmittedBrief(): boolean {
 
 // ─── Parsing helpers ──────────────────────────────────────────────────────────
 
-/** Extract scout brief — checks tool submission first, then fenced block, then full output */
+/** Extract checkpoint — checks tool submission first, then fenced block, then full output */
 export function extractScoutBrief(output: string): string {
-  // 1. Check if the scout used the submitScoutReport tool
+  // 1. Check if the saveCheckpoint tool was used
   if (_lastSubmittedBrief) {
     return _lastSubmittedBrief.trim();
   }
-  // 2. Check for fenced block
-  const match = output.match(/```scout_brief\s*\n([\s\S]*?)```/);
+  // 2. Check for fenced block (accept both "checkpoint" and legacy "scout_brief")
+  const match = output.match(/```(?:checkpoint|scout_brief)\s*\n([\s\S]*?)```/);
   if (match) return match[1].trim();
   // 3. Fallback: use the full output
   return output.trim();

@@ -74,18 +74,21 @@ const AUTO_READ_FILES = [
  * Read key project files from the worktree and build a context section.
  * Returns the context string and the total chars injected.
  */
-function gatherProjectContext(worktreePath: string): { context: string; fileCount: number; totalChars: number } {
+function gatherProjectContext(worktreePath: string): { context: string; fileCount: number; totalChars: number; loadedFiles: string[] } {
   const sections: string[] = [];
   let totalChars = 0;
-  let fileCount = 0;
+  const loadedFiles: string[] = [];
 
-  // Auto-read key files
+  // Auto-read key files — full content, no truncation
   for (const filename of AUTO_READ_FILES) {
     try {
       const content = readFileSync(join(worktreePath, filename), "utf-8").replace(/\r\n/g, "\n");
-      sections.push(`### ${filename}\n\`\`\`\n${content}\n\`\`\``);
+      // Detect language for syntax highlighting hint
+      const ext = filename.split(".").pop() ?? "";
+      const lang = { json: "json", ts: "typescript", toml: "toml", mod: "go" }[ext] ?? "";
+      sections.push(`### File: ${filename}\n\`\`\`${lang}\n${content}\n\`\`\``);
       totalChars += content.length;
-      fileCount++;
+      loadedFiles.push(filename);
     } catch {
       // File doesn't exist — skip
     }
@@ -117,11 +120,15 @@ function gatherProjectContext(worktreePath: string): { context: string; fileCoun
     }
   } catch { /* empty or inaccessible */ }
 
-  const context = sections.length > 0
-    ? `## Pre-loaded Project Context\n\nThe following files and structure were auto-loaded from the repository. You do NOT need to re-read these files.\n\n${sections.join("\n\n")}`
+  const fileList = loadedFiles.length > 0
+    ? `**Injected files:** ${loadedFiles.map(f => `\`${f}\``).join(", ")}\n\n`
     : "";
 
-  return { context, fileCount, totalChars };
+  const context = sections.length > 0
+    ? `## Pre-loaded Project Context\n\n${fileList}${sections.join("\n\n")}`
+    : "";
+
+  return { context, fileCount: loadedFiles.length, totalChars, loadedFiles };
 }
 
 // ─── Git context helper ───────────────────────────────────────────────────────
@@ -187,7 +194,7 @@ export async function scoutNode(
         model, modelId: state.modelId,
         systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
         userPrompt: userIssue + contextSection,
-        tools: { ...makeReadOnlyTools(state.worktreePath, budget), submitScoutReport: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
+        tools: { ...makeReadOnlyTools(state.worktreePath, budget), saveCheckpoint: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
         maxSteps: SCOUT_STEP_LIMIT,
         timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
         abortSignal: scoutStageAbort.signal,

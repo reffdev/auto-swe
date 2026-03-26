@@ -13,6 +13,11 @@ import { executePipeline, executeStageRetry, cancelPipeline, type PipelineContex
 
 import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
 import { getGenerationSpeed } from "./stats";
+import { selectPlannerMachine } from "./planner-llm";
+import { parseEpicProposal } from "./planner-api";
+import { constructDecomposePrompt } from "./prompts/planner";
+import { generateText } from "ai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
 /** Base directory for auto-created project clones */
 const PROJECTS_BASE = resolve(process.env.PROJECTS_BASE ?? "./.projects");
@@ -250,6 +255,10 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
+    if (issue.status === "epic") {
+      res.status(409).json({ error: "epics cannot be approved directly — approve the individual stories instead" });
+      return;
+    }
     if (issue.status !== "pending") {
       res.status(409).json({ error: `cannot approve issue in status '${issue.status}'` });
       return;
@@ -270,6 +279,87 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses).catch((err) => {
         console.error(`Pipeline error (approve):`, err);
       });
+    }
+  });
+
+  // ─── Decompose issue into epic ────────────────────────────────────────────
+
+  router.post("/issues/:id/decompose", async (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    if (issue.status !== "pending") {
+      res.status(409).json({ error: "can only decompose pending issues" });
+      return;
+    }
+
+    const project = db.getProject(issue.project_id);
+    if (!project) {
+      res.status(500).json({ error: "project not found" });
+      return;
+    }
+
+    const selected = selectPlannerMachine(db, project);
+    if (!selected) {
+      res.status(503).json({ error: "no enabled machines available" });
+      return;
+    }
+
+    try {
+      const provider = createOpenAICompatible({ name: "decompose", baseURL: selected.machine.base_url });
+      const model = provider(selected.modelId);
+
+      const result = await generateText({
+        model,
+        system: constructDecomposePrompt(),
+        prompt: `## Issue to decompose\n\n**Title:** ${issue.title}\n\n**Description:**\n${issue.description}`,
+      });
+
+      const epicProposal = parseEpicProposal(result.text);
+      if (!epicProposal) {
+        res.status(422).json({ error: "LLM did not produce a valid epic_proposal", raw: result.text });
+        return;
+      }
+
+      // Convert original issue to epic
+      db.updateIssue(issue.id, { status: "epic" });
+
+      // Create child stories
+      const storyIdBySeq = new Map<number, string>();
+      const stories: Array<{ issue: typeof issue; dependsOn: number[] }> = [];
+
+      for (let i = 0; i < epicProposal.stories.length; i++) {
+        const story = epicProposal.stories[i];
+        const child = db.createIssue({
+          project_id: issue.project_id,
+          title: story.title,
+          description: story.description,
+          review_lenses: story.lenses,
+          parent_id: issue.id,
+          sequence: i + 1,
+        });
+        storyIdBySeq.set(i + 1, child.id);
+        stories.push({ issue: child, dependsOn: story.dependsOn });
+      }
+
+      // Wire up depends_on with resolved UUIDs
+      for (const { issue: child, dependsOn } of stories) {
+        if (dependsOn.length > 0) {
+          const depIds = dependsOn.map(n => storyIdBySeq.get(n)).filter((id): id is string => !!id);
+          if (depIds.length > 0) {
+            db.updateIssue(child.id, { depends_on: JSON.stringify(depIds) });
+          }
+        }
+      }
+
+      const epic = db.getIssue(issue.id)!;
+      const childIssues = db.getChildIssues(issue.id);
+      res.json({ epic, stories: childIssues });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Decomposition failed: ${msg}` });
     }
   });
 
@@ -448,6 +538,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: `Failed to get diff: ${msg}` });
     }
+  });
+
+  // ─── Issue children (epic → stories) ────────────────────────────────────
+
+  router.get("/issues/:id/children", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    res.json(db.getChildIssues(issue.id));
   });
 
   // ─── Issue runs (all stages) ──────────────────────────────────────────────

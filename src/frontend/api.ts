@@ -34,7 +34,7 @@ export interface Issue {
   project_id: string;
   title: string;
   description: string;
-  status: "pending" | "approved" | "running" | "awaiting_review" | "completed" | "failed";
+  status: "pending" | "approved" | "running" | "awaiting_review" | "completed" | "failed" | "epic";
   git_branch: string | null;
   git_worktree: string | null;
   git_pr_url: string | null;
@@ -42,6 +42,9 @@ export interface Issue {
   github_issue_number: number | null;
   github_issue_url: string | null;
   review_lenses: string | null;  // JSON array string, e.g. '["general","security"]'
+  parent_id: string | null;
+  sequence: number | null;
+  depends_on: string | null;  // JSON array of issue IDs, e.g. '["uuid1","uuid2"]'
   retry_count: number;
   created_at: string;
   completed_at: string | null;
@@ -193,6 +196,18 @@ export interface StepData {
 
 export function getRunOutput(runId: string): Promise<{ status: string; output: string | null }> {
   return json(`/api/runs/${runId}/output`);
+}
+
+// ─── Issue Children (Epic → Stories) ──────────────────────────────────────────
+
+export function getChildIssues(parentId: string): Promise<Issue[]> {
+  return json(`/api/issues/${parentId}/children`);
+}
+
+// ─── Issue Decompose ──────────────────────────────────────────────────────────
+
+export function decomposeIssue(id: string): Promise<{ epic: Issue; stories: Issue[] }> {
+  return json(`/api/issues/${id}/decompose`, { method: "POST" });
 }
 
 // ─── Issue Lenses ─────────────────────────────────────────────────────────────

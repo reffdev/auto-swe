@@ -66,10 +66,20 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
     return [...messages, ...stillPending]
   })()
 
-  // Check if the last assistant message has an issue_proposal
+  // Check if the last assistant message has a proposal (single or epic)
   const hasProposal = displayMessages.some(
-    m => m.role === 'assistant' && m.content.includes('```issue_proposal')
+    m => m.role === 'assistant' && (m.content.includes('```issue_proposal') || m.content.includes('```epic_proposal'))
   )
+  const hasEpic = displayMessages.some(
+    m => m.role === 'assistant' && m.content.includes('```epic_proposal')
+  )
+  // Count stories in epic
+  const epicStoryCount = (() => {
+    if (!hasEpic) return 0
+    const lastEpicMsg = [...displayMessages].reverse().find(m => m.role === 'assistant' && m.content.includes('```epic_proposal'))
+    if (!lastEpicMsg) return 0
+    return (lastEpicMsg.content.match(/^story:\s*\d+/gm) ?? []).length
+  })()
 
   const handleSend = useCallback(async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -106,8 +116,9 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
     setApproving(true)
     setError(null)
     try {
-      const result = await api.approvePlannerConversation(conversationId)
-      navigate(`/project/${projectId}/issue/${result.issue.id}`)
+      const result = await api.approvePlannerConversation(conversationId) as any
+      const issueId = result.epic?.id ?? result.issue?.id
+      navigate(`/project/${projectId}/issue/${issueId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create issue')
     } finally {
@@ -142,7 +153,7 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
         {hasProposal && (
           <Button onClick={handleApprove} disabled={approving || generating}>
             <CheckCircle className="size-4 mr-2" />
-            {approving ? 'Creating...' : 'Create Issue'}
+            {approving ? 'Creating...' : hasEpic ? `Create Epic (${epicStoryCount} stories)` : 'Create Issue'}
           </Button>
         )}
       </div>
