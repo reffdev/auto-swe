@@ -10,19 +10,16 @@ interface SpeedResult {
   completion_tokens_per_sec: number | null;
 }
 
-// ─── Prometheus metrics parsing ───────────────────────────────────────────────
+// ─── Metrics entry from /api/metrics JSON response ───────────────────────────
 
-function parsePrometheusGauge(text: string, metricName: string): number | null {
-  // Match lines like: metricName 42.5
-  // or: metricName{labels} 42.5
-  const regex = new RegExp(`^${metricName}(?:\\{[^}]*\\})?\\s+(\\S+)`, "m");
-  const match = text.match(regex);
-  if (!match) return null;
-  const val = parseFloat(match[1]);
-  return isNaN(val) ? null : val;
+interface MetricsEntry {
+  timestamp: string;
+  prompt_per_second: number;
+  tokens_per_second: number;
+  duration_ms: number;
 }
 
-// ─── Fetch speed from llama.cpp /metrics ──────────────────────────────────────
+// ─── Fetch speed from llama.cpp /api/metrics ─────────────────────────────────
 
 async function fetchMachineMetrics(baseUrl: string): Promise<{
   promptTps: number;
@@ -38,19 +35,25 @@ async function fetchMachineMetrics(baseUrl: string): Promise<{
   try {
     const res = await fetch(metricsUrl, {
       signal: controller.signal,
-      headers: { Accept: "text/plain" },
+      headers: { Accept: "application/json" },
     });
     if (!res.ok) return null;
 
-    const text = await res.text();
+    const entries = (await res.json()) as MetricsEntry[];
+    if (!Array.isArray(entries) || entries.length === 0) return null;
 
-    // llama.cpp exposes these Prometheus gauges
-    const promptTps = parsePrometheusGauge(text, "llamacpp_prompt_tokens_per_second")
-      ?? parsePrometheusGauge(text, "llamacpp:prompt_tokens_per_second")
-      ?? 0;
-    const completionTps = parsePrometheusGauge(text, "llamacpp_tokens_predicted_per_second")
-      ?? parsePrometheusGauge(text, "llamacpp:tokens_predicted_per_second")
-      ?? 0;
+    // Filter to entries from the last 5 minutes
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+    const recent = entries.filter(e => {
+      const ts = new Date(e.timestamp).getTime();
+      return ts > fiveMinAgo;
+    });
+
+    if (recent.length === 0) return null;
+
+    // Average prompt_per_second and tokens_per_second across recent entries
+    const promptTps = recent.reduce((sum, e) => sum + (e.prompt_per_second ?? 0), 0) / recent.length;
+    const completionTps = recent.reduce((sum, e) => sum + (e.tokens_per_second ?? 0), 0) / recent.length;
 
     return { promptTps, completionTps };
   } catch {

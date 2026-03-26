@@ -9,6 +9,7 @@ export interface SttAdapter {
 
 export interface LlmAdapter {
   chat(messages: Array<{ role: string; content: string }>, systemPrompt: string): Promise<string>;
+  chatStream?(messages: Array<{ role: string; content: string }>, systemPrompt: string): AsyncIterable<string>;
 }
 
 export interface TtsAdapter {

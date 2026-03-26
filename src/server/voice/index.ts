@@ -3,6 +3,10 @@
  *
  * Accepts raw 16-bit mono PCM at 16kHz, returns the same format.
  * Session-based multi-turn conversation via X-Session-Id header.
+ *
+ * Supports streaming: LLM text is split at sentence boundaries, each
+ * sentence is synthesized and streamed back as chunked PCM so the
+ * device can start playing while the rest is still generating.
  */
 
 import { Router, raw } from "express";
@@ -26,14 +30,47 @@ export interface VoiceConfig {
   systemPrompt?: string;
 }
 
+// ─── Sentence splitter ─────��──────────────────────────────────────────────────
+
+/** Yields complete sentences from a stream of text chunks */
+async function* sentenceSplitter(chunks: AsyncIterable<string>): AsyncIterable<string> {
+  let buffer = "";
+
+  for await (const chunk of chunks) {
+    buffer += chunk;
+
+    // Split on sentence-ending punctuation followed by a space or end
+    while (true) {
+      const match = buffer.match(/^(.*?[.!?])(\s+|$)(.*)/s);
+      if (!match || !match[2]) break; // no complete sentence yet
+
+      const sentence = match[1].trim();
+      buffer = match[3];
+
+      if (sentence.length > 0) {
+        yield sentence;
+      }
+    }
+  }
+
+  // Flush remaining text
+  const remaining = buffer.trim();
+  if (remaining.length > 0) {
+    yield remaining;
+  }
+}
+
+// ─── Router ────────���──────────────────────────────────────────────────────────
+
 export function createVoiceRouter(config: VoiceConfig): Router {
   const router = Router();
   const systemPrompt = config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+  const canStream = typeof config.llm.chatStream === "function";
 
   // Parse raw binary body (up to 5MB — ~160 seconds of 16kHz 16-bit mono PCM)
   router.use(raw({ type: "application/octet-stream", limit: "5mb" }));
 
-  // POST / — main voice pipeline
+  // POST / — main voice pipeline (streaming when available)
   router.post("/", async (req, res) => {
     const pcm = req.body as Buffer;
     if (!pcm || pcm.length === 0) {
@@ -69,32 +106,74 @@ export function createVoiceRouter(config: VoiceConfig): Router {
         return;
       }
 
-      // 2. LLM — generate response with session history
       session.messages.push({ role: "user", content: transcript });
 
-      console.log(`Voice: LLM starting (${session.messages.length} messages)`);
-      const response = await config.llm.chat(session.messages, systemPrompt);
-      console.log(`Voice: LLM response: "${response.slice(0, 100)}${response.length > 100 ? "..." : ""}"`);
+      if (canStream) {
+        // ─── Streaming mode: sentence-by-sentence TTS ───────────────
+        console.log(`Voice: streaming mode (${session.messages.length} messages)`);
 
-      session.messages.push({ role: "assistant", content: response });
+        res.status(200)
+          .set("X-Session-Id", session.id)
+          .set("X-Transcript", encodeURIComponent(transcript))
+          .set("Content-Type", "application/octet-stream")
+          .set("Transfer-Encoding", "chunked");
 
-      // 3. TTS — synthesize response to audio
-      console.log(`Voice: TTS starting (${response.length} chars)`);
-      const responsePcm = await config.tts.synthesize(response, sampleRate);
-      console.log(`Voice: TTS complete (${responsePcm.length} bytes)`);
+        const textStream = config.llm.chatStream!(session.messages, systemPrompt);
+        let fullResponse = "";
+        let sentenceCount = 0;
 
-      // Return raw PCM with metadata headers
-      res.status(200)
-        .set("X-Session-Id", session.id)
-        .set("X-Transcript", encodeURIComponent(transcript))
-        .set("X-Response-Text", encodeURIComponent(response))
-        .set("Content-Type", "application/octet-stream")
-        .send(responsePcm);
+        for await (const sentence of sentenceSplitter(textStream)) {
+          fullResponse += (sentenceCount > 0 ? " " : "") + sentence;
+          sentenceCount++;
+
+          console.log(`Voice: TTS chunk ${sentenceCount}: "${sentence.slice(0, 60)}${sentence.length > 60 ? "..." : ""}"`);
+
+          try {
+            const chunkPcm = await config.tts.synthesize(sentence, sampleRate);
+            if (chunkPcm.length > 0) {
+              res.write(chunkPcm);
+            }
+          } catch (ttsErr) {
+            console.error(`Voice: TTS error on chunk ${sentenceCount}:`, ttsErr);
+            // Continue with remaining sentences — skip this chunk
+          }
+        }
+
+        session.messages.push({ role: "assistant", content: fullResponse });
+        console.log(`Voice: streaming complete (${sentenceCount} sentences, ${fullResponse.length} chars)`);
+
+        // Set response text header (only useful if client reads trailing headers, otherwise for logs)
+        res.end();
+
+      } else {
+        // ─── Non-streaming mode: full response then TTS ─────────────
+        console.log(`Voice: non-streaming mode (${session.messages.length} messages)`);
+
+        const response = await config.llm.chat(session.messages, systemPrompt);
+        console.log(`Voice: LLM response: "${response.slice(0, 100)}${response.length > 100 ? "..." : ""}"`);
+
+        session.messages.push({ role: "assistant", content: response });
+
+        console.log(`Voice: TTS starting (${response.length} chars)`);
+        const responsePcm = await config.tts.synthesize(response, sampleRate);
+        console.log(`Voice: TTS complete (${responsePcm.length} bytes)`);
+
+        res.status(200)
+          .set("X-Session-Id", session.id)
+          .set("X-Transcript", encodeURIComponent(transcript))
+          .set("X-Response-Text", encodeURIComponent(response))
+          .set("Content-Type", "application/octet-stream")
+          .send(responsePcm);
+      }
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`Voice: pipeline error (session ${session.id}):`, msg);
-      res.status(500).json({ error: msg });
+      if (!res.headersSent) {
+        res.status(500).json({ error: msg });
+      } else {
+        res.end(); // headers already sent (streaming), just close
+      }
     } finally {
       session.processing = false;
     }

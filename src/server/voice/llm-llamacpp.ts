@@ -1,9 +1,9 @@
 /**
  * LLM adapter using the existing AI SDK + OpenAI-compatible provider.
- * Same stack as the planner and pipeline, but uses generateText (not streaming).
+ * Supports both full generation and streaming for sentence-by-sentence TTS.
  */
 
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LlmAdapter } from "./types";
 
@@ -33,5 +33,23 @@ export class LlamaCppLlm implements LlmAdapter {
     });
 
     return result.text || "(no response)";
+  }
+
+  async *chatStream(
+    messages: Array<{ role: string; content: string }>,
+    systemPrompt: string
+  ): AsyncIterable<string> {
+    const result = streamText({
+      model: this.model,
+      system: systemPrompt,
+      messages: messages.map(m => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      })),
+    });
+
+    for await (const chunk of result.textStream) {
+      yield chunk;
+    }
   }
 }
