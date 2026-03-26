@@ -37,6 +37,85 @@ import type { Db, Machine, Issue, Project } from "../db";
 export { extractScoutBrief, parseVerdict } from "./parsers";
 export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
+// ─── LLM provider with per-request timeout + retry ────────────────────────────
+
+const LLM_REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per individual LLM request
+const LLM_MAX_RETRIES = 2;
+
+function createModelProvider(machine: Machine) {
+  const provider = createOpenAICompatible({
+    name: `machine-${machine.id}`,
+    baseURL: machine.base_url,
+    fetch: async (url, init) => {
+      // Inject stream_options.include_usage for token counting
+      if (init?.body && typeof init.body === "string") {
+        try {
+          const body = JSON.parse(init.body);
+          if (body.stream) {
+            body.stream_options = { include_usage: true };
+            init = { ...init, body: JSON.stringify(body) };
+          }
+        } catch { /* not JSON — pass through */ }
+      }
+
+      const callerSignal = (init as RequestInit)?.signal;
+
+      for (let attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
+        if (callerSignal?.aborted) throw new Error("Aborted");
+
+        try {
+          const res = await fetch(url as string, init as RequestInit);
+
+          // For streaming responses, wrap the body with an inactivity monitor
+          // that aborts if no data arrives within the timeout
+          if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {
+            const reader = res.body.getReader();
+            const watchedStream = new ReadableStream({
+              async pull(controller) {
+                const timeoutId = setTimeout(() => {
+                  reader.cancel("LLM stream inactivity timeout");
+                  controller.error(new Error("LLM_STREAM_TIMEOUT"));
+                }, LLM_REQUEST_TIMEOUT_MS);
+
+                try {
+                  const { done, value } = await reader.read();
+                  clearTimeout(timeoutId);
+                  if (done) { controller.close(); return; }
+                  controller.enqueue(value);
+                } catch (err) {
+                  clearTimeout(timeoutId);
+                  controller.error(err);
+                }
+              },
+              cancel() { reader.cancel(); },
+            });
+
+            return new Response(watchedStream, {
+              status: res.status,
+              statusText: res.statusText,
+              headers: res.headers,
+            });
+          }
+
+          return res;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isStreamTimeout = msg === "LLM_STREAM_TIMEOUT";
+          const isCallerAbort = callerSignal?.aborted;
+
+          if (isStreamTimeout && !isCallerAbort && attempt < LLM_MAX_RETRIES) {
+            console.log(`Pipeline: LLM stream timed out after ${LLM_REQUEST_TIMEOUT_MS / 1000}s — retrying (attempt ${attempt + 2}/${LLM_MAX_RETRIES + 1})`);
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new Error("LLM request failed after retries");
+    },
+  });
+  return provider;
+}
+
 // ─── Graph Definition (with persistent SQLite checkpointing) ──────────────────
 
 const dbPath = resolve(process.env.DB_PATH ?? "./open-swe.db");
@@ -112,23 +191,7 @@ export async function executePipeline(
 
     // Create model once — shared across all pipeline nodes
     const modelId = project.model_id ?? machine.model_id;
-    const provider = createOpenAICompatible({
-      name: `machine-${machine.id}`,
-      baseURL: machine.base_url,
-      // Inject stream_options.include_usage into every request so llama.cpp reports token counts
-      fetch: async (url, init) => {
-        if (init?.body && typeof init.body === "string") {
-          try {
-            const body = JSON.parse(init.body);
-            if (body.stream) {
-              body.stream_options = { include_usage: true };
-              init = { ...init, body: JSON.stringify(body) };
-            }
-          } catch { /* not JSON — pass through */ }
-        }
-        return fetch(url as string, init as RequestInit);
-      },
-    });
+    const provider = createModelProvider(machine);
     const model = provider(modelId);
 
     // Fresh run: unique thread_id so we don't resume stale checkpoints
@@ -225,23 +288,7 @@ export async function executeStageRetry(
     }
 
     const modelId = project.model_id ?? machine.model_id;
-    const provider = createOpenAICompatible({
-      name: `machine-${machine.id}`,
-      baseURL: machine.base_url,
-      // Inject stream_options.include_usage into every request so llama.cpp reports token counts
-      fetch: async (url, init) => {
-        if (init?.body && typeof init.body === "string") {
-          try {
-            const body = JSON.parse(init.body);
-            if (body.stream) {
-              body.stream_options = { include_usage: true };
-              init = { ...init, body: JSON.stringify(body) };
-            }
-          } catch { /* not JSON — pass through */ }
-        }
-        return fetch(url as string, init as RequestInit);
-      },
-    });
+    const provider = createModelProvider(machine);
     const model = provider(modelId);
 
     // Use the thread_id from the last executePipeline run to resume from checkpoint

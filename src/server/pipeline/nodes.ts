@@ -256,6 +256,10 @@ export async function scoutNode(
     compactedSoFar = extractScoutBrief(compactedSoFar);
   }
 
+  if (!compactedSoFar || compactedSoFar.length < 100) {
+    throw new Error(`Scout produced an empty or insufficient checkpoint (${compactedSoFar.length} chars) — cannot proceed to implementation`);
+  }
+
   return { scoutBrief: compactedSoFar };
 }
 

@@ -126,52 +126,18 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   };
 
   const startTime = Date.now();
-  const INACTIVITY_TIMEOUT_MS = 60_000; // 60 seconds without any tokens → abort and retry
 
-  // Abort detection — both aborts the signal AND rejects a promise to break out of Promise.race
-  // This handles: inactivity stalls, pipeline cancel, and any case where the stream hangs
-  const inactivityAbort = new AbortController();
-  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-  let abortReject: ((err: Error) => void) | null = null;
-  const abortPromise = new Promise<never>((_, reject) => { abortReject = reject; });
+  // Cancel detection — rejects a promise to break out of Promise.race when the stream hangs
+  let cancelReject: ((err: Error) => void) | null = null;
+  const cancelPromise = new Promise<never>((_, reject) => { cancelReject = reject; });
 
-  const triggerAbort = (reason: string) => {
-    console.log(`Pipeline [${stageName}]: ${reason}`);
-    inactivityAbort.abort();
-    abortReject?.(new Error(`${stageName}: ${reason}`));
-  };
-
-  // If the pipeline-level cancel fires, also reject the promise
   if (abortSignal) {
-    if (abortSignal.aborted) {
-      throw new Error("Pipeline cancelled");
-    }
-    abortSignal.addEventListener("abort", () => triggerAbort("pipeline cancelled"), { once: true });
+    if (abortSignal.aborted) throw new Error("Pipeline cancelled");
+    abortSignal.addEventListener("abort", () => {
+      console.log(`Pipeline [${stageName}]: cancelled`);
+      cancelReject?.(new Error(`${stageName}: pipeline cancelled`));
+    }, { once: true });
   }
-
-  const resetInactivity = () => {
-    if (inactivityTimer) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(
-      () => triggerAbort(`no activity for ${INACTIVITY_TIMEOUT_MS / 1000}s — aborting`),
-      INACTIVITY_TIMEOUT_MS
-    );
-  };
-
-  const trackChunk = () => {
-    resetInactivity();
-  };
-
-  // Chain: if the pipeline-level abort fires, also clear inactivity timer
-  const combinedSignal = abortSignal
-    ? AbortSignal.any([abortSignal, inactivityAbort.signal])
-    : inactivityAbort.signal;
-
-  // Reset inactivity on each step completion
-  const originalOnStep = onStep;
-  const onStepWithInactivity = (step: StepResult<ToolSet>) => {
-    resetInactivity();
-    originalOnStep(step);
-  };
 
   // Promise.race for hard timeout — timer is cleared on success or failure
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -179,30 +145,24 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     timeoutTimer = setTimeout(() => reject(new Error(`${stageName} stage timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
   });
 
-  resetInactivity(); // start the inactivity clock
-
   let fullText: string;
   try {
     const agentPromise = (async () => {
       const result = streamText({
         model, system: systemPrompt, prompt: userPrompt,
         tools, maxSteps,
-        abortSignal: combinedSignal,
-        onStepFinish: onStepWithInactivity,
+        abortSignal,
+        onStepFinish: onStep,
       });
       let text = "";
-      for await (const chunk of result.textStream) {
-        text += chunk;
-        trackChunk();
-      }
+      for await (const chunk of result.textStream) { text += chunk; }
       await result.steps;
       return text || "(no output)";
     })();
 
-    fullText = await Promise.race([agentPromise, timeoutPromise, abortPromise]);
+    fullText = await Promise.race([agentPromise, timeoutPromise, cancelPromise]);
   } catch (err) {
     if (timeoutTimer) clearTimeout(timeoutTimer);
-    if (inactivityTimer) clearTimeout(inactivityTimer);
     const durationMs = Date.now() - startTime;
     db.updateRun(runId, {
       status: "fail",
@@ -217,7 +177,6 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
   // Success
   if (timeoutTimer) clearTimeout(timeoutTimer);
-  if (inactivityTimer) clearTimeout(inactivityTimer);
   const durationMs = Date.now() - startTime;
   if (fullText && !liveSteps.some(s => s.text === fullText)) {
     liveSteps.push({ step: stepCount + 1, text: fullText, tokens: { prompt: 0, completion: 0 }, durationMs: 0 });
