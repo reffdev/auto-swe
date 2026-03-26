@@ -17,14 +17,14 @@ let _lastSubmittedBrief: string | null = null;
 export function createSubmitScoutReportTool(stageAbort: AbortController) {
   _lastSubmittedBrief = null;
   return aiTool({
-    description: "Save your research checkpoint and begin implementation. Call this when you've gathered everything you need from the codebase. Your context will be cleared after this — include ALL code and notes you'll need to implement the change without reading any files again.",
+    description: "Submit your codebase analysis for review. The analysis MUST contain verbatim code snippets from every relevant file. An analysis without code blocks will be rejected.",
     parameters: z.object({
-      report: z.string().describe("Your complete research checkpoint: repository overview, ALL relevant existing code (full function bodies, types, imports), build commands, and your implementation plan. This is your only reference when you resume — include everything."),
+      report: z.string().describe("Your complete codebase analysis: verbatim EXISTING code from every relevant file (full function bodies, types, imports), build/test commands, and your findings describing what needs to change (without writing the new code). Existing code is the primary content — include more than you think necessary."),
     }),
     execute: async ({ report }) => {
       _lastSubmittedBrief = report;
       stageAbort.abort();
-      return "Checkpoint saved. Proceeding to implementation.";
+      return "Analysis submitted for review.";
     },
   });
 }

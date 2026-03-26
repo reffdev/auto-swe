@@ -29,13 +29,13 @@ const CODING_STANDARDS = `
 // ─── Scout ────────────────────────────────────────────────────────────────────
 
 export function constructScoutPrompt(opts: { workingDir: string }): string {
-  return `# Implementation — Research Phase
+  return `# Codebase Analysis
 
 ${workingEnv(opts.workingDir)}
 
-You are about to implement a code change. This is the research phase — your tools are read-only until you save a complete checkpoint. Once you call \`saveCheckpoint\`, your context resets and you continue with write access, working from the checkpoint alone.
+You are conducting an in-depth codebase analysis for a senior engineer to review. Your analysis must include the actual code — verbatim snippets from every relevant file — not just descriptions of what you found. The reviewing engineer will use your analysis to implement the change, so completeness and accuracy are critical.
 
-Make the checkpoint comprehensive: anything you don't include, you won't have access to when implementing.
+Submit your analysis via \`saveCheckpoint\` when complete. You have read-only access.
 
 ## Procedure
 
@@ -45,40 +45,42 @@ Make the checkpoint comprehensive: anything you don't include, you won't have ac
 4. Note build/test commands from the pre-loaded project files
 5. Save your checkpoint via the \`saveCheckpoint\` tool call
 
-## Checkpoint format
+## Analysis format
 
-The checkpoint is your ONLY reference when implementing. The most important part is the actual code — without it, you'll have to re-read every file again.
-
-**The checkpoint MUST contain verbatim code from every file you'll need to modify or reference.** A checkpoint without code blocks is useless. Summaries, overviews, and plans are secondary — code is primary.
+Your analysis will be rejected if it lacks verbatim code. The reviewer needs to see the actual code, not your description of it.
 
 \`\`\`checkpoint
-## Code
-[This is the bulk of the checkpoint. For EVERY file relevant to the implementation:]
-
-### path/to/file.ts (lines 42-87)
-\\\`\\\`\\\`
-<exact code from the file — copy-pasteable, no line numbers, no modifications>
-\\\`\\\`\\\`
-
-[Include: the full functions you'll modify, their imports, type definitions they depend on,
-adjacent functions for context, test patterns from existing test files.
-More files is better — you cannot read files after this checkpoint.]
-
 ## Build & Test
 [How to build, lint, test]
 
-## Plan
-[What to change, where, in what order. Reference the code above by file path and function name.]
+## Analysis
+[For each area that needs to change, include BOTH the finding AND the relevant code together:]
+
+### Finding: [what needs to change and why]
+File: path/to/file.ts (lines 42-87)
+\\\`\\\`\\\`
+<exact existing code from the file — copy-pasteable, no line numbers, no modifications>
+\\\`\\\`\\\`
+[Brief note: what about this code needs to change — do NOT write the new code]
+
+### Finding: [next change needed]
+File: path/to/other-file.ts (lines 10-35)
+\\\`\\\`\\\`
+<exact existing code>
+\\\`\\\`\\\`
+[What needs to change here]
+
+[Also include supporting context — types, imports, adjacent functions, test patterns —
+as their own entries so the reviewer has everything in one place.
+The reviewer will reject an analysis that makes them go read the files themselves.]
 \`\`\`
 
-Call \`saveCheckpoint\` with the full checkpoint (preferred), or output it in a \`\`\`checkpoint fenced block.
-
 ## Constraints
-- Read only for now — you cannot modify files yet
-- Do not write new code or describe what you "would" create — just gather what exists
-- A checkpoint without code blocks will fail. You MUST include verbatim code from the files you read.
+- Read only — you cannot modify files
+- Submit only EXISTING code from the repo — never write new code, proposed implementations, or code you "would" create
+- An analysis without verbatim code blocks will be rejected
 - Prioritize: code that needs to change > adjacent code > test patterns > distant code
-- When in doubt, include too much code rather than too little — you won't be able to read these files again`;
+- When in doubt, include too much code rather than too little`;
 }
 
 export function constructScoutCompactPrompt(): string {
