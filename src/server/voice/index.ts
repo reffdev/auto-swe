@@ -110,12 +110,13 @@ export function createVoiceRouter(config: VoiceConfig): Router {
 
       if (canStream) {
         // ─── Streaming mode: sentence-by-sentence TTS ───────────────
+        // Each chunk is a complete WAV file (one per sentence)
         console.log(`Voice: streaming mode (${session.messages.length} messages)`);
 
         res.status(200)
           .set("X-Session-Id", session.id)
           .set("X-Transcript", encodeURIComponent(transcript))
-          .set("Content-Type", "application/octet-stream")
+          .set("Content-Type", "audio/wav")
           .set("Transfer-Encoding", "chunked");
 
         const textStream = config.llm.chatStream!(session.messages, systemPrompt);
@@ -162,7 +163,7 @@ export function createVoiceRouter(config: VoiceConfig): Router {
           .set("X-Session-Id", session.id)
           .set("X-Transcript", encodeURIComponent(transcript))
           .set("X-Response-Text", encodeURIComponent(response))
-          .set("Content-Type", "application/octet-stream")
+          .set("Content-Type", "audio/wav")
           .send(responsePcm);
       }
 

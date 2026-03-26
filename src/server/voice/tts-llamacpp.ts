@@ -5,7 +5,6 @@
  */
 
 import type { TtsAdapter } from "./types";
-import { wavToPcm } from "./wav";
 
 export class LlamaCppTts implements TtsAdapter {
   constructor(private baseUrl: string) {}
@@ -36,17 +35,7 @@ export class LlamaCppTts implements TtsAdapter {
     }
 
     const arrayBuffer = await res.arrayBuffer();
-    const audioBuffer = Buffer.from(arrayBuffer);
-
-    // Convert to raw PCM — strip WAV header if present
-    const { pcm, sampleRate: srcRate } = wavToPcm(audioBuffer);
-
-    // If the TTS returned a different sample rate, we'd need to resample.
-    // For now, log a warning. Most TTS models can be configured to output 16kHz.
-    if (srcRate !== sampleRate && srcRate !== 16000) {
-      console.warn(`TTS: returned ${srcRate}Hz audio, expected ${sampleRate}Hz — audio may play at wrong speed`);
-    }
-
-    return pcm;
+    // Already WAV from the endpoint (we requested response_format: "wav")
+    return Buffer.from(arrayBuffer);
   }
 }

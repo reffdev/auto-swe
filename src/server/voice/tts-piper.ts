@@ -9,7 +9,7 @@
  */
 
 import type { TtsAdapter } from "./types";
-import { wavToPcm } from "./wav";
+import { wavToPcm, pcmToWav } from "./wav";
 import { spawn, spawnSync } from "child_process";
 
 // ─── HTTP mode ────────────────────────────────────────────────────────────────
@@ -43,9 +43,10 @@ export class PiperHttpTts implements TtsAdapter {
     const arrayBuffer = await res.arrayBuffer();
     const audioBuffer = Buffer.from(arrayBuffer);
 
-    // Piper returns WAV — strip header to get raw PCM
-    const { pcm } = wavToPcm(audioBuffer);
-    return normalizeVolume(pcm);
+    // Piper returns WAV — normalize volume and return as WAV
+    const { pcm, sampleRate: srcRate, channels, bitDepth } = wavToPcm(audioBuffer);
+    const normalized = normalizeVolume(pcm);
+    return pcmToWav(normalized, srcRate, channels, bitDepth);
   }
 }
 
@@ -63,9 +64,11 @@ export class PiperCliTts implements TtsAdapter {
     private configPath?: string,
   ) {}
 
-  async synthesize(text: string, sampleRate: number): Promise<Buffer> {
+  async synthesize(text: string, _sampleRate: number): Promise<Buffer> {
     const rawPcm = await this.runPiper(text);
-    return normalizeVolume(rawPcm);
+    const normalized = normalizeVolume(rawPcm);
+    // Wrap in WAV so the device knows sample rate, bit depth, etc.
+    return pcmToWav(normalized, this.getPiperSampleRate(), 1, 16);
   }
 
   private getPiperSampleRate(): number {
