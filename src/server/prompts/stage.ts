@@ -121,7 +121,7 @@ summary: [what was fixed]
 
 ${workingEnv(opts.workingDir)}
 
-The relevant files have already been read — their contents are in your conversation history as \`readFile\` results. Start implementing directly.
+A list of relevant files is in the user message. Call \`readRelevantFiles\` first to load them all at once, then start implementing.
 
 ${CODING_STANDARDS}
 

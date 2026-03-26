@@ -4,7 +4,8 @@
 
 import type { LangGraphRunnableConfig } from "@langchain/langgraph";
 import { END } from "@langchain/langgraph";
-import type { ToolSet } from "ai";
+import { tool as aiTool, type ToolSet } from "ai";
+import { z } from "zod";
 import { readFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { spawnSync } from "child_process";
@@ -178,7 +179,7 @@ export function resolveScoutManifest(worktreePath: string, scoutBrief: string): 
 
   console.log(`Pipeline: scout manifest — ${validCount} valid files of ${manifest.files.length} listed`);
 
-  let result = `## Relevant Files\n\nThe following files were identified as relevant. Read them as needed.\n\n${lines.join("\n")}`;
+  let result = `## Relevant Files\n\nCall \`readRelevantFiles\` to load all of these at once:\n\n${lines.join("\n")}`;
 
   if (manifest.notes) {
     result += `\n\n## Notes\n\n${manifest.notes}`;
@@ -187,28 +188,42 @@ export function resolveScoutManifest(worktreePath: string, scoutBrief: string): 
   return result;
 }
 
-/** Read the actual file contents from a manifest for injection as preloaded tool results */
-function getPreloadedFiles(worktreePath: string, scoutBrief: string): Array<{ path: string; content: string }> {
-  let manifest: ScoutManifest;
+/** Create a tool that reads all files from the scout manifest in one call */
+function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
+  // Parse file paths from manifest
+  let filePaths: string[] = [];
   try {
-    manifest = JSON.parse(scoutBrief);
-  } catch {
-    return [];
-  }
-  if (!manifest.files || !Array.isArray(manifest.files)) return [];
-
-  const files: Array<{ path: string; content: string }> = [];
-  for (const file of manifest.files) {
-    const fullPath = resolve(worktreePath, file.path);
-    if (!fullPath.startsWith(resolve(worktreePath))) continue;
-    try {
-      const content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
-      files.push({ path: file.path, content });
-    } catch {
-      // Skip unreadable files
+    const manifest: ScoutManifest = JSON.parse(scoutBrief);
+    if (manifest.files?.length) {
+      filePaths = manifest.files.map(f => f.path);
     }
-  }
-  return files;
+  } catch { /* not a manifest */ }
+
+  return aiTool({
+    description: filePaths.length > 0
+      ? `Read all ${filePaths.length} relevant files at once: ${filePaths.join(", ")}. Call this first before making any changes.`
+      : "Read all relevant files identified during research. Call this first.",
+    parameters: z.object({}),
+    execute: async () => {
+      if (filePaths.length === 0) return "No relevant files identified.";
+
+      const results: string[] = [];
+      for (const filePath of filePaths) {
+        const fullPath = resolve(worktreePath, filePath);
+        if (!fullPath.startsWith(resolve(worktreePath))) {
+          results.push(`### ${filePath}\n*Path rejected — outside project*`);
+          continue;
+        }
+        try {
+          const content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
+          results.push(`### ${filePath}\n${content}`);
+        } catch {
+          results.push(`### ${filePath}\n*File not found*`);
+        }
+      }
+      return results.join("\n\n");
+    },
+  });
 }
 
 // ─── Git context helper ───────────────────────────────────────────────────────
@@ -402,23 +417,19 @@ export async function implementNode(
     reviewFeedback: state.reviewFeedback || undefined,
   });
 
-  // Pre-read files from scout manifest so the agent sees them as prior readFile results
-  const preloadedFiles = getPreloadedFiles(state.worktreePath, state.scoutBrief);
-  if (preloadedFiles.length > 0) {
-    console.log(`Pipeline: implement — preloading ${preloadedFiles.length} files as readFile results`);
-  }
-
   const output = await runStage({
     db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "implement",
     model, modelId: state.modelId,
     systemPrompt: implPrompts.system,
     userPrompt: implPrompts.user,
-    tools: { ...makeFilesystemTools(state.worktreePath) } as ToolSet,
+    tools: {
+      ...makeFilesystemTools(state.worktreePath),
+      readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
+    } as ToolSet,
     maxSteps: IMPLEMENT_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
     initialSteps: infoSteps,
-    preloadedFiles,
   });
 
   return { implementOutput: output };
