@@ -187,7 +187,7 @@ export async function scoutNode(
         model, modelId: state.modelId,
         systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
         userPrompt: userIssue + contextSection,
-        tools: { ...makeReadOnlyTools(state.worktreePath, budget), ...makeTodoTool(), submitScoutReport: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
+        tools: { ...makeReadOnlyTools(state.worktreePath, budget), submitScoutReport: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
         maxSteps: SCOUT_STEP_LIMIT,
         timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
         abortSignal: scoutStageAbort.signal,
