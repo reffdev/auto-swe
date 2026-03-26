@@ -12,3 +12,4 @@ export {
   makeVerifyTools,
 } from "./filesystem";
 export { fetchUrlTool } from "./fetch";
+export { makeTodoTool } from "./todo";

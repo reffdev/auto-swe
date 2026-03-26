@@ -44,6 +44,8 @@ export const issues = sqliteTable("issues", {
   git_worktree: text("git_worktree"),
   git_pr_url: text("git_pr_url"),
   git_pr_number: integer("git_pr_number"),
+  github_issue_number: integer("github_issue_number"),
+  github_issue_url: text("github_issue_url"),
   retry_count: integer("retry_count").notNull().default(0),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   completed_at: text("completed_at"),
@@ -63,6 +65,25 @@ export const runs = sqliteTable("runs", {
   duration_ms: integer("duration_ms"),
   prompt_tokens: integer("prompt_tokens"),
   completion_tokens: integer("completion_tokens"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ─── Planner Conversations ────────────────────────────────────────────────
+
+export const plannerConversations = sqliteTable("planner_conversations", {
+  id: text("id").primaryKey(),
+  project_id: text("project_id").notNull().references(() => projects.id),
+  status: text("status").notNull().default("active"), // active | approved | abandoned
+  issue_id: text("issue_id"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+  updated_at: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+export const plannerMessages = sqliteTable("planner_messages", {
+  id: text("id").primaryKey(),
+  conversation_id: text("conversation_id").notNull().references(() => plannerConversations.id),
+  role: text("role").notNull(), // 'user' | 'assistant'
+  content: text("content").notNull(),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 

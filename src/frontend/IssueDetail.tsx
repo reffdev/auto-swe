@@ -14,6 +14,7 @@ import {
   MessageResponse,
 } from '@/components/ai-elements/message'
 import { StatusBadge } from './IssueList'
+import { PrDiffView } from './PrDiffView'
 import * as api from './api'
 import type { Issue, Run, StepData } from './api'
 
@@ -242,7 +243,18 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [viewingRunId, setViewingRunId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'diff'>('pipeline')
+  const [diffEverOpened, setDiffEverOpened] = useState(false)
   const { allRuns, activeRun, activeRunOutput } = useLiveOutput(pollRuns)
+
+  // Auto-switch to diff tab when PR is ready for review
+  const hasBranch = !!issue.git_branch
+  useEffect(() => {
+    if (issue.status === 'awaiting_review' && hasBranch) {
+      setActiveTab('diff')
+      setDiffEverOpened(true)
+    }
+  }, [issue.status, hasBranch])
 
   // Which run's output to show
   const displayRun = viewingRunId
@@ -355,6 +367,39 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
         {actionError && <p className="text-sm text-destructive w-full mt-1">{actionError}</p>}
       </div>
 
+      {/* View tabs */}
+      {hasBranch && (
+        <div className="px-6 py-2 border-b border-border flex items-center gap-1">
+          <button
+            onClick={() => setActiveTab('pipeline')}
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+              activeTab === 'pipeline' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            Pipeline
+          </button>
+          <button
+            onClick={() => { setActiveTab('diff'); setDiffEverOpened(true) }}
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
+              activeTab === 'diff' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            Diff
+          </button>
+        </div>
+      )}
+
+      {/* Diff view — keep mounted once opened to avoid re-fetching on tab switch */}
+      {diffEverOpened && hasBranch && (
+        <div className={activeTab === 'diff' ? 'flex-1 flex flex-col overflow-hidden' : 'hidden'}>
+          <PrDiffView issueId={issue.id} />
+        </div>
+      )}
+
+      {/* Pipeline view */}
+      {activeTab === 'pipeline' && <>
       {/* Stage stepper */}
       {allRuns.some(r => r.stage) && (
         <StageStepper
@@ -436,6 +481,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           <ConversationScrollButton />
         </Conversation>
       )}
+      </>}
     </div>
   )
 }

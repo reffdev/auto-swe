@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
@@ -7,15 +7,18 @@ import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
 import { DashboardLanding } from './DashboardLanding'
+import { Planner } from './Planner'
 import type { Issue, Run } from './api'
 
 export function Dashboard() {
-  const { projectId, issueId, machineId } = useParams<{
+  const { projectId, issueId, machineId, conversationId } = useParams<{
     projectId?: string
     issueId?: string
     machineId?: string
+    conversationId?: string
   }>()
   const navigate = useNavigate()
+  const location = useLocation()
 
   const selectedProjectId = projectId ?? null
   const selectedIssueId = issueId ?? null
@@ -52,10 +55,11 @@ export function Dashboard() {
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null
 
   // Determine what to show in the main panel
-  const showMachineDetail = selectedMachine && !selectedIssue
-  const showIssueDetail = selectedIssue
-  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail
-  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail
+  const showPlanner = selectedProjectId && location.pathname.includes('/planner')
+  const showMachineDetail = selectedMachine && !selectedIssue && !showPlanner
+  const showIssueDetail = selectedIssue && !showPlanner
+  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showPlanner
+  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail && !showPlanner
 
   return (
     <TooltipProvider>
@@ -108,6 +112,12 @@ export function Dashboard() {
             onSelectIssue={(id) => navigate(`/project/${selectedProjectId}/issue/${id}`)}
             projectId={selectedProjectId!}
             onDataChange={refresh}
+          />
+        )}
+        {showPlanner && selectedProjectId && (
+          <Planner
+            projectId={selectedProjectId}
+            conversationId={conversationId}
           />
         )}
         {showIssueDetail && selectedIssue && (

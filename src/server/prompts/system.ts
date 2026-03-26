@@ -88,7 +88,11 @@ const TOOL_USAGE_SECTION = `---
 
 #### Web
 
-- **\`fetchUrl\`** — Fetch a URL and return the page content as clean text. Use for reading documentation or web pages. Synthesize the content into a response — never dump raw output. Only use for URLs provided by the user or discovered during exploration.`;
+- **\`fetchUrl\`** — Fetch a URL and return the page content as clean text. Use for reading documentation or web pages. Synthesize the content into a response — never dump raw output. Only use for URLs provided by the user or discovered during exploration.
+
+#### Planning
+
+- **\`todo\`** — A personal task list to plan and track your work. Use it to break down complex tasks before starting, and mark items done as you go. Actions: \`add\` (create a task), \`update\` (change status to pending/in_progress/done), \`list\` (show all tasks).`;
 
 const TOOL_BEST_PRACTICES_SECTION = `---
 

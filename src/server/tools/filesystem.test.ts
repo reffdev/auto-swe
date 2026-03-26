@@ -158,6 +158,51 @@ describe("replaceInFile", () => {
     );
     expect(result).toMatch(/replaced 1/i);
   });
+
+  it("strips line number prefixes with colon format (42: code)", async () => {
+    writeFileSync(join(workdir, "numbered.ts"), "function hello() {\n  return 'world';\n}\n");
+    const tools = makeFilesystemTools(workdir);
+    const result = await tools.replaceInFile.execute(
+      { path: "numbered.ts", old_str: "1: function hello() {\n2:   return 'world';\n3: }", new_str: "function goodbye() {\n  return 'earth';\n}" },
+      { toolCallId: "t1", messages: [] }
+    );
+    expect(result).toMatch(/replaced 1/i);
+    expect(readFileSync(join(workdir, "numbered.ts"), "utf-8")).toContain("goodbye");
+  });
+
+  it("strips line number prefixes with pipe format (42| code)", async () => {
+    writeFileSync(join(workdir, "piped.ts"), "const x = 1;\nconst y = 2;\n");
+    const tools = makeFilesystemTools(workdir);
+    const result = await tools.replaceInFile.execute(
+      { path: "piped.ts", old_str: "10| const x = 1;\n11| const y = 2;", new_str: "const x = 10;\nconst y = 20;" },
+      { toolCallId: "t1", messages: [] }
+    );
+    expect(result).toMatch(/replaced 1/i);
+    expect(readFileSync(join(workdir, "piped.ts"), "utf-8")).toContain("const x = 10;");
+  });
+
+  it("strips line number prefixes with arrow format (42→ code)", async () => {
+    writeFileSync(join(workdir, "arrow.ts"), "export default 42;\n");
+    const tools = makeFilesystemTools(workdir);
+    const result = await tools.replaceInFile.execute(
+      { path: "arrow.ts", old_str: "  1→ export default 42;", new_str: "export default 99;" },
+      { toolCallId: "t1", messages: [] }
+    );
+    expect(result).toMatch(/replaced 1/i);
+    expect(readFileSync(join(workdir, "arrow.ts"), "utf-8")).toContain("99");
+  });
+
+  it("strips line numbers with indentation normalization combined", async () => {
+    writeFileSync(join(workdir, "both.ts"), "  if (true) {\n    doStuff();\n  }\n");
+    const tools = makeFilesystemTools(workdir);
+    // Agent copies from scout report: line numbers + different indentation
+    const result = await tools.replaceInFile.execute(
+      { path: "both.ts", old_str: "5: if (true) {\n6:   doStuff();\n7: }", new_str: "  if (false) {\n    doNothing();\n  }" },
+      { toolCallId: "t1", messages: [] }
+    );
+    expect(result).toMatch(/replaced 1/i);
+    expect(readFileSync(join(workdir, "both.ts"), "utf-8")).toContain("doNothing");
+  });
 });
 
 // ─── listDirectory ────────────────────────────────────────────────────────────

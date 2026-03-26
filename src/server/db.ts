@@ -20,6 +20,8 @@ export type Project = typeof schema.projects.$inferSelect;
 export type Issue = typeof schema.issues.$inferSelect;
 export type Run = typeof schema.runs.$inferSelect;
 export type LlmRequest = typeof schema.llmRequests.$inferSelect;
+export type PlannerConversation = typeof schema.plannerConversations.$inferSelect;
+export type PlannerMessage = typeof schema.plannerMessages.$inferSelect;
 
 // ─── Database class ───────────────────────────────────────────────────────────
 
@@ -54,6 +56,7 @@ export class Db {
         title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'pending', git_branch TEXT, git_worktree TEXT,
         git_pr_url TEXT, git_pr_number INTEGER,
+        github_issue_number INTEGER, github_issue_url TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT
       );
@@ -62,6 +65,17 @@ export class Db {
         machine_id TEXT, stage TEXT, status TEXT NOT NULL DEFAULT 'pending', output TEXT,
         started_at TEXT, completed_at TEXT, duration_ms INTEGER,
         prompt_tokens INTEGER, completion_tokens INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS planner_conversations (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        status TEXT NOT NULL DEFAULT 'active', issue_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS planner_messages (
+        id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES planner_conversations(id),
+        role TEXT NOT NULL, content TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS llm_requests (
@@ -82,6 +96,8 @@ export class Db {
       "ALTER TABLE machines ADD COLUMN context_limit INTEGER",
       "ALTER TABLE runs ADD COLUMN stage TEXT",
       "ALTER TABLE issues ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
+      "ALTER TABLE issues ADD COLUMN github_issue_url TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -225,7 +241,7 @@ export class Db {
 
   updateIssue(
     id: string,
-    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "completed_at" | "retry_count">>
+    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "completed_at" | "retry_count">>
   ): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
@@ -331,6 +347,82 @@ export class Db {
       .where(eq(schema.llmRequests.run_id, runId))
       .orderBy(schema.llmRequests.created_at)
       .all();
+  }
+
+  // ─── Planner Conversations ────────────────────────────────────────────────
+
+  createPlannerConversation(data: { project_id: string }): PlannerConversation {
+    const id = randomUUID();
+    this.drizzle.insert(schema.plannerConversations).values({
+      id,
+      project_id: data.project_id,
+    }).run();
+    return this.getPlannerConversation(id)!;
+  }
+
+  getPlannerConversation(id: string): PlannerConversation | null {
+    return this.drizzle.select().from(schema.plannerConversations)
+      .where(eq(schema.plannerConversations.id, id)).get() ?? null;
+  }
+
+  getPlannerConversations(projectId: string): PlannerConversation[] {
+    return this.drizzle.select().from(schema.plannerConversations)
+      .where(eq(schema.plannerConversations.project_id, projectId))
+      .orderBy(desc(schema.plannerConversations.created_at))
+      .all();
+  }
+
+  updatePlannerConversation(
+    id: string,
+    data: Partial<Pick<PlannerConversation, "status" | "issue_id" | "updated_at">>
+  ): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.plannerConversations).set(clean)
+      .where(eq(schema.plannerConversations.id, id)).run();
+  }
+
+  // ─── Planner Messages ─────────────────────────────────────────────────────
+
+  createPlannerMessage(data: { conversation_id: string; role: string; content: string }): PlannerMessage {
+    const id = randomUUID();
+    this.drizzle.insert(schema.plannerMessages).values({
+      id,
+      conversation_id: data.conversation_id,
+      role: data.role,
+      content: data.content,
+    }).run();
+    // Update conversation timestamp
+    this.drizzle.update(schema.plannerConversations)
+      .set({ updated_at: new Date().toISOString() })
+      .where(eq(schema.plannerConversations.id, data.conversation_id)).run();
+    return this.getPlannerMessage(id)!;
+  }
+
+  getPlannerMessage(id: string): PlannerMessage | null {
+    return this.drizzle.select().from(schema.plannerMessages)
+      .where(eq(schema.plannerMessages.id, id)).get() ?? null;
+  }
+
+  getPlannerMessages(conversationId: string, afterId?: string): PlannerMessage[] {
+    if (afterId) {
+      // Get messages created after the given message
+      const after = this.getPlannerMessage(afterId);
+      if (after) {
+        return (this.sqlite
+          .prepare("SELECT * FROM planner_messages WHERE conversation_id = ? AND rowid > (SELECT rowid FROM planner_messages WHERE id = ?) ORDER BY rowid ASC")
+          .all(conversationId, afterId) as PlannerMessage[]);
+      }
+    }
+    return this.drizzle.select().from(schema.plannerMessages)
+      .where(eq(schema.plannerMessages.conversation_id, conversationId))
+      .orderBy(schema.plannerMessages.created_at)
+      .all();
+  }
+
+  updatePlannerMessage(id: string, data: { content: string }): void {
+    this.drizzle.update(schema.plannerMessages).set({ content: data.content })
+      .where(eq(schema.plannerMessages.id, id)).run();
   }
 }
 

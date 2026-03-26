@@ -11,7 +11,8 @@ import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
 import { executePipeline, executeStageRetry, cancelPipeline, type PipelineContext } from "./pipeline/index";
 
-import { mergePullRequest, authenticatedRemoteUrl } from "./git";
+import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
+import { getGenerationSpeed } from "./stats";
 
 /** Base directory for auto-created project clones */
 const PROJECTS_BASE = resolve(process.env.PROJECTS_BASE ?? "./.projects");
@@ -391,6 +392,38 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getIssue(issue.id));
   });
 
+  // ─── PR diff (local git) ──────────────────────────────────────────────────
+
+  router.get("/issues/:id/pr-diff", async (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    if (!issue.git_branch) {
+      res.status(400).json({ error: "issue has no git branch" });
+      return;
+    }
+
+    const project = db.getProject(issue.project_id);
+    if (!project) {
+      res.status(500).json({ error: "project not found" });
+      return;
+    }
+
+    try {
+      const files = await getBranchDiff(
+        project.workdir,
+        project.git_default_branch ?? "main",
+        issue.git_branch
+      );
+      res.json({ files, branch: issue.git_branch, base: project.git_default_branch ?? "main" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: `Failed to get diff: ${msg}` });
+    }
+  });
+
   // ─── Issue runs (all stages) ──────────────────────────────────────────────
 
   router.get("/issues/:id/runs", (req, res) => {
@@ -423,6 +456,26 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   router.get("/llm-requests/run/:runId", (req, res) => {
     res.json(db.getLlmRequestsByRunId(req.params.runId));
+  });
+
+  // ─── Stats (compact, for M5 StickC / external monitoring) ───────────────
+
+  router.get("/stats", async (_req, res) => {
+    const machines = db.getMachines().filter(m => m.enabled === 1);
+    const active = machines.filter(m => m.status === "working").length;
+
+    const issues = db.getIssues();
+    const queued = issues.filter(i => i.status === "pending" || i.status === "approved").length;
+    const prOpen = issues.filter(i => i.status === "awaiting_review").length;
+    const failed = issues.filter(i => i.status === "failed").length;
+
+    const speed = await getGenerationSpeed(db, machines);
+
+    res.json({
+      machines: { active, total: machines.length },
+      issues: { queued, pr_open: prOpen, failed },
+      speed,
+    });
   });
 
   // ─── Server info ────────────────────────────────────────────────────────

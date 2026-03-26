@@ -35,6 +35,7 @@ import {
   makeTestWriteTools,
   makeVerifyTools,
   fetchUrlTool,
+  makeTodoTool,
 } from "../tools";
 import {
   constructScoutPrompt,
@@ -42,11 +43,13 @@ import {
   constructImplementPrompts,
   constructTestWritePrompts,
   constructReviewPrompts,
-} from "../stage-prompts";
+  REVIEW_LENSES,
+} from "../prompts/stage";
 import {
   commitAll,
   pushBranch,
   createPullRequest,
+  createGitHubIssue,
   authenticatedRemoteUrl,
   setRemoteUrl,
 } from "../git";
@@ -184,7 +187,7 @@ export async function scoutNode(
         model, modelId: state.modelId,
         systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
         userPrompt: userIssue + contextSection,
-        tools: { ...makeReadOnlyTools(state.worktreePath, budget), submitScoutReport: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
+        tools: { ...makeReadOnlyTools(state.worktreePath, budget), ...makeTodoTool(), submitScoutReport: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
         maxSteps: SCOUT_STEP_LIMIT,
         timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
         abortSignal: scoutStageAbort.signal,
@@ -296,7 +299,7 @@ export async function implementNode(
     model, modelId: state.modelId,
     systemPrompt: implPrompts.system,
     userPrompt: implPrompts.user,
-    tools: { ...makeFilesystemTools(state.worktreePath, budget), fetchUrl: fetchUrlTool } as ToolSet,
+    tools: { ...makeFilesystemTools(state.worktreePath, budget), ...makeTodoTool(), fetchUrl: fetchUrlTool } as ToolSet,
     maxSteps: IMPLEMENT_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
@@ -337,7 +340,7 @@ export async function testWriteNode(
     model, modelId: state.modelId,
     systemPrompt: testPrompts.system,
     userPrompt: testPrompts.user,
-    tools: { ...makeTestWriteTools(state.worktreePath, budget) } as ToolSet,
+    tools: { ...makeTestWriteTools(state.worktreePath, budget), ...makeTodoTool() } as ToolSet,
     maxSteps: TEST_WRITE_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
@@ -354,10 +357,12 @@ export async function reviewNode(
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
   const budget = new ContextBudget(machine.context_limit ?? undefined);
-  const run = ctx.db.createRun({ issue_id: state.issueId, stage: "review" });
-  ctx.db.updateRun(run.id, { machine_id: state.machineId });
+  const lensKey = state.reviewLenses[state.currentLensIndex] ?? "general";
+  const lens = REVIEW_LENSES[lensKey] ?? REVIEW_LENSES.general;
 
-  console.log(`Pipeline: review stage`);
+  const run = ctx.db.createRun({ issue_id: state.issueId, stage: `review:${lensKey}` });
+  ctx.db.updateRun(run.id, { machine_id: state.machineId });
+  console.log(`Pipeline: review stage — lens "${lens.name}" (${state.currentLensIndex + 1}/${state.reviewLenses.length})`);
 
   const gitContext = captureGitContext(state.worktreePath);
   const projectCtxReview = gatherProjectContext(state.worktreePath);
@@ -371,38 +376,68 @@ export async function reviewNode(
     issueDescription: state.issueDescription,
     gitContext,
     projectContext: projectCtxReview.context,
+    lens,
   });
 
   const output = await runStage({
-    db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "review",
+    db: ctx.db, runId: run.id, issueId: state.issueId, stageName: `review:${lensKey}`,
     model, modelId: state.modelId,
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.user,
-    tools: { ...makeVerifyTools(state.worktreePath, budget) } as ToolSet,
+    tools: { ...makeVerifyTools(state.worktreePath, budget), ...makeTodoTool() } as ToolSet,
     maxSteps: REVIEW_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
   });
 
   const verdict = parseVerdict(output);
-  console.log(`Pipeline: review verdict = ${verdict.status} (${verdict.failureClass})`);
+  console.log(`Pipeline: review verdict = ${verdict.status} (${verdict.failureClass}) [lens: ${lens.name}]`);
 
   if (verdict.status === "accept") {
-    return { reviewOutput: output, reviewVerdict: "accept" };
+    // Lens passed — advance to next lens, reset retry count for the new lens
+    const nextIndex = state.currentLensIndex + 1;
+    return {
+      reviewOutput: output,
+      reviewVerdict: "accept",
+      currentLensIndex: nextIndex,
+      retryCount: 0,
+    };
   }
 
   // If we couldn't parse the verdict at all, don't send garbage feedback to implement.
   // Treat it as accept — the review ran to completion without explicitly rejecting.
   if (verdict.failureClass === "unparseable") {
     console.log("Pipeline: review output unparseable — treating as accept (no explicit rejection found)");
-    return { reviewOutput: output, reviewVerdict: "accept" };
+    const nextIndex = state.currentLensIndex + 1;
+    return {
+      reviewOutput: output,
+      reviewVerdict: "accept",
+      currentLensIndex: nextIndex,
+      retryCount: 0,
+    };
   }
 
+  // Lens rejected — will we have retries left?
+  const newRetryCount = state.retryCount + 1;
+  if (newRetryCount >= MAX_RETRIES) {
+    // Exhausted retries for this lens — move on rather than blocking the pipeline
+    console.log(`Pipeline: review lens "${lens.name}" exhausted retries, advancing to next lens`);
+    const nextIndex = state.currentLensIndex + 1;
+    return {
+      reviewOutput: output,
+      reviewVerdict: "accept",
+      currentLensIndex: nextIndex,
+      retryCount: 0,
+    };
+  }
+
+  // Include lens name in feedback so implement knows the concern area
+  const lensPrefix = `[${lens.name}] `;
   return {
     reviewOutput: output,
     reviewVerdict: "reject",
-    reviewFeedback: verdict.feedback,
-    retryCount: state.retryCount + 1,
+    reviewFeedback: lensPrefix + verdict.feedback,
+    retryCount: newRetryCount,
   };
 }
 
@@ -417,7 +452,28 @@ export async function gitOpsNode(
   console.log(`Pipeline: git ops — commit, push, create PR (worktree: ${state.worktreePath}, branch: ${branch})`);
   console.log(`Pipeline: git ops — reviewVerdict=${state.reviewVerdict}, error=${state.error}`);
 
-  const commitHash = await commitAll(state.worktreePath, `[auto-swe] ${state.issueTitle}`);
+  // Create GitHub issue if not already created
+  const existingIssue = ctx.db.getIssue(state.issueId);
+  let ghIssueNumber = existingIssue?.github_issue_number ?? null;
+  let ghIssueUrl = existingIssue?.github_issue_url ?? null;
+
+  if (!ghIssueNumber) {
+    const ghIssue = await createGitHubIssue(project, state.issueTitle, state.issueDescription || "");
+    if (ghIssue) {
+      ghIssueNumber = ghIssue.number;
+      ghIssueUrl = ghIssue.url;
+      ctx.db.updateIssue(state.issueId, {
+        github_issue_number: ghIssue.number,
+        github_issue_url: ghIssue.url,
+      });
+      console.log(`Pipeline: GitHub issue #${ghIssue.number} → ${ghIssue.url}`);
+    }
+  }
+
+  // Build commit message with issue reference
+  const issueRef = ghIssueNumber ? ` (#${ghIssueNumber})` : "";
+  const commitMessage = `${state.issueTitle}${issueRef}`;
+  const commitHash = await commitAll(state.worktreePath, commitMessage);
   if (!commitHash) {
     console.log("Pipeline: git ops — nothing to commit, checking for existing commits to push");
   } else {
@@ -435,7 +491,10 @@ export async function gitOpsNode(
     return { error: "Failed to push branch to remote" };
   }
 
-  const pr = await createPullRequest(project, branch, state.issueTitle, state.issueDescription || "");
+  // Build PR body with issue link
+  const closeRef = ghIssueNumber ? `\n\nCloses #${ghIssueNumber}` : "";
+  const prBody = (state.issueDescription || "") + closeRef;
+  const pr = await createPullRequest(project, branch, state.issueTitle, prBody);
 
   // Update issue status
   if (pr) {
@@ -456,7 +515,12 @@ export async function gitOpsNode(
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function routeAfterReview(state: PipelineStateType): Promise<string> {
-  if (state.reviewVerdict === "accept") return "git_ops";
-  if (state.retryCount >= MAX_RETRIES) return END;
+  if (state.reviewVerdict === "accept") {
+    // All lenses passed?
+    if (state.currentLensIndex >= state.reviewLenses.length) return "git_ops";
+    // More lenses remain — run the next one
+    return "review";
+  }
+  // Rejected — loop back to implement for fixes
   return "implement";
 }

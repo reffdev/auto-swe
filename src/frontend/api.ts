@@ -39,6 +39,8 @@ export interface Issue {
   git_worktree: string | null;
   git_pr_url: string | null;
   git_pr_number: number | null;
+  github_issue_number: number | null;
+  github_issue_url: string | null;
   retry_count: number;
   created_at: string;
   completed_at: string | null;
@@ -189,6 +191,76 @@ export interface StepData {
 
 export function getRunOutput(runId: string): Promise<{ status: string; output: string | null }> {
   return json(`/api/runs/${runId}/output`);
+}
+
+// ─── PR Diff ──────────────────────────────────────────────────────────────────
+
+export interface DiffFile {
+  filename: string;
+  status: "added" | "deleted" | "modified" | "renamed";
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
+export function getPrDiff(issueId: string): Promise<{ files: DiffFile[]; branch: string; base: string }> {
+  return json(`/api/issues/${issueId}/pr-diff`);
+}
+
+// ─── Planner ──────────────────────────────────────────────────────────────────
+
+export interface PlannerConversation {
+  id: string;
+  project_id: string;
+  status: "active" | "approved" | "abandoned";
+  issue_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlannerMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface PlannerPollResponse {
+  messages: PlannerMessage[];
+  generating: boolean;
+  partialText?: string;
+}
+
+export function createPlannerConversation(projectId: string): Promise<PlannerConversation & { messages: PlannerMessage[] }> {
+  return json("/api/planner/conversations", { method: "POST", body: JSON.stringify({ project_id: projectId }) });
+}
+
+export function getPlannerConversation(id: string): Promise<PlannerConversation & { messages: PlannerMessage[] }> {
+  return json(`/api/planner/conversations/${id}`);
+}
+
+export function sendPlannerMessage(conversationId: string, content: string): Promise<{ message_id: string }> {
+  return json(`/api/planner/conversations/${conversationId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export function pollPlannerMessages(conversationId: string, afterId?: string): Promise<PlannerPollResponse> {
+  const qs = afterId ? `?after=${afterId}` : "";
+  return json(`/api/planner/conversations/${conversationId}/messages${qs}`);
+}
+
+export function approvePlannerConversation(id: string, reviewLenses?: string[]): Promise<{ issue: Issue; reviewLenses: string[] }> {
+  return json(`/api/planner/conversations/${id}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ reviewLenses }),
+  });
+}
+
+export function abandonPlannerConversation(id: string): Promise<void> {
+  return json(`/api/planner/conversations/${id}`, { method: "DELETE" });
 }
 
 // ─── Update & Restart ─────────────────────────────────────────────────────────

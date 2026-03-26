@@ -41,6 +41,10 @@ export const PipelineState = Annotation.Root({
   reviewFeedback:   Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
   retryCount:       Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
 
+  // Review lenses — ordered list of review focuses to pass through
+  reviewLenses:     Annotation<string[]>({ reducer: (_, b) => b, default: () => ["general"] }),
+  currentLensIndex: Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
+
   // Error tracking
   error:            Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
 });

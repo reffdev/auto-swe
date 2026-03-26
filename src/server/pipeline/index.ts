@@ -35,6 +35,7 @@ import type { Db, Machine, Issue, Project } from "../db";
 
 // Re-export public parsers for tests and external consumers
 export { extractScoutBrief, parseVerdict } from "./parsers";
+export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
 // ─── Graph Definition (with persistent SQLite checkpointing) ──────────────────
 
@@ -83,6 +84,7 @@ export async function executePipeline(
   machine: Machine,
   issue: Issue,
   project: Project,
+  reviewLenses?: string[],
 ): Promise<void> {
   const branch = makeBranchName(issue.id, issue.title);
   const worktreePath = makeWorktreePath(project.workdir, issue.id);
@@ -141,6 +143,9 @@ export async function executePipeline(
     lastThreadIds.set(issue.id, threadId);
     console.log(`Pipeline: thread_id = ${threadId}`);
 
+    const lenses = reviewLenses?.length ? reviewLenses : ["general"];
+    console.log(`Pipeline: review lenses = [${lenses.join(", ")}]`);
+
     const finalState = await graph.invoke(
       {
         issueId: issue.id,
@@ -150,9 +155,10 @@ export async function executePipeline(
         modelId,
         machineBaseUrl: machine.base_url,
         machineId: machine.id,
+        reviewLenses: lenses,
       },
       {
-        recursionLimit: 30,
+        recursionLimit: 50,
         configurable: {
           thread_id: threadId,
           ...({ ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig),
@@ -256,7 +262,7 @@ export async function executeStageRetry(
     const finalState = await graph.invoke(
       null, // null = resume from checkpoint, don't overwrite state
       {
-        recursionLimit: 30,
+        recursionLimit: 50,
         configurable: {
           thread_id: threadId,
           ...({ ctx, machine, project, branch, model, abortSignal: abortController.signal } satisfies PipelineConfig),

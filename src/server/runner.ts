@@ -7,7 +7,7 @@
 
 import { streamText, type StepResult, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { constructSystemPrompt } from "./prompts";
+import { constructSystemPrompt } from "./prompts/system";
 import { ContextBudget, makeFilesystemTools, fetchUrlTool } from "./tools";
 import {
   makeBranchName,

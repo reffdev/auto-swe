@@ -416,6 +416,55 @@ function authHeaders(
   };
 }
 
+// ─── GitHub Issues ────────────────────────────────────────────────────────────
+
+export interface GitHubIssueResult {
+  url: string;
+  number: number;
+}
+
+export async function createGitHubIssue(
+  project: Project,
+  title: string,
+  body: string
+): Promise<GitHubIssueResult | null> {
+  if (!project.git_remote || !project.git_server_token) {
+    console.log("Git: skipping GitHub issue creation — configure git_remote and git_server_token");
+    return null;
+  }
+
+  const parsed = parseRemote(project.git_remote);
+  if (!parsed) {
+    console.error(`Git: cannot parse remote URL: ${project.git_remote}`);
+    return null;
+  }
+
+  const { owner, repo, isGitHub } = parsed;
+  const apiUrl = isGitHub
+    ? `https://api.github.com/repos/${owner}/${repo}/issues`
+    : `${parsed.serverUrl}/api/v1/repos/${owner}/${repo}/issues`;
+
+  try {
+    const res = await fetch(apiUrl, {
+      method: "POST",
+      headers: authHeaders(project.git_server_token, isGitHub),
+      body: JSON.stringify({ title, body }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`HTTP ${res.status}: ${text}`);
+    }
+
+    const issue = (await res.json()) as { html_url: string; number: number };
+    console.log(`Git: issue #${issue.number} created → ${issue.html_url}`);
+    return { url: issue.html_url, number: issue.number };
+  } catch (err) {
+    console.error("Git: GitHub issue creation failed:", err);
+    return null;
+  }
+}
+
 // ─── Pull requests ────────────────────────────────────────────────────────────
 
 export interface PRResult {
@@ -507,4 +556,93 @@ export async function mergePullRequest(
     console.error(`Git: PR merge failed:`, err);
     return false;
   }
+}
+
+// ─── Branch diff (local git) ──────────────────────────────────────────────────
+
+export interface DiffFile {
+  filename: string;
+  status: "added" | "deleted" | "modified" | "renamed";
+  additions: number;
+  deletions: number;
+  patch: string;
+}
+
+/**
+ * Get per-file diffs between two branches using local git.
+ * Fetches origin first to ensure branches are up to date.
+ */
+export async function getBranchDiff(
+  projectWorkdir: string,
+  baseBranch: string,
+  headBranch: string
+): Promise<DiffFile[]> {
+  // Fetch to ensure we have the latest refs
+  try {
+    await git("fetch origin", projectWorkdir);
+  } catch {
+    // Non-fatal — branches may already be local
+  }
+
+  // Get numstat for per-file addition/deletion counts
+  const numstatRaw = await gitSafe(
+    ["diff", `origin/${baseBranch}...origin/${headBranch}`, "--numstat"],
+    projectWorkdir
+  ).catch(() => "");
+
+  const statsByFile = new Map<string, { additions: number; deletions: number }>();
+  for (const line of numstatRaw.trim().split("\n")) {
+    if (!line) continue;
+    const [add, del, file] = line.split("\t");
+    if (file) {
+      statsByFile.set(file, {
+        additions: add === "-" ? 0 : parseInt(add, 10) || 0,
+        deletions: del === "-" ? 0 : parseInt(del, 10) || 0,
+      });
+    }
+  }
+
+  // Get full unified diff (gitSafe uses spawn — no buffer limit)
+  const diffRaw = await gitSafe(
+    ["diff", `origin/${baseBranch}...origin/${headBranch}`],
+    projectWorkdir
+  ).catch(() => "");
+
+  if (!diffRaw.trim()) return [];
+
+  // Split into per-file sections on "diff --git" boundaries
+  const fileSections = diffRaw.split(/^(?=diff --git )/m).filter(s => s.trim());
+
+  const files: DiffFile[] = [];
+  for (const section of fileSections) {
+    // Extract filename from "diff --git a/path b/path"
+    const headerMatch = section.match(/^diff --git a\/(.+?) b\/(.+)/m);
+    if (!headerMatch) continue;
+
+    const filenameA = headerMatch[1];
+    const filenameB = headerMatch[2];
+    const filename = filenameB;
+
+    // Detect status from diff headers
+    let status: DiffFile["status"] = "modified";
+    if (/^new file mode/m.test(section)) {
+      status = "added";
+    } else if (/^deleted file mode/m.test(section)) {
+      status = "deleted";
+    } else if (filenameA !== filenameB || /^rename from/m.test(section)) {
+      status = "renamed";
+    }
+
+    const stats = statsByFile.get(filename) ?? statsByFile.get(filenameA) ?? { additions: 0, deletions: 0 };
+
+    files.push({
+      filename,
+      status,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      patch: section,
+    });
+  }
+
+  return files;
 }

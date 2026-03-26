@@ -876,6 +876,48 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
           }
         }
 
+        // Retry by stripping line number prefixes (e.g. "  42: ", "42| ", " 7→ ")
+        // from old_str — the scout report includes these but the actual file doesn't
+        if (count === 0) {
+          const stripLineNumbers = (s: string) =>
+            s.replace(/^\s*\d+[\s]*[:|→|│|\|]\s?/gm, "");
+          const strippedOld = stripLineNumbers(normalizedOldStr);
+          if (strippedOld !== normalizedOldStr) {
+            // Try exact match with stripped version
+            const strippedCount = content.split(strippedOld).length - 1;
+            if (strippedCount === 1) {
+              searchStr = strippedOld;
+              count = 1;
+            } else if (strippedCount === 0) {
+              // Try indentation-normalized match with stripped version
+              const normalise = (s: string) =>
+                s.replace(/^[ \t]+/gm, "").replace(/[ \t]+$/gm, "");
+              const normContent = normalise(content);
+              const normStripped = normalise(strippedOld);
+              if (normContent.includes(normStripped)) {
+                const lines = content.split("\n");
+                const normLines = lines.map((l: string) =>
+                  l.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
+                );
+                const oldLines = strippedOld
+                  .split("\n")
+                  .map((l: string) =>
+                    l.replace(/^[ \t]+/, "").replace(/[ \t]+$/, "")
+                  );
+                const start = normLines.findIndex((_: string, i: number) =>
+                  oldLines.every(
+                    (ol: string, j: number) => normLines[i + j] === ol
+                  )
+                );
+                if (start !== -1) {
+                  searchStr = lines.slice(start, start + oldLines.length).join("\n");
+                  count = 1;
+                }
+              }
+            }
+          }
+        }
+
         if (count === 0)
           return trackResult(`Error: string not found in ${path}`);
         if (count > 1)

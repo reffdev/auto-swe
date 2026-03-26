@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { Plus } from 'lucide-react'
+import { Plus, MessageSquarePlus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -112,6 +113,7 @@ function formatDuration(ms: number): string {
 
 export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, onSelectIssue, projectId, onDataChange }: IssueListProps) {
   const [showNewIssue, setShowNewIssue] = useState(false)
+  const navigate = useNavigate()
 
   return (
     <div className="flex flex-col h-full">
@@ -131,10 +133,16 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
             </button>
           ))}
         </div>
-        <Button size="sm" onClick={() => setShowNewIssue(true)}>
-          <Plus className="size-3.5 mr-1" />
-          New Issue
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => navigate(`/project/${projectId}/planner`)}>
+            <MessageSquarePlus className="size-3.5 mr-1" />
+            Plan with AI
+          </Button>
+          <Button size="sm" onClick={() => setShowNewIssue(true)}>
+            <Plus className="size-3.5 mr-1" />
+            New Issue
+          </Button>
+        </div>
       </div>
 
       {/* Issue rows */}

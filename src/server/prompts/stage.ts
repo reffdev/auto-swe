@@ -58,9 +58,16 @@ You have read-only filesystem access. Only include code that EXISTS in the repo 
 [How to build, lint, test]
 
 ## Relevant Code
-[For each relevant file: full path, then the EXISTING code WITH LINE NUMBERS.
-Include function signatures, type definitions, imports, full function bodies.
-Every code snippet must include line numbers so the editor knows exact positions.]
+[For each code snippet, use this format:
+
+### path/to/file.ts (lines 42-87)
+\\\`\\\`\\\`
+<raw code from the file — NO line number prefixes, exactly as it appears in the file>
+\\\`\\\`\\\`
+
+The header gives the complete relative path from project root and the line range.
+The code block contains the EXACT file content — no line numbers, no prefixes, no modifications.
+Include function signatures, type definitions, imports, full function bodies.]
 
 ## Analysis
 [What needs to change and where. Which files need modification.]
@@ -144,9 +151,9 @@ ${workingEnv(opts.workingDir)}
 
 ## Your Role
 
-You are the **Implementer**. The user message below contains a pre-researched scout report with all relevant existing code (with line numbers), project structure, build commands, and analysis. The report is comprehensive — treat it as your primary reference.
+You are the **Implementer**. The user message below contains a pre-researched scout report with all relevant existing code, project structure, build commands, and analysis. The report is comprehensive — treat it as your primary reference.
 
-**Trust the report.** The code snippets in it are copied directly from the repo with line numbers. Use them to orient your edits without re-reading those files. Only read a file yourself if you need content the report doesn't cover (e.g., a file it didn't anticipate being relevant).
+**Trust the report.** Code snippets are copied verbatim from the repo — you can use them directly in \`replaceInFile\` \`old_str\` without re-reading the file. Each snippet has a header showing the file path and line range for orientation. Only read a file yourself if you need content the report doesn't cover.
 
 ${CODING_STANDARDS}
 
@@ -185,7 +192,7 @@ ${opts.reviewFeedback}
 
   user += `## Scout Report
 
-Pre-researched codebase report. All code snippets below are verbatim from the repo with line numbers. Trust these as your primary reference — only read files directly if you need content not covered here.
+Pre-researched codebase report. Code snippets are verbatim from the repo (no line number prefixes — safe to copy directly into \`old_str\`). Each snippet header shows the file path and line range. Trust these as your primary reference — only read files directly if you need content not covered here.
 
 ${opts.scoutBrief}`;
 
@@ -266,6 +273,52 @@ ${opts.implementOutput}`;
   return { system, user };
 }
 
+// ─── Review Lenses ────────────────────────────────────────────────────────────
+
+export interface ReviewLens {
+  name: string;
+  focus: string;
+}
+
+export const REVIEW_LENSES: Record<string, ReviewLens> = {
+  general: {
+    name: "General Review",
+    focus: `Focus on correctness and completeness:
+   - Does the code actually address the issue described?
+   - Are there broken imports, missing dependencies, or syntax errors?
+   - Is there debug code, console.logs, or commented-out code that shouldn't be there?
+   - Are the tests actually testing the right things?`,
+  },
+  security: {
+    name: "Security Review",
+    focus: `Focus exclusively on security concerns:
+   - Input validation and sanitization (SQL injection, XSS, command injection)
+   - Authentication and authorization correctness
+   - Secrets or credentials hardcoded or logged
+   - Unsafe deserialization, path traversal, or SSRF
+   - Dependency vulnerabilities (known insecure packages)
+   - Only reject for genuine security issues, not style or correctness.`,
+  },
+  ui: {
+    name: "UI Review",
+    focus: `Focus exclusively on UI/UX quality:
+   - Visual consistency with existing styles and design patterns
+   - Responsive layout — does it work at common breakpoints?
+   - Accessibility (a11y): semantic HTML, ARIA attributes, keyboard navigation, color contrast
+   - Loading states, error states, and empty states handled
+   - Only reject for genuine UI/UX issues, not backend logic or correctness.`,
+  },
+  performance: {
+    name: "Performance Review",
+    focus: `Focus exclusively on performance concerns:
+   - Unnecessary re-renders, missing memoization in hot paths
+   - N+1 queries, unbounded loops, or missing pagination
+   - Large synchronous operations that should be async
+   - Bundle size impact (large imports that could be lazy-loaded)
+   - Only reject for genuine performance issues, not style or correctness.`,
+  },
+};
+
 // ─── Review ───────────────────────────────────────────────────────────────────
 
 export function constructReviewPrompts(opts: {
@@ -277,14 +330,21 @@ export function constructReviewPrompts(opts: {
   issueDescription: string;
   gitContext?: string;
   projectContext?: string;
+  lens?: ReviewLens;
 }): { system: string; user: string } {
-  const system = `# Review Stage
+  const lens = opts.lens ?? REVIEW_LENSES.general;
+
+  const system = `# Review Stage — ${lens.name}
 
 ${workingEnv(opts.workingDir)}
 
 ## Your Role
 
-You are the **Reviewer**. Verify the implementation is correct and the tests pass. You have read-only access plus \`runCommand\` — use them to read files and run tests directly rather than relying solely on the summaries in the user message.
+You are the **Reviewer** performing a **${lens.name}**. You have read-only access plus \`runCommand\` — use them to read files and run tests directly rather than relying solely on the summaries in the user message.
+
+## Review Focus
+
+${lens.focus}
 
 ## FORBIDDEN Actions
 
@@ -300,27 +360,23 @@ You are the **Reviewer**. Verify the implementation is correct and the tests pas
 1. Read the changed files to understand what was implemented
 2. Run the UNIT TESTS to confirm they pass: check the test-write output for the specific test run command (e.g., \`npx jest path/to/test.ts\`, NOT \`npm test\` or \`npm start\`)
 3. Optionally run the linter or build command (\`npm run build\`, \`npm run lint\`) to check for compilation errors
-4. Check for obvious issues:
-   - Does the code actually address the issue described?
-   - Are there broken imports, missing dependencies, or syntax errors?
-   - Is there debug code, console.logs, or commented-out code that shouldn't be there?
-   - Are the tests actually testing the right things?
+4. Evaluate the code through the lens of **${lens.name}** — see Review Focus above
 5. Produce your verdict
 
 ## Verdict
 
 You MUST produce exactly one of these:
 
-**ACCEPT** — implementation is correct, tests pass, ready for PR:
+**ACCEPT** — implementation passes this review:
 \`\`\`verdict
 status: accept
-summary: [brief explanation of why this passes review]
+summary: [brief explanation of why this passes ${lens.name}]
 \`\`\`
 
-**REJECT** — implementation has problems that need fixing:
+**REJECT** — implementation has problems within this review's focus:
 \`\`\`verdict
 status: reject
-failure_class: [test_failure | logic_error | incomplete | style]
+failure_class: [test_failure | logic_error | incomplete | style | security | accessibility | performance]
 feedback: [specific, actionable feedback about what needs to be fixed.
 Be precise — the implement agent will use this to make corrections.
 Include file names, function names, and what's wrong.]

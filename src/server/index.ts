@@ -11,6 +11,7 @@ import { resolve } from "path";
 import { existsSync } from "fs";
 import { Db } from "./db";
 import { createApiRouter } from "./api";
+import { createPlannerRouter } from "./planner-api";
 
 const PORT = parseInt(process.env.PORT ?? "3001", 10);
 
@@ -31,6 +32,7 @@ app.use(express.json());
 
 // 4. Mount API routes (with runner context for approve/retry)
 app.use("/api", createApiRouter(db, { pipelineCtx: { db } }));
+app.use("/api/planner", createPlannerRouter(db));
 
 // 5. Health check
 app.get("/health", (_req, res) => {
