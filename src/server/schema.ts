@@ -46,6 +46,7 @@ export const issues = sqliteTable("issues", {
   git_pr_number: integer("git_pr_number"),
   github_issue_number: integer("github_issue_number"),
   github_issue_url: text("github_issue_url"),
+  review_lenses: text("review_lenses"), // JSON array, e.g. '["general","security"]'
   retry_count: integer("retry_count").notNull().default(0),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   completed_at: text("completed_at"),

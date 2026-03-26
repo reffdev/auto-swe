@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { Plus, MessageSquarePlus } from 'lucide-react'
+import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -44,17 +44,28 @@ function NewIssueDialog({ open, onClose, projectId, onCreated }: {
 }) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  const [lenses, setLenses] = useState<string[]>(['general'])
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const resetForm = () => { setTitle(''); setDescription(''); setError('') }
+  const resetForm = () => { setTitle(''); setDescription(''); setLenses(['general']); setError('') }
   const handleClose = () => { resetForm(); onClose() }
+
+  const toggleLens = (key: string) => {
+    if (key === 'general') return
+    setLenses(prev => prev.includes(key) ? prev.filter(l => l !== key) : [...prev, key])
+  }
 
   const handleSubmit = async () => {
     setError('')
     setSubmitting(true)
     try {
-      await api.createIssue({ project_id: projectId, title, description: description || undefined })
+      await api.createIssue({
+        project_id: projectId,
+        title,
+        description: description || undefined,
+        review_lenses: lenses,
+      })
       onCreated()
       handleClose()
     } catch (e: unknown) {
@@ -78,6 +89,37 @@ function NewIssueDialog({ open, onClose, projectId, onCreated }: {
             onChange={(e) => setDescription(e.target.value)}
             rows={6}
           />
+          <div>
+            <span className="text-xs text-muted-foreground mb-1 block">Review lenses:</span>
+            <div className="flex items-center gap-1.5">
+              {([
+                { key: 'general', label: 'General', icon: ClipboardCheck, color: 'text-foreground bg-accent' },
+                { key: 'security', label: 'Security', icon: Shield, color: 'text-orange-400 bg-orange-500/20' },
+                { key: 'ui', label: 'UI', icon: Monitor, color: 'text-purple-400 bg-purple-500/20' },
+                { key: 'performance', label: 'Performance', icon: Zap, color: 'text-cyan-400 bg-cyan-500/20' },
+              ] as const).map(lens => {
+                const active = lenses.includes(lens.key)
+                const Icon = lens.icon
+                return (
+                  <button
+                    key={lens.key}
+                    type="button"
+                    onClick={() => toggleLens(lens.key)}
+                    disabled={lens.key === 'general'}
+                    className={cn(
+                      'inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full transition-colors',
+                      active ? lens.color : 'text-muted-foreground/50 bg-muted/30',
+                      lens.key !== 'general' && 'cursor-pointer hover:opacity-80',
+                      lens.key === 'general' && 'cursor-default',
+                    )}
+                  >
+                    <Icon className="size-3" />
+                    {lens.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>

@@ -57,6 +57,7 @@ export class Db {
         status TEXT NOT NULL DEFAULT 'pending', git_branch TEXT, git_worktree TEXT,
         git_pr_url TEXT, git_pr_number INTEGER,
         github_issue_number INTEGER, github_issue_url TEXT,
+        review_lenses TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT
       );
@@ -98,6 +99,7 @@ export class Db {
       "ALTER TABLE issues ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
       "ALTER TABLE issues ADD COLUMN github_issue_url TEXT",
+      "ALTER TABLE issues ADD COLUMN review_lenses TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -228,20 +230,21 @@ export class Db {
     return this.drizzle.select().from(schema.issues).where(eq(schema.issues.id, id)).get() ?? null;
   }
 
-  createIssue(data: { project_id: string; title: string; description?: string }): Issue {
+  createIssue(data: { project_id: string; title: string; description?: string; review_lenses?: string[] }): Issue {
     const id = randomUUID();
     this.drizzle.insert(schema.issues).values({
       id,
       project_id: data.project_id,
       title: data.title,
       description: data.description ?? "",
+      review_lenses: data.review_lenses ? JSON.stringify(data.review_lenses) : null,
     }).run();
     return this.getIssue(id)!;
   }
 
   updateIssue(
     id: string,
-    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "completed_at" | "retry_count">>
+    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "review_lenses" | "completed_at" | "retry_count">>
   ): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;

@@ -210,7 +210,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "project not found" });
       return;
     }
-    const issue = db.createIssue({ project_id, title, description });
+    const review_lenses = Array.isArray(req.body.review_lenses) ? req.body.review_lenses : undefined;
+    const issue = db.createIssue({ project_id, title, description, review_lenses });
     res.status(201).json(issue);
   });
 
@@ -265,10 +266,34 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
     // Fire-and-forget: pipeline creates its own run records per stage
     if (options?.pipelineCtx) {
-      executePipeline(options.pipelineCtx, machine, freshIssue, project).catch((err) => {
+      const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
+      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses).catch((err) => {
         console.error(`Pipeline error (approve):`, err);
       });
     }
+  });
+
+  // ─── Update issue lenses ────────────────────────────────────────────────
+
+  router.patch("/issues/:id/lenses", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    if (issue.status !== "pending") {
+      res.status(409).json({ error: "can only change lenses on pending issues" });
+      return;
+    }
+    const { lenses } = req.body;
+    if (!Array.isArray(lenses) || lenses.length === 0) {
+      res.status(400).json({ error: "lenses must be a non-empty array" });
+      return;
+    }
+    // Ensure general is always included
+    const normalized = Array.from(new Set(["general", ...lenses]));
+    db.updateIssue(issue.id, { review_lenses: JSON.stringify(normalized) });
+    res.json(db.getIssue(issue.id));
   });
 
   router.post("/issues/:id/retry", (req, res) => {
@@ -301,7 +326,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
     // Fire-and-forget: pipeline creates its own run records per stage
     if (options?.pipelineCtx) {
-      executePipeline(options.pipelineCtx, machine, freshIssue, project).catch((err) => {
+      const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
+      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses).catch((err) => {
         console.error(`Pipeline error (retry):`, err);
       });
     }

@@ -166,11 +166,12 @@ export function createPlannerRouter(db: Db): Router {
     // Allow caller to override lenses
     const lenses = req.body.reviewLenses?.length ? req.body.reviewLenses : proposal.lenses;
 
-    // Create the issue
+    // Create the issue with lenses
     const issue = db.createIssue({
       project_id: conversation.project_id,
       title: proposal.title,
       description: proposal.description,
+      review_lenses: lenses,
     });
 
     // Mark conversation as approved

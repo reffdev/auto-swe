@@ -41,6 +41,7 @@ export interface Issue {
   git_pr_number: number | null;
   github_issue_number: number | null;
   github_issue_url: string | null;
+  review_lenses: string | null;  // JSON array string, e.g. '["general","security"]'
   retry_count: number;
   created_at: string;
   completed_at: string | null;
@@ -144,6 +145,7 @@ export function createIssue(data: {
   project_id: string;
   title: string;
   description?: string;
+  review_lenses?: string[];
 }): Promise<Issue> {
   return json("/api/issues", { method: "POST", body: JSON.stringify(data) });
 }
@@ -191,6 +193,12 @@ export interface StepData {
 
 export function getRunOutput(runId: string): Promise<{ status: string; output: string | null }> {
   return json(`/api/runs/${runId}/output`);
+}
+
+// ─── Issue Lenses ─────────────────────────────────────────────────────────────
+
+export function updateIssueLenses(id: string, lenses: string[]): Promise<Issue> {
+  return json(`/api/issues/${id}/lenses`, { method: "PATCH", body: JSON.stringify({ lenses }) });
 }
 
 // ─── PR Diff ──────────────────────────────────────────────────────────────────

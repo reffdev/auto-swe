@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
@@ -237,6 +237,56 @@ function useLiveOutput(runs: Run[]) {
   return { allRuns: sortedRuns, activeRun, activeRunOutput }
 }
 
+// ─── Lens chips ──────────────────────────────────────────────────────────────
+
+const ALL_LENSES = [
+  { key: 'general', label: 'General', icon: ClipboardCheck, color: 'text-foreground bg-accent' },
+  { key: 'security', label: 'Security', icon: Shield, color: 'text-orange-400 bg-orange-500/20' },
+  { key: 'ui', label: 'UI', icon: Monitor, color: 'text-purple-400 bg-purple-500/20' },
+  { key: 'performance', label: 'Performance', icon: Zap, color: 'text-cyan-400 bg-cyan-500/20' },
+] as const
+
+function LensChips({ issue, editable, onDataChange }: { issue: Issue; editable: boolean; onDataChange: () => void }) {
+  const currentLenses: string[] = issue.review_lenses ? JSON.parse(issue.review_lenses) : ['general']
+
+  const toggleLens = async (key: string) => {
+    if (key === 'general') return // Can't remove general
+    const updated = currentLenses.includes(key)
+      ? currentLenses.filter(l => l !== key)
+      : [...currentLenses, key]
+    try {
+      await api.updateIssueLenses(issue.id, updated)
+      onDataChange()
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 ml-9 mt-2">
+      <span className="text-xs text-muted-foreground mr-1">Review:</span>
+      {ALL_LENSES.map(lens => {
+        const active = currentLenses.includes(lens.key)
+        const Icon = lens.icon
+        return (
+          <button
+            key={lens.key}
+            onClick={() => editable && toggleLens(lens.key)}
+            disabled={!editable || lens.key === 'general'}
+            className={cn(
+              'inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full transition-colors',
+              active ? lens.color : 'text-muted-foreground/50 bg-muted/30',
+              editable && lens.key !== 'general' && 'cursor-pointer hover:opacity-80',
+              (!editable || lens.key === 'general') && 'cursor-default',
+            )}
+          >
+            <Icon className="size-3" />
+            {lens.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: IssueDetailProps) {
@@ -311,6 +361,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
         {issue.description && (
           <p className="text-sm text-muted-foreground ml-9">{issue.description}</p>
         )}
+        <LensChips issue={issue} editable={issue.status === 'pending'} onDataChange={onDataChange} />
       </div>
 
       {/* Actions */}
