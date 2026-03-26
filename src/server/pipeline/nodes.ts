@@ -6,7 +6,7 @@ import type { LangGraphRunnableConfig } from "@langchain/langgraph";
 import { END } from "@langchain/langgraph";
 import type { ToolSet } from "ai";
 import { readFileSync, readdirSync } from "fs";
-import { join } from "path";
+import { join, resolve, relative } from "path";
 import { spawnSync } from "child_process";
 
 import type { PipelineStateType, PipelineConfig } from "./state";
@@ -129,6 +129,85 @@ function gatherProjectContext(worktreePath: string): { context: string; fileCoun
     : "";
 
   return { context, fileCount: loadedFiles.length, totalChars, loadedFiles };
+}
+
+// ─── Scout manifest resolution ────────────────────────────────────────────────
+
+interface ScoutManifest {
+  files: Array<{ path: string; reason: string }>;
+  notes: string;
+}
+
+const MAX_FILE_SIZE = 200_000; // 200KB — truncate individual files larger than this
+const MAX_TOTAL_INJECTED = 2_000_000; // 2MB total — stop loading files after this
+
+/**
+ * Parse the scout's manifest and read the actual file contents from the worktree.
+ * Returns a formatted string with each file's content ready for the implementer.
+ */
+function resolveScoutManifest(worktreePath: string, scoutBrief: string): string {
+  let manifest: ScoutManifest;
+  try {
+    manifest = JSON.parse(scoutBrief);
+  } catch {
+    // Not a JSON manifest — fall back to using the raw scout brief (legacy format)
+    console.log("Pipeline: scout output is not a manifest — using raw brief");
+    return scoutBrief;
+  }
+
+  if (!manifest.files || !Array.isArray(manifest.files)) {
+    console.log("Pipeline: scout manifest has no files array — using raw brief");
+    return scoutBrief;
+  }
+
+  const sections: string[] = [];
+  let totalChars = 0;
+  let loadedCount = 0;
+  let failedCount = 0;
+
+  for (const file of manifest.files) {
+    try {
+      // Path traversal protection
+      const fullPath = resolve(worktreePath, file.path);
+      if (!fullPath.startsWith(resolve(worktreePath))) {
+        sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n*Rejected — path is outside the project*`);
+        failedCount++;
+        continue;
+      }
+
+      // Total size cap
+      if (totalChars >= MAX_TOTAL_INJECTED) {
+        sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n*Skipped — total injected content limit reached (${Math.round(MAX_TOTAL_INJECTED / 1024)}KB)*`);
+        continue;
+      }
+
+      let content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
+
+      if (content.length > MAX_FILE_SIZE) {
+        content = content.slice(0, MAX_FILE_SIZE) + `\n\n... [truncated — file is ${Math.round(content.length / 1024)}KB, showing first ${Math.round(MAX_FILE_SIZE / 1024)}KB]`;
+      }
+
+      const ext = file.path.split(".").pop() ?? "";
+      const lang = { ts: "typescript", tsx: "typescript", js: "javascript", json: "json", py: "python", go: "go", rs: "rust", toml: "toml", md: "markdown", css: "css", html: "html" }[ext] ?? "";
+
+      sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n\`\`\`${lang}\n${content}\n\`\`\``);
+      totalChars += content.length;
+      loadedCount++;
+    } catch {
+      sections.push(`### File: ${file.path}\n**Why:** ${file.reason}\n*File not found or unreadable*`);
+      failedCount++;
+    }
+  }
+
+  console.log(`Pipeline: resolved scout manifest — ${loadedCount} files loaded (${failedCount} failed), ${totalChars.toLocaleString()} chars total`);
+
+  let result = `## Relevant Files\n\n${sections.join("\n\n")}`;
+
+  if (manifest.notes) {
+    result += `\n\n## Notes\n\n${manifest.notes}`;
+  }
+
+  return result;
 }
 
 // ─── Git context helper ───────────────────────────────────────────────────────
@@ -256,8 +335,24 @@ export async function scoutNode(
     compactedSoFar = extractScoutBrief(compactedSoFar);
   }
 
-  if (!compactedSoFar || compactedSoFar.length < 100) {
-    throw new Error(`Scout produced an empty or insufficient checkpoint (${compactedSoFar.length} chars) — cannot proceed to implementation`);
+  if (!compactedSoFar || compactedSoFar.length < 10) {
+    throw new Error(`Scout produced an empty manifest — cannot proceed to implementation`);
+  }
+
+  // Validate manifest has files
+  try {
+    const parsed = JSON.parse(compactedSoFar);
+    if (!parsed.files?.length) {
+      throw new Error("Scout manifest contains no files — cannot proceed to implementation");
+    }
+    console.log(`Pipeline: scout manifest contains ${parsed.files.length} files`);
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      // Not JSON — legacy format, allow it through
+      console.log("Pipeline: scout output is legacy format (not JSON manifest)");
+    } else {
+      throw e;
+    }
   }
 
   return { scoutBrief: compactedSoFar };
@@ -274,16 +369,18 @@ export async function implementNode(
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "implement" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
-  const reportLen = state.scoutBrief.length;
+  // Resolve scout manifest → actual file contents
+  const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
+  const reportLen = resolvedBrief.length;
   const reportTokensEst = Math.round(reportLen / 4);
   const retryInfo = state.retryCount > 0 ? ` | Retry ${state.retryCount}/3 with review feedback` : "";
-  console.log(`Pipeline: implement stage — scout report: ${reportLen} chars (~${reportTokensEst} tokens)${retryInfo}`);
+  console.log(`Pipeline: implement stage — resolved brief: ${reportLen} chars (~${reportTokensEst} tokens)${retryInfo}`);
 
   if (reportLen < 500) {
-    console.warn("Pipeline: WARNING — scout report is very short (<500 chars), implement will likely re-explore");
+    console.warn("Pipeline: WARNING — resolved brief is very short (<500 chars), implement will likely re-explore");
   }
 
-  let infoText = `**Implement stage starting**\n\n- Scout report injected: ${reportLen.toLocaleString()} chars (~${reportTokensEst.toLocaleString()} tokens)\n- System prompt + report size: ~${Math.round((reportLen + 2000) / 4).toLocaleString()} tokens`;
+  let infoText = `**Implement stage starting**\n\n- Resolved brief: ${reportLen.toLocaleString()} chars (~${reportTokensEst.toLocaleString()} tokens)\n- System prompt + brief size: ~${Math.round((reportLen + 2000) / 4).toLocaleString()} tokens`;
   if (state.retryCount > 0) {
     infoText += `\n- Retry ${state.retryCount}/3 with review feedback`;
     if (state.reviewFeedback) {
@@ -299,7 +396,7 @@ export async function implementNode(
 
   const implPrompts = constructImplementPrompts({
     workingDir: state.worktreePath,
-    scoutBrief: state.scoutBrief,
+    scoutBrief: resolvedBrief,
     issueTitle: state.issueTitle,
     issueDescription: state.issueDescription,
     reviewFeedback: state.reviewFeedback || undefined,
@@ -336,9 +433,11 @@ export async function testWriteNode(
   const gitContext = captureGitContext(state.worktreePath, "## Git Changes (from implement stage)");
   const projectCtx = gatherProjectContext(state.worktreePath);
 
+  const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
+
   const testPrompts = constructTestWritePrompts({
     workingDir: state.worktreePath,
-    scoutBrief: state.scoutBrief,
+    scoutBrief: resolvedBrief,
     implementOutput: state.implementOutput,
     issueTitle: state.issueTitle,
     issueDescription: state.issueDescription,
@@ -377,10 +476,11 @@ export async function reviewNode(
 
   const gitContext = captureGitContext(state.worktreePath);
   const projectCtxReview = gatherProjectContext(state.worktreePath);
+  const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
 
   const reviewPrompts = constructReviewPrompts({
     workingDir: state.worktreePath,
-    scoutBrief: state.scoutBrief,
+    scoutBrief: resolvedBrief,
     implementOutput: state.implementOutput,
     testWriteOutput: state.testWriteOutput,
     issueTitle: state.issueTitle,

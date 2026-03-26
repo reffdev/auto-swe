@@ -34,65 +34,32 @@ const CODING_STANDARDS = `
 // ─── Scout ────────────────────────────────────────────────────────────────────
 
 export function constructScoutPrompt(opts: { workingDir: string }): string {
-  return `# Codebase Analysis
+  return `# Codebase Research
 
 ${workingEnv(opts.workingDir)}
 
-A senior engineer will use your analysis to implement a change. They need to see the EXISTING code they'll be working with — the files they'll modify, the functions they'll call, the patterns they'll follow. Your job is to gather that code, not to design the solution.
-
-Submit via \`saveCheckpoint\` when complete. You have read-only access.
+Identify every file relevant to implementing the issue. The full contents of the files you list will be automatically loaded for the implementer — you do not need to copy code into your output.
 
 ## Procedure
 
-1. Read the issue description to understand what needs to be built
-2. Identify which EXISTING files, functions, and types are relevant — what will be modified, extended, or used as a pattern
-3. Read those files thoroughly: \`readFile\`, \`searchFiles\`, \`listDirectory\`
-4. Include generous amounts of existing code — full functions, not snippets
-5. Submit via \`saveCheckpoint\`
+1. Read the issue to understand what needs to be built
+2. Explore the codebase to find relevant files: \`searchFiles\`, \`listDirectory\`, \`readFile\`
+3. Read candidate files to confirm they're relevant — check that they contain the functions, types, or patterns needed
+4. Call \`saveCheckpoint\` with your file manifest
 
-## Output format
+## What to include in the manifest
 
-Your output must be at least 80% verbatim existing code. Design notes, plans, and descriptions should be minimal — the engineer will figure out what to build. They need to see what already exists.
+- Files that will be **modified** (where the new code goes)
+- Files with **patterns to follow** (e.g., how existing endpoints/methods are structured)
+- Files with **type definitions** the new code will use
+- Files with **test patterns** to follow
+- Be thorough — the implementer only sees files you list. Missing a file means they work blind.
 
-\`\`\`checkpoint
-## Build & Test
-[How to build, lint, test]
+## What NOT to do
 
-## Existing Code
-
-### src/server/db.ts — existing LLM request methods (lines 320-347)
-\\\`\\\`\\\`
-[exact code from the file, copy-pasteable]
-\\\`\\\`\\\`
-
-### src/server/api.ts — existing endpoint pattern to follow (lines 451-458)
-\\\`\\\`\\\`
-[exact code]
-\\\`\\\`\\\`
-
-### src/server/schema.ts — relevant table definitions (lines 71-84)
-\\\`\\\`\\\`
-[exact code]
-\\\`\\\`\\\`
-
-[Continue for every relevant file. Include:
-- Every function that will be modified or extended
-- Every type/interface/schema the new code will use
-- Existing patterns to follow (e.g., how other endpoints are structured)
-- Related test files showing the testing pattern
-- Import statements the new code will need]
-
-## Notes
-[Brief notes ONLY if something non-obvious needs to be called out.
-Do NOT write a design doc, implementation plan, or proposed code.]
-\`\`\`
-
-## Constraints
-- Gather EXISTING code — never write new code, proposed implementations, or design specs
-- An analysis that is mostly text with little code will be rejected
-- Include full functions, not just signatures — the engineer needs the complete context
-- More code is always better — they cannot read files after this
-- If the issue asks for something entirely new, find the closest existing patterns to follow`;
+- Do not copy code into your output — the files are loaded automatically
+- Do not write implementation plans or design docs
+- Do not propose new code`;
 }
 
 export function constructScoutCompactPrompt(): string {
@@ -154,7 +121,7 @@ summary: [what was fixed]
 
 ${workingEnv(opts.workingDir)}
 
-Your research checkpoint is in the user message — code snippets are verbatim from the repo and safe to use directly in \`replaceInFile\` \`old_str\`. Only read files if you need content the checkpoint doesn't cover.
+The full contents of all relevant files are in the user message — verbatim from the repo, safe to use directly in \`replaceInFile\` \`old_str\`. Only read additional files if you need something not already provided.
 
 ${CODING_STANDARDS}
 
@@ -189,9 +156,9 @@ ${opts.reviewFeedback}
 `;
   }
 
-  user += `## Your Research Checkpoint
+  user += `## Relevant Files
 
-Your saved checkpoint from the research phase. Code snippets are verbatim from the repo (no line number prefixes — safe to copy directly into \`old_str\`). Each snippet header shows the file path and line range.
+The full contents of every file identified as relevant to this issue. Code is verbatim from the repo — safe to use directly in \`replaceInFile\` \`old_str\`. Each file includes a note on why it's relevant.
 
 ${opts.scoutBrief}`;
 
