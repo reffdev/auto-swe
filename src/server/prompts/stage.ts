@@ -121,7 +121,7 @@ summary: [what was fixed]
 
 ${workingEnv(opts.workingDir)}
 
-A list of relevant files is in the user message — read them with \`readFile\` before making changes.
+The relevant files have already been read — their contents are in your conversation history as \`readFile\` results. Start implementing directly.
 
 ${CODING_STANDARDS}
 

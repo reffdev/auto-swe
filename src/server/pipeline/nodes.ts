@@ -187,6 +187,30 @@ export function resolveScoutManifest(worktreePath: string, scoutBrief: string): 
   return result;
 }
 
+/** Read the actual file contents from a manifest for injection as preloaded tool results */
+function getPreloadedFiles(worktreePath: string, scoutBrief: string): Array<{ path: string; content: string }> {
+  let manifest: ScoutManifest;
+  try {
+    manifest = JSON.parse(scoutBrief);
+  } catch {
+    return [];
+  }
+  if (!manifest.files || !Array.isArray(manifest.files)) return [];
+
+  const files: Array<{ path: string; content: string }> = [];
+  for (const file of manifest.files) {
+    const fullPath = resolve(worktreePath, file.path);
+    if (!fullPath.startsWith(resolve(worktreePath))) continue;
+    try {
+      const content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
+      files.push({ path: file.path, content });
+    } catch {
+      // Skip unreadable files
+    }
+  }
+  return files;
+}
+
 // ─── Git context helper ───────────────────────────────────────────────────────
 
 function captureGitContext(worktreePath: string, header = "## Git Changes"): string {
@@ -378,6 +402,12 @@ export async function implementNode(
     reviewFeedback: state.reviewFeedback || undefined,
   });
 
+  // Pre-read files from scout manifest so the agent sees them as prior readFile results
+  const preloadedFiles = getPreloadedFiles(state.worktreePath, state.scoutBrief);
+  if (preloadedFiles.length > 0) {
+    console.log(`Pipeline: implement — preloading ${preloadedFiles.length} files as readFile results`);
+  }
+
   const output = await runStage({
     db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "implement",
     model, modelId: state.modelId,
@@ -388,6 +418,7 @@ export async function implementNode(
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
     initialSteps: infoSteps,
+    preloadedFiles,
   });
 
   return { implementOutput: output };

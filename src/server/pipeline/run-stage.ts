@@ -20,6 +20,11 @@ export interface StepData {
   prompts?: { system: string; user: string };
 }
 
+export interface PreloadedFile {
+  path: string;
+  content: string;
+}
+
 export interface RunStageOpts {
   db: Db;
   runId: string;
@@ -35,6 +40,8 @@ export interface RunStageOpts {
   abortSignal?: AbortSignal;
   /** Pre-populated steps shown before the LLM starts (e.g., info about injected context) */
   initialSteps?: StepData[];
+  /** Files to inject as if readFile was already called — agent sees tool results in history */
+  preloadedFiles?: PreloadedFile[];
 }
 
 // ─── Executor ─────────────────────────────────────────────────────────────────
@@ -148,8 +155,37 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   let fullText: string;
   try {
     const agentPromise = (async () => {
+      // Build messages — optionally inject preloaded file reads as tool call history
+      const messages: Array<{ role: "user" | "assistant" | "tool"; content: any }> = [];
+
+      // User message with the prompt
+      messages.push({ role: "user", content: userPrompt });
+
+      // Inject preloaded files as assistant tool calls + tool results
+      if (opts.preloadedFiles?.length) {
+        const toolCalls = opts.preloadedFiles.map((f, i) => ({
+          type: "tool-call" as const,
+          toolCallId: `preload-${i}`,
+          toolName: "readFile",
+          args: { path: f.path },
+        }));
+        messages.push({ role: "assistant", content: toolCalls });
+
+        for (let i = 0; i < opts.preloadedFiles.length; i++) {
+          messages.push({
+            role: "tool",
+            content: [{
+              type: "tool-result" as const,
+              toolCallId: `preload-${i}`,
+              toolName: "readFile",
+              result: opts.preloadedFiles[i].content,
+            }],
+          });
+        }
+      }
+
       const result = streamText({
-        model, system: systemPrompt, prompt: userPrompt,
+        model, system: systemPrompt, messages,
         tools, maxSteps,
         abortSignal,
         onStepFinish: onStep,
