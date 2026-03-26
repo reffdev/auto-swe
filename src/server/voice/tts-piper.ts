@@ -44,11 +44,8 @@ export class PiperHttpTts implements TtsAdapter {
     const audioBuffer = Buffer.from(arrayBuffer);
 
     // Piper returns WAV — strip header to get raw PCM
-    const { pcm, sampleRate: srcRate } = wavToPcm(audioBuffer);
-
-    // Resample if needed and normalize volume
-    const resampled = srcRate !== sampleRate ? resample(pcm, srcRate, sampleRate) : pcm;
-    return normalizeVolume(resampled);
+    const { pcm } = wavToPcm(audioBuffer);
+    return normalizeVolume(pcm);
   }
 }
 
@@ -68,14 +65,7 @@ export class PiperCliTts implements TtsAdapter {
 
   async synthesize(text: string, sampleRate: number): Promise<Buffer> {
     const rawPcm = await this.runPiper(text);
-
-    // Piper outputs 22050Hz by default — resample to target rate and boost volume
-    const piperRate = this.getPiperSampleRate();
-    const resampled = piperRate !== sampleRate
-      ? resample(rawPcm, piperRate, sampleRate)
-      : rawPcm;
-
-    return normalizeVolume(resampled);
+    return normalizeVolume(rawPcm);
   }
 
   private getPiperSampleRate(): number {
