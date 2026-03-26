@@ -10,7 +10,7 @@
 
 import type { TtsAdapter } from "./types";
 import { wavToPcm } from "./wav";
-import { spawn } from "child_process";
+import { spawn, spawnSync } from "child_process";
 
 // ─── HTTP mode ────────────────────────────────────────────────────────────────
 
@@ -46,11 +46,9 @@ export class PiperHttpTts implements TtsAdapter {
     // Piper returns WAV — strip header to get raw PCM
     const { pcm, sampleRate: srcRate } = wavToPcm(audioBuffer);
 
-    if (srcRate !== sampleRate) {
-      console.warn(`Piper TTS: returned ${srcRate}Hz audio, expected ${sampleRate}Hz`);
-    }
-
-    return pcm;
+    // Resample if needed and normalize volume
+    const resampled = srcRate !== sampleRate ? resample(pcm, srcRate, sampleRate) : pcm;
+    return normalizeVolume(resampled);
   }
 }
 
@@ -68,7 +66,31 @@ export class PiperCliTts implements TtsAdapter {
     private configPath?: string,
   ) {}
 
-  async synthesize(text: string, _sampleRate: number): Promise<Buffer> {
+  async synthesize(text: string, sampleRate: number): Promise<Buffer> {
+    const rawPcm = await this.runPiper(text);
+
+    // Piper outputs 22050Hz by default — resample to target rate and boost volume
+    const piperRate = this.getPiperSampleRate();
+    const resampled = piperRate !== sampleRate
+      ? resample(rawPcm, piperRate, sampleRate)
+      : rawPcm;
+
+    return normalizeVolume(resampled);
+  }
+
+  private getPiperSampleRate(): number {
+    // Try to read from config file
+    if (this.configPath) {
+      try {
+        const json = require("fs").readFileSync(this.configPath, "utf-8");
+        const config = JSON.parse(json);
+        if (config.audio?.sample_rate) return config.audio.sample_rate;
+      } catch { /* fall through */ }
+    }
+    return 22050; // Piper default
+  }
+
+  private runPiper(text: string): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const args = [
         "--model", this.modelPath,
@@ -95,14 +117,64 @@ export class PiperCliTts implements TtsAdapter {
           reject(new Error(`Piper exited with code ${code}: ${stderr}`));
           return;
         }
-        // --output_raw returns raw 16-bit PCM at the model's sample rate (usually 22050Hz)
-        // The ESP32 expects 16kHz — caller should handle resampling if needed
         resolve(Buffer.concat(chunks));
       });
 
-      // Pipe text into piper's stdin
       proc.stdin.write(text);
       proc.stdin.end();
     });
   }
+}
+
+// ─── Audio processing helpers ─────────────────────────────────────────────────
+
+/** Linear interpolation resample — 16-bit signed PCM */
+function resample(pcm: Buffer, fromRate: number, toRate: number): Buffer {
+  const ratio = fromRate / toRate;
+  const srcSamples = pcm.length / 2;
+  const dstSamples = Math.floor(srcSamples / ratio);
+  const out = Buffer.alloc(dstSamples * 2);
+
+  for (let i = 0; i < dstSamples; i++) {
+    const srcPos = i * ratio;
+    const srcIdx = Math.floor(srcPos);
+    const frac = srcPos - srcIdx;
+
+    const s0 = pcm.readInt16LE(Math.min(srcIdx, srcSamples - 1) * 2);
+    const s1 = pcm.readInt16LE(Math.min(srcIdx + 1, srcSamples - 1) * 2);
+    const sample = Math.round(s0 + (s1 - s0) * frac);
+
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i * 2);
+  }
+
+  return out;
+}
+
+/** Normalize volume to use ~80% of the 16-bit range */
+function normalizeVolume(pcm: Buffer): Buffer {
+  const samples = pcm.length / 2;
+  if (samples === 0) return pcm;
+
+  // Find peak amplitude
+  let peak = 0;
+  for (let i = 0; i < samples; i++) {
+    const abs = Math.abs(pcm.readInt16LE(i * 2));
+    if (abs > peak) peak = abs;
+  }
+
+  if (peak === 0) return pcm;
+
+  // Scale to 80% of max range
+  const target = 32767 * 0.8;
+  const gain = target / peak;
+
+  if (gain <= 1.1) return pcm; // Already loud enough
+
+  const out = Buffer.alloc(pcm.length);
+  for (let i = 0; i < samples; i++) {
+    const sample = Math.round(pcm.readInt16LE(i * 2) * gain);
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, sample)), i * 2);
+  }
+
+  return out;
 }
