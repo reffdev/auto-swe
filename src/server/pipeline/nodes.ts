@@ -208,6 +208,8 @@ function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
       if (filePaths.length === 0) return "No relevant files identified.";
 
       const results: string[] = [];
+      let totalLines = 0;
+      let totalChars = 0;
       for (const filePath of filePaths) {
         const fullPath = resolve(worktreePath, filePath);
         if (!fullPath.startsWith(resolve(worktreePath))) {
@@ -216,12 +218,15 @@ function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
         }
         try {
           const content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
-          results.push(`### ${filePath}\n${content}`);
+          const lines = content.split("\n").length;
+          totalLines += lines;
+          totalChars += content.length;
+          results.push(`### ${filePath} (${lines} lines)\n${content}\n### END ${filePath}`);
         } catch {
           results.push(`### ${filePath}\n*File not found*`);
         }
       }
-      return results.join("\n\n");
+      return `${results.join("\n\n")}\n\n---\nLoaded ${filePaths.length} files, ${totalLines} total lines, ${totalChars} chars. All files shown in full.`;
     },
   });
 }
