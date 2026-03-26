@@ -594,33 +594,6 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getLlmRequestsByRunId(req.params.runId));
   });
 
-  // ─── Grouped LLM Logs ─────────────────────────────────────────────────────
-
-  router.get("/llm-logs/grouped", (req, res) => {
-    const status = req.query.status as string | undefined;
-    const model = req.query.model as string | undefined;
-    const startDate = req.query.start_date as string | undefined;
-    const endDate = req.query.end_date as string | undefined;
-    const search = req.query.search as string | undefined;
-    const page = parseInt(req.query.page as string) || 1;
-    const pageSize = parseInt(req.query.page_size as string) || 20;
-
-    const statusArray = status ? status.split(",") : undefined;
-    const modelArray = model ? model.split(",") : undefined;
-
-    const result = db.getGroupedLlmLogs({
-      status: statusArray,
-      model: modelArray,
-      startDate,
-      endDate,
-      search,
-      page,
-      pageSize,
-    });
-
-    res.json(result);
-  });
-
   // ─── Stats (compact, for M5 StickC / external monitoring) ───────────────
 
   router.get("/stats", async (_req, res) => {

@@ -1,6 +1,14 @@
+/**
+ * Database layer built on Drizzle ORM + better-sqlite3.
+ *
+ * WAL mode for concurrent reads during agent runs.
+ * Schema is defined in schema.ts — Drizzle handles table creation.
+ * Crash recovery resets stuck state on startup.
+ */
+
 import BetterSqlite from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { eq, desc, and, inArray, or, sql, like, count, groupBy, leftJoin, min, max, sum } from "drizzle-orm";
+import { eq, desc, and, inArray, or, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { resolve } from "path";
 import * as schema from "./schema";
@@ -12,317 +20,206 @@ export type Project = typeof schema.projects.$inferSelect;
 export type Issue = typeof schema.issues.$inferSelect;
 export type Run = typeof schema.runs.$inferSelect;
 export type LlmRequest = typeof schema.llmRequests.$inferSelect;
+export type PlannerConversation = typeof schema.plannerConversations.$inferSelect;
+export type PlannerMessage = typeof schema.plannerMessages.$inferSelect;
 
-// ─── Planner Conversations ───────────────────────────────────────────────────
-
-export type PlannerConversation = {
-  id: string;
-  project_id: string;
-  created_at: string;
-};
-
-export type PlannerMessage = {
-  id: string;
-  conversation_id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  created_at: string;
-};
-
-// ─── Database Class ──────────────────────────────────────────────────────────
+// ─── Database class ───────────────────────────────────────────────────────────
 
 export class Db {
-  sqlite: BetterSqlite;
-  drizzle: BetterSQLite3Database;
+  readonly sqlite: BetterSqlite.Database;
+  readonly drizzle: BetterSQLite3Database<typeof schema>;
 
-  constructor(dbPath: string) {
-    this.sqlite = new BetterSqlite(dbPath, {
-      verbose: console.error,
-      fileMustExist: false,
-    });
-
-    // Enable WAL mode for concurrent reads
+  constructor(dbPath?: string) {
+    const p = dbPath ?? resolve(process.env.DB_PATH ?? "./open-swe.db");
+    this.sqlite = new BetterSqlite(p);
     this.sqlite.pragma("journal_mode = WAL");
-
-    // Enable foreign keys
     this.sqlite.pragma("foreign_keys = ON");
+    this.drizzle = drizzle(this.sqlite, { schema });
 
-    this.drizzle = drizzle(this.sqlite);
+    // Create tables (idempotent)
+    this.sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS machines (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', base_url TEXT NOT NULL,
+        model_id TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'idle', current_run_id TEXT,
+        context_limit INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL,
+        git_remote TEXT, git_server_token TEXT,
+        git_default_branch TEXT NOT NULL DEFAULT 'main', model_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS issues (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending', git_branch TEXT, git_worktree TEXT,
+        git_pr_url TEXT, git_pr_number INTEGER,
+        github_issue_number INTEGER, github_issue_url TEXT,
+        review_lenses TEXT,
+        parent_id TEXT, sequence INTEGER, depends_on TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issues(id),
+        machine_id TEXT, stage TEXT, status TEXT NOT NULL DEFAULT 'pending', output TEXT,
+        started_at TEXT, completed_at TEXT, duration_ms INTEGER,
+        prompt_tokens INTEGER, completion_tokens INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS planner_conversations (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        status TEXT NOT NULL DEFAULT 'active', issue_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS planner_messages (
+        id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES planner_conversations(id),
+        role TEXT NOT NULL, content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS llm_requests (
+        id TEXT PRIMARY KEY, issue_id TEXT, run_id TEXT, model_id TEXT,
+        input_text TEXT NOT NULL, output_text TEXT NOT NULL DEFAULT '',
+        prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+        duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
 
-    // Auto-migrate schema
+    // Migrations for existing databases
     this.migrate();
   }
 
-  migrate() {
-    try {
-      // Machines table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS machines (
-          id TEXT PRIMARY KEY,
-          name TEXT DEFAULT '',
-          base_url TEXT NOT NULL,
-          model_id TEXT NOT NULL,
-          context_limit INTEGER DEFAULT 128000,
-          enabled INTEGER DEFAULT 1,
-          status TEXT DEFAULT 'idle',
-          current_run_id TEXT,
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-
-      // Projects table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS projects (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          workdir TEXT,
-          git_remote TEXT,
-          git_server_token TEXT,
-          git_default_branch TEXT DEFAULT 'main',
-          model_id TEXT,
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-
-      // Issues table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS issues (
-          id TEXT PRIMARY KEY,
-          project_id TEXT NOT NULL REFERENCES projects(id),
-          title TEXT NOT NULL,
-          description TEXT DEFAULT '',
-          status TEXT DEFAULT 'pending',
-          git_branch TEXT,
-          git_worktree TEXT,
-          git_pr_url TEXT,
-          git_pr_number INTEGER,
-          github_issue_number INTEGER,
-          github_issue_url TEXT,
-          review_lenses TEXT, -- JSON array
-          parent_id TEXT,
-          sequence INTEGER,
-          depends_on TEXT, -- JSON array
-          retry_count INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now')),
-          completed_at TEXT
-        )
-      `);
-
-      // Runs table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS runs (
-          id TEXT PRIMARY KEY,
-          issue_id TEXT NOT NULL REFERENCES issues(id),
-          machine_id TEXT,
-          status TEXT DEFAULT 'pending',
-          stage TEXT,
-          output TEXT,
-          started_at TEXT,
-          completed_at TEXT,
-          duration_ms INTEGER,
-          prompt_tokens INTEGER DEFAULT 0,
-          completion_tokens INTEGER DEFAULT 0,
-          cache_read_tokens INTEGER DEFAULT 0,
-          cache_creation_tokens INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-
-      // LLM Requests table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS llm_requests (
-          id TEXT PRIMARY KEY,
-          issue_id TEXT,
-          run_id TEXT,
-          model_id TEXT,
-          input_text TEXT NOT NULL,
-          output_text TEXT NOT NULL DEFAULT '',
-          prompt_tokens INTEGER NOT NULL DEFAULT 0,
-          completion_tokens INTEGER NOT NULL DEFAULT 0,
-          cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-          cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-          duration_ms INTEGER,
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-
-      // Planner conversations table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS planner_conversations (
-          id TEXT PRIMARY KEY,
-          project_id TEXT NOT NULL REFERENCES projects(id),
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-
-      // Planner messages table
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS planner_messages (
-          id TEXT PRIMARY KEY,
-          conversation_id TEXT NOT NULL REFERENCES planner_conversations(id),
-          role TEXT NOT NULL,
-          content TEXT NOT NULL,
-          created_at TEXT DEFAULT (datetime('now'))
-        )
-      `);
-    } catch (err) {
-      console.error("Migration failed:", err);
-      throw err;
+  private migrate(): void {
+    const migrations = [
+      "ALTER TABLE machines ADD COLUMN context_limit INTEGER",
+      "ALTER TABLE runs ADD COLUMN stage TEXT",
+      "ALTER TABLE issues ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE issues ADD COLUMN github_issue_number INTEGER",
+      "ALTER TABLE issues ADD COLUMN github_issue_url TEXT",
+      "ALTER TABLE issues ADD COLUMN review_lenses TEXT",
+      "ALTER TABLE issues ADD COLUMN parent_id TEXT",
+      "ALTER TABLE issues ADD COLUMN sequence INTEGER",
+      "ALTER TABLE issues ADD COLUMN depends_on TEXT",
+    ];
+    for (const sql of migrations) {
+      try { this.sqlite.exec(sql); } catch { /* column already exists */ }
     }
   }
 
-  // ─── Machines ───────────────────────────────────────────────────────────────
-
-  createMachine(data: {
-    name?: string;
-    base_url: string;
-    model_id: string;
-    context_limit?: number;
-    enabled?: number;
-    status?: string;
-    current_run_id?: string | null;
-  }): Machine {
-    const id = randomUUID();
-    this.drizzle.insert(schema.machines).values({
-      id,
-      name: data.name ?? "",
-      base_url: data.base_url,
-      model_id: data.model_id,
-      context_limit: data.context_limit ?? 128000,
-      enabled: data.enabled ?? 1,
-      status: data.status ?? "idle",
-      current_run_id: data.current_run_id ?? null,
-    }).run();
-    return this.drizzle.select().from(schema.machines).where(eq(schema.machines.id, id)).get()!;
+  close(): void {
+    this.sqlite.close();
   }
 
+  // ─── Crash recovery ──────────────────────────────────────────────────────
+
+  recoverFromCrash(): { machines: number; runs: number; issues: number } {
+    const db = this.drizzle;
+    const m = db.update(schema.machines)
+      .set({ status: "idle", current_run_id: null })
+      .where(eq(schema.machines.status, "working"))
+      .run();
+    const r = db.update(schema.runs)
+      .set({ status: "fail", completed_at: sql`datetime('now')` })
+      .where(eq(schema.runs.status, "running"))
+      .run();
+    const i = db.update(schema.issues)
+      .set({ status: "failed" })
+      .where(or(eq(schema.issues.status, "running"), eq(schema.issues.status, "approved")))
+      .run();
+    return {
+      machines: m.changes,
+      runs: r.changes,
+      issues: i.changes,
+    };
+  }
+
+  // ─── Machines ─────────────────────────────────────────────────────────────
+
   getMachines(): Machine[] {
-    return this.drizzle.select().from(schema.machines).orderBy(desc(schema.machines.created_at)).all();
+    return this.drizzle.select().from(schema.machines).orderBy(schema.machines.created_at).all();
   }
 
   getMachine(id: string): Machine | null {
     return this.drizzle.select().from(schema.machines).where(eq(schema.machines.id, id)).get() ?? null;
   }
 
-  updateMachine(id: string, data: Partial<Machine>): void {
-    const allowedKeys = ["name", "base_url", "model_id", "context_limit", "enabled", "status", "current_run_id"];
-    const updateData: Partial<Machine> = {};
-    for (const key of allowedKeys) {
-      if (data[key] !== undefined) {
-        updateData[key] = data[key];
-      }
-    }
-    this.drizzle.update(schema.machines).set(updateData).where(eq(schema.machines.id, id)).run();
+  createMachine(data: { name?: string; base_url: string; model_id: string }): Machine {
+    const id = randomUUID();
+    this.drizzle.insert(schema.machines).values({
+      id,
+      name: data.name ?? "",
+      base_url: data.base_url,
+      model_id: data.model_id,
+    }).run();
+    return this.getMachine(id)!;
+  }
+
+  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "enabled" | "status" | "current_run_id" | "context_limit">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.machines).set(clean).where(eq(schema.machines.id, id)).run();
   }
 
   deleteMachine(id: string): boolean {
     const result = this.drizzle.delete(schema.machines).where(eq(schema.machines.id, id)).run();
-    return result.rowsAffected > 0;
+    return result.changes > 0;
   }
 
   getIdleMachine(): Machine | null {
-    return this.drizzle
-      .select()
-      .from(schema.machines)
-      .where(and(eq(schema.machines.enabled, 1), eq(schema.machines.status, "idle")))
-      .orderBy(desc(schema.machines.created_at))
+    return this.drizzle.select().from(schema.machines)
+      .where(and(eq(schema.machines.status, "idle"), eq(schema.machines.enabled, 1)))
+      .orderBy(schema.machines.created_at)
+      .limit(1)
       .get() ?? null;
   }
 
-  // ─── Projects ───────────────────────────────────────────────────────────────
-
-  createProject(data: {
-    name: string;
-    workdir?: string | null;
-    git_remote?: string | null;
-    git_server_token?: string | null;
-    git_default_branch?: string;
-    model_id?: string | null;
-  }): Project {
-    const id = randomUUID();
-    this.drizzle.insert(schema.projects).values({
-      id,
-      name: data.name,
-      workdir: data.workdir ?? null,
-      git_remote: data.git_remote ?? null,
-      git_server_token: data.git_server_token ?? null,
-      git_default_branch: data.git_default_branch ?? "main",
-      model_id: data.model_id ?? null,
-    }).run();
-    return this.drizzle.select().from(schema.projects).where(eq(schema.projects.id, id)).get()!;
-  }
+  // ─── Projects ─────────────────────────────────────────────────────────────
 
   getProjects(): Project[] {
-    return this.drizzle.select().from(schema.projects).orderBy(desc(schema.projects.created_at)).all();
+    return this.drizzle.select().from(schema.projects).orderBy(schema.projects.created_at).all();
   }
 
   getProject(id: string): Project | null {
     return this.drizzle.select().from(schema.projects).where(eq(schema.projects.id, id)).get() ?? null;
   }
 
-  updateProject(id: string, data: Partial<Project>): void {
-    const allowedKeys = ["name", "workdir", "git_remote", "git_server_token", "git_default_branch", "model_id"];
-    const updateData: Partial<Project> = {};
-    for (const key of allowedKeys) {
-      if (data[key] !== undefined) {
-        updateData[key] = data[key];
-      }
-    }
-    this.drizzle.update(schema.projects).set(updateData).where(eq(schema.projects.id, id)).run();
+  createProject(data: {
+    name: string;
+    workdir: string;
+    git_remote?: string;
+    git_server_token?: string;
+    git_default_branch?: string;
+    model_id?: string;
+  }): Project {
+    const id = randomUUID();
+    this.drizzle.insert(schema.projects).values({
+      id,
+      name: data.name,
+      workdir: data.workdir,
+      git_remote: data.git_remote ?? null,
+      git_server_token: data.git_server_token ?? null,
+      git_default_branch: data.git_default_branch ?? "main",
+      model_id: data.model_id ?? null,
+    }).run();
+    return this.getProject(id)!;
+  }
+
+  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "model_id">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.projects).set(clean).where(eq(schema.projects.id, id)).run();
   }
 
   deleteProject(id: string): boolean {
-    // Check for running or approved issues
-    const issues = this.drizzle.select().from(schema.issues).where(eq(schema.issues.project_id, id)).all();
-    const hasRunningOrApproved = issues.some(i => i.status === "running" || i.status === "approved");
-    if (hasRunningOrApproved) {
-      return false;
-    }
-
     const result = this.drizzle.delete(schema.projects).where(eq(schema.projects.id, id)).run();
-    return result.rowsAffected > 0;
+    return result.changes > 0;
   }
 
-  // ─── Issues ─────────────────────────────────────────────────────────────────
-
-  createIssue(data: {
-    project_id: string;
-    title: string;
-    description?: string;
-    status?: string;
-    git_branch?: string | null;
-    git_worktree?: string | null;
-    git_pr_url?: string | null;
-    git_pr_number?: number | null;
-    github_issue_number?: number | null;
-    github_issue_url?: string | null;
-    review_lenses?: string | null;
-    parent_id?: string | null;
-    sequence?: number | null;
-    depends_on?: string | null;
-    retry_count?: number;
-  }): Issue {
-    const id = randomUUID();
-    this.drizzle.insert(schema.issues).values({
-      id,
-      project_id: data.project_id,
-      title: data.title,
-      description: data.description ?? "",
-      status: data.status ?? "pending",
-      git_branch: data.git_branch ?? null,
-      git_worktree: data.git_worktree ?? null,
-      git_pr_url: data.git_pr_url ?? null,
-      git_pr_number: data.git_pr_number ?? null,
-      github_issue_number: data.github_issue_number ?? null,
-      github_issue_url: data.github_issue_url ?? null,
-      review_lenses: data.review_lenses ?? null,
-      parent_id: data.parent_id ?? null,
-      sequence: data.sequence ?? null,
-      depends_on: data.depends_on ?? null,
-      retry_count: data.retry_count ?? 0,
-    }).run();
-    return this.drizzle.select().from(schema.issues).where(eq(schema.issues.id, id)).get()!;
-  }
+  // ─── Issues ───────────────────────────────────────────────────────────────
 
   getIssues(projectId?: string): Issue[] {
     if (projectId) {
@@ -337,149 +234,89 @@ export class Db {
     return this.drizzle.select().from(schema.issues).where(eq(schema.issues.id, id)).get() ?? null;
   }
 
-  updateIssue(id: string, data: Partial<Issue>): void {
-    const allowedKeys = [
-      "title", "description", "status", "git_branch", "git_worktree", "git_pr_url",
-      "git_pr_number", "github_issue_number", "github_issue_url", "review_lenses",
-      "parent_id", "sequence", "depends_on", "retry_count", "completed_at"
-    ];
-    const updateData: Partial<Issue> = {};
-    for (const key of allowedKeys) {
-      if (data[key] !== undefined) {
-        updateData[key] = data[key];
-      }
-    }
-    this.drizzle.update(schema.issues).set(updateData).where(eq(schema.issues.id, id)).run();
-  }
-
-  // ─── Runs ───────────────────────────────────────────────────────────────────
-
-  createRun(data: {
-    issue_id: string;
-    machine_id?: string | null;
-    status?: string;
-    stage?: string | null;
-    output?: string | null;
-    started_at?: string | null;
-    completed_at?: string | null;
-    duration_ms?: number | null;
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    cache_read_tokens?: number;
-    cache_creation_tokens?: number;
-  }): Run {
+  createIssue(data: {
+    project_id: string; title: string; description?: string;
+    review_lenses?: string[]; parent_id?: string; sequence?: number;
+    depends_on?: string[]; status?: string;
+  }): Issue {
     const id = randomUUID();
-    this.drizzle.insert(schema.runs).values({
+    this.drizzle.insert(schema.issues).values({
       id,
-      issue_id: data.issue_id,
-      machine_id: data.machine_id ?? null,
+      project_id: data.project_id,
+      title: data.title,
+      description: data.description ?? "",
+      review_lenses: data.review_lenses ? JSON.stringify(data.review_lenses) : null,
+      parent_id: data.parent_id ?? null,
+      sequence: data.sequence ?? null,
+      depends_on: data.depends_on?.length ? JSON.stringify(data.depends_on) : null,
       status: data.status ?? "pending",
-      stage: data.stage ?? null,
-      output: data.output ?? null,
-      started_at: data.started_at ?? null,
-      completed_at: data.completed_at ?? null,
-      duration_ms: data.duration_ms ?? null,
-      prompt_tokens: data.prompt_tokens ?? 0,
-      completion_tokens: data.completion_tokens ?? 0,
-      cache_read_tokens: data.cache_read_tokens ?? 0,
-      cache_creation_tokens: data.cache_creation_tokens ?? 0,
     }).run();
-    return this.drizzle.select().from(schema.runs).where(eq(schema.runs.id, id)).get()!;
+    return this.getIssue(id)!;
   }
+
+  getChildIssues(parentId: string): Issue[] {
+    return this.drizzle.select().from(schema.issues)
+      .where(eq(schema.issues.parent_id, parentId))
+      .orderBy(schema.issues.sequence)
+      .all();
+  }
+
+  updateIssue(
+    id: string,
+    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "review_lenses" | "parent_id" | "sequence" | "depends_on" | "completed_at" | "retry_count">>
+  ): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.issues).set(clean).where(eq(schema.issues.id, id)).run();
+  }
+
+  // ─── Runs ─────────────────────────────────────────────────────────────────
 
   getRun(id: string): Run | null {
     return this.drizzle.select().from(schema.runs).where(eq(schema.runs.id, id)).get() ?? null;
   }
 
   getRunByIssueId(issueId: string): Run | null {
-    return this.drizzle.select()
-      .from(schema.runs)
-      .where(eq(schema.runs.issue_id, issueId))
-      .orderBy(desc(schema.runs.created_at))
-      .get() ?? null;
+    // Use raw SQL for rowid ordering — Drizzle doesn't expose rowid directly
+    return (
+      this.sqlite
+        .prepare("SELECT * FROM runs WHERE issue_id = ? ORDER BY rowid DESC LIMIT 1")
+        .get(issueId) as Run
+    ) ?? null;
   }
 
   getRunsForIssues(issueIds: string[]): Run[] {
     if (issueIds.length === 0) return [];
-    return this.drizzle.select()
-      .from(schema.runs)
+    return this.drizzle.select().from(schema.runs)
       .where(inArray(schema.runs.issue_id, issueIds))
       .orderBy(desc(schema.runs.created_at))
       .all();
   }
 
+  createRun(data: { issue_id: string; stage?: string }): Run {
+    const id = randomUUID();
+    this.drizzle.insert(schema.runs).values({
+      id,
+      issue_id: data.issue_id,
+      stage: data.stage ?? null,
+    }).run();
+    return this.getRun(id)!;
+  }
+
   getRunsForIssue(issueId: string): Run[] {
-    return this.drizzle.select()
-      .from(schema.runs)
-      .where(eq(schema.runs.issue_id, issueId))
-      .orderBy(schema.runs.created_at)
-      .all();
+    // All runs for an issue ordered chronologically (for frontend pipeline view)
+    return (this.sqlite
+      .prepare("SELECT * FROM runs WHERE issue_id = ? ORDER BY rowid ASC")
+      .all(issueId) as Run[]);
   }
 
-  updateRun(id: string, data: Partial<Run>): void {
-    const allowedKeys = [
-      "status", "machine_id", "stage", "output", "started_at", "completed_at",
-      "duration_ms", "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_creation_tokens"
-    ];
-    const updateData: Partial<Run> = {};
-    for (const key of allowedKeys) {
-      if (data[key] !== undefined) {
-        updateData[key] = data[key];
-      }
-    }
-    this.drizzle.update(schema.runs).set(updateData).where(eq(schema.runs.id, id)).run();
-  }
-
-  // ─── Crash Recovery ─────────────────────────────────────────────────────────
-
-  recoverFromCrash(): { machines: number; runs: number; issues: number } {
-    let machinesReset = 0;
-    let runsReset = 0;
-    let issuesReset = 0;
-
-    // Reset working machines to idle
-    const workingMachines = this.drizzle
-      .select()
-      .from(schema.machines)
-      .where(and(eq(schema.machines.status, "working")))
-      .all();
-    for (const machine of workingMachines) {
-      this.drizzle.update(schema.machines)
-        .set({ status: "idle", current_run_id: null })
-        .where(eq(schema.machines.id, machine.id))
-        .run();
-      machinesReset++;
-    }
-
-    // Reset running runs to fail
-    const runningRuns = this.drizzle
-      .select()
-      .from(schema.runs)
-      .where(eq(schema.runs.status, "running"))
-      .all();
-    for (const run of runningRuns) {
-      this.drizzle.update(schema.runs)
-        .set({ status: "fail", completed_at: new Date().toISOString() })
-        .where(eq(schema.runs.id, run.id))
-        .run();
-      runsReset++;
-    }
-
-    // Reset running and approved issues to failed
-    const runningIssues = this.drizzle
-      .select()
-      .from(schema.issues)
-      .where(or(eq(schema.issues.status, "running"), eq(schema.issues.status, "approved")))
-      .all();
-    for (const issue of runningIssues) {
-      this.drizzle.update(schema.issues)
-        .set({ status: "failed" })
-        .where(eq(schema.issues.id, issue.id))
-        .run();
-      issuesReset++;
-    }
-
-    return { machines: machinesReset, runs: runsReset, issues: issuesReset };
+  updateRun(
+    id: string,
+    data: Partial<Pick<Run, "machine_id" | "status" | "output" | "started_at" | "completed_at" | "duration_ms" | "prompt_tokens" | "completion_tokens">>
+  ): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.runs).set(clean).where(eq(schema.runs.id, id)).run();
   }
 
   // ─── LLM Requests ──────────────────────────────────────────────────────────
@@ -534,202 +371,6 @@ export class Db {
       .all();
   }
 
-  // ─── Grouped LLM Logs ──────────────────────────────────────────────────────
-
-  getGroupedLlmLogs(params: {
-    status?: string[];
-    model?: string[];
-    startDate?: string;
-    endDate?: string;
-    search?: string;
-    page?: number;
-    pageSize?: number;
-  }): {
-    groups: Array<{
-      issue_id: string | null;
-      issue_title: string | null;
-      issue_status: string | null;
-      issue_created_at: string | null;
-      issue_assignee: string | null;
-      last_request_at: string;
-      call_count: number;
-      calls: Array<{
-        id: string;
-        timestamp: string;
-        model: string;
-        status: "success" | "error";
-        input_tokens: number;
-        output_tokens: number;
-        latency_ms: number;
-        prompt_preview: string;
-        response_preview: string;
-      }>;
-    }>;
-    total_groups: number;
-    total_calls: number;
-  } {
-    const { status, model, startDate, endDate, search, page = 1, pageSize = 20 } = params;
-    const offset = (page - 1) * pageSize;
-
-    // Build filters
-    const filters: any[] = [];
-
-    if (status && status.length > 0) {
-      // Map status to output_text presence (success = has output, error = empty output)
-      if (status.includes("success") && !status.includes("error")) {
-        filters.push(or(
-          sql`${schema.llmRequests.output_text} != ''`,
-          sql`${schema.llmRequests.completion_tokens} > 0`
-        ));
-      } else if (!status.includes("success") && status.includes("error")) {
-        filters.push(and(
-          eq(schema.llmRequests.output_text, ""),
-          eq(schema.llmRequests.completion_tokens, 0)
-        ));
-      }
-    }
-
-    if (model && model.length > 0) {
-      filters.push(inArray(schema.llmRequests.model_id, model));
-    }
-
-    if (startDate) {
-      filters.push(sql`${schema.llmRequests.created_at} >= ${startDate}`);
-    }
-
-    if (endDate) {
-      filters.push(sql`${schema.llmRequests.created_at} <= ${endDate}`);
-    }
-
-    if (search && search.trim()) {
-      const searchPattern = `%${search}%`;
-      filters.push(or(
-        like(sql`(select title from issues where issues.id = llm_requests.issue_id)`, searchPattern),
-        like(schema.llmRequests.input_text, searchPattern),
-        like(schema.llmRequests.output_text, searchPattern),
-        like(schema.llmRequests.model_id, searchPattern),
-        like(sql`COALESCE(${schema.llmRequests.status}, '')`, searchPattern)
-      ));
-    }
-
-    const whereClause = filters.length > 0 ? and(...filters) : undefined;
-
-    // Get total calls count
-    const totalCallsResult = this.drizzle
-      .select({ count: count() })
-      .from(schema.llmRequests)
-      .where(whereClause)
-      .get() as { count: number };
-
-    const totalCalls = totalCallsResult.count || 0;
-
-    // Get grouped data with pagination
-    // First, get the grouped issue IDs with their last request timestamp
-    const groupedIssues = this.drizzle
-      .select({
-        issue_id: schema.llmRequests.issue_id,
-        lastRequestAt: max(schema.llmRequests.created_at),
-        callCount: count(schema.llmRequests.id),
-      })
-      .from(schema.llmRequests)
-      .where(whereClause)
-      .groupBy(schema.llmRequests.issue_id)
-      .orderBy(desc(sql`lastRequestAt`))
-      .limit(pageSize)
-      .offset(offset)
-      .all() as Array<{
-        issue_id: string | null;
-        lastRequestAt: string;
-        callCount: number;
-      }>;
-
-    // Get total groups count
-    const totalGroups = groupedIssues.length;
-
-    // Build the response
-    const groups: Array<{
-      issue_id: string | null;
-      issue_title: string | null;
-      issue_status: string | null;
-      issue_created_at: string | null;
-      issue_assignee: string | null;
-      last_request_at: string;
-      call_count: number;
-      calls: Array<{
-        id: string;
-        timestamp: string;
-        model: string;
-        status: "success" | "error";
-        input_tokens: number;
-        output_tokens: number;
-        latency_ms: number;
-        prompt_preview: string;
-        response_preview: string;
-      }>;
-    }> = [];
-
-    for (const group of groupedIssues) {
-      // Get issue details if issue_id is not null
-      let issueTitle: string | null = null;
-      let issueStatus: string | null = null;
-      let issueCreatedAt: string | null = null;
-      let issueAssignee: string | null = null;
-
-      if (group.issue_id) {
-        const issue = this.getIssue(group.issue_id);
-        if (issue) {
-          issueTitle = issue.title;
-          issueStatus = issue.status;
-          issueCreatedAt = issue.created_at;
-          // Note: issue_assignee is not in the schema, using null
-          issueAssignee = null;
-        }
-      }
-
-      // Get all LLM requests for this group
-      const llmRequests = this.drizzle
-        .select()
-        .from(schema.llmRequests)
-        .where(
-          and(
-            whereClause,
-            eq(schema.llmRequests.issue_id, group.issue_id)
-          )
-        )
-        .orderBy(desc(schema.llmRequests.created_at))
-        .all();
-
-      const calls = llmRequests.map(req => ({
-        id: req.id,
-        timestamp: req.created_at,
-        model: req.model_id || "",
-        status: req.output_text !== "" && req.completion_tokens > 0 ? "success" : "error",
-        input_tokens: req.prompt_tokens,
-        output_tokens: req.completion_tokens,
-        latency_ms: req.duration_ms || 0,
-        prompt_preview: req.input_text.length > 200 ? req.input_text.substring(0, 200) + "..." : req.input_text,
-        response_preview: req.output_text.length > 200 ? req.output_text.substring(0, 200) + "..." : req.output_text,
-      }));
-
-      groups.push({
-        issue_id: group.issue_id,
-        issue_title: issueTitle,
-        issue_status: issueStatus,
-        issue_created_at: issueCreatedAt,
-        issue_assignee: issueAssignee,
-        last_request_at: group.lastRequestAt,
-        call_count: group.callCount,
-        calls,
-      });
-    }
-
-    return {
-      groups,
-      total_groups: totalGroups,
-      total_calls: totalCalls,
-    };
-  }
-
   // ─── Planner Conversations ────────────────────────────────────────────────
 
   createPlannerConversation(data: { project_id: string }): PlannerConversation {
@@ -738,11 +379,12 @@ export class Db {
       id,
       project_id: data.project_id,
     }).run();
-    return this.drizzle.select().from(schema.plannerConversations).where(eq(schema.plannerConversations.id, id)).get()!;
+    return this.getPlannerConversation(id)!;
   }
 
   getPlannerConversation(id: string): PlannerConversation | null {
-    return this.drizzle.select().from(schema.plannerConversations).where(eq(schema.plannerConversations.id, id)).get() ?? null;
+    return this.drizzle.select().from(schema.plannerConversations)
+      .where(eq(schema.plannerConversations.id, id)).get() ?? null;
   }
 
   getPlannerConversations(projectId: string): PlannerConversation[] {
@@ -752,11 +394,19 @@ export class Db {
       .all();
   }
 
-  createPlannerMessage(data: {
-    conversation_id: string;
-    role: "user" | "assistant" | "system";
-    content: string;
-  }): PlannerMessage {
+  updatePlannerConversation(
+    id: string,
+    data: Partial<Pick<PlannerConversation, "status" | "issue_id" | "updated_at">>
+  ): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.plannerConversations).set(clean)
+      .where(eq(schema.plannerConversations.id, id)).run();
+  }
+
+  // ─── Planner Messages ─────────────────────────────────────────────────────
+
+  createPlannerMessage(data: { conversation_id: string; role: string; content: string }): PlannerMessage {
     const id = randomUUID();
     this.drizzle.insert(schema.plannerMessages).values({
       id,
@@ -764,17 +414,47 @@ export class Db {
       role: data.role,
       content: data.content,
     }).run();
-    return this.drizzle.select().from(schema.plannerMessages).where(eq(schema.plannerMessages.id, id)).get()!;
+    // Update conversation timestamp
+    this.drizzle.update(schema.plannerConversations)
+      .set({ updated_at: new Date().toISOString() })
+      .where(eq(schema.plannerConversations.id, data.conversation_id)).run();
+    return this.getPlannerMessage(id)!;
   }
 
-  getPlannerMessages(conversationId: string): PlannerMessage[] {
+  getPlannerMessage(id: string): PlannerMessage | null {
+    return this.drizzle.select().from(schema.plannerMessages)
+      .where(eq(schema.plannerMessages.id, id)).get() ?? null;
+  }
+
+  getPlannerMessages(conversationId: string, afterId?: string): PlannerMessage[] {
+    if (afterId) {
+      // Get messages created after the given message
+      const after = this.getPlannerMessage(afterId);
+      if (after) {
+        return (this.sqlite
+          .prepare("SELECT * FROM planner_messages WHERE conversation_id = ? AND rowid > (SELECT rowid FROM planner_messages WHERE id = ?) ORDER BY rowid ASC")
+          .all(conversationId, afterId) as PlannerMessage[]);
+      }
+    }
     return this.drizzle.select().from(schema.plannerMessages)
       .where(eq(schema.plannerMessages.conversation_id, conversationId))
       .orderBy(schema.plannerMessages.created_at)
       .all();
   }
 
-  close() {
-    this.sqlite.close();
+  updatePlannerMessage(id: string, data: { content: string }): void {
+    this.drizzle.update(schema.plannerMessages).set({ content: data.content })
+      .where(eq(schema.plannerMessages.id, id)).run();
   }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Strip undefined values from an object so Drizzle .set() only updates provided fields */
+function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val !== undefined) result[key] = val;
+  }
+  return result as Partial<T>;
 }
