@@ -192,6 +192,7 @@ export interface StepData {
   toolResults?: Array<{ tool: string; result: string }>;
   tokens: { prompt: number; completion: number };
   durationMs: number;
+  prompts?: { system: string; user: string };
 }
 
 export function getRunOutput(runId: string): Promise<{ status: string; output: string | null }> {

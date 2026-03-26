@@ -16,6 +16,8 @@ export interface StepData {
   toolResults?: Array<{ tool: string; result: string }>;
   tokens: { prompt: number; completion: number };
   durationMs: number;
+  /** If present, this step contains the prompts sent to the LLM */
+  prompts?: { system: string; user: string };
 }
 
 export interface RunStageOpts {
@@ -53,8 +55,15 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   let totalCompletionTokens = 0;
   let stepStartTime = Date.now();
 
-  // Pre-populate with initial info steps (e.g., injected context summary)
-  const liveSteps: StepData[] = [...(initialSteps ?? [])];
+  // Pre-populate with prompts step + initial info steps
+  const promptsStep: StepData = {
+    step: 0,
+    text: `**Prompts** (expand to view)`,
+    tokens: { prompt: 0, completion: 0 },
+    durationMs: 0,
+    prompts: { system: systemPrompt, user: userPrompt },
+  };
+  const liveSteps: StepData[] = [promptsStep, ...(initialSteps ?? [])];
 
   const onStep = (step: StepResult<ToolSet>) => {
     stepCount++;

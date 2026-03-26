@@ -164,13 +164,48 @@ function ToolCallDetail({ call, result, duration }: {
   )
 }
 
+function PromptsDetail({ prompts }: { prompts: { system: string; user: string } }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="border border-border rounded-md overflow-hidden text-xs max-w-[95%]">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
+      >
+        <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <Code className="size-3 shrink-0 text-muted-foreground" />
+        <span className="font-medium text-foreground">Stage Prompts</span>
+        <span className="ml-auto text-muted-foreground opacity-60">
+          {Math.round((prompts.system.length + prompts.user.length) / 4).toLocaleString()} est. tokens
+        </span>
+      </button>
+      {open && (
+        <div className="px-3 py-2 space-y-3 border-t border-border">
+          <div>
+            <span className="text-muted-foreground font-medium">System Prompt:</span>
+            <pre className="mt-1 bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto text-[11px]">{prompts.system}</pre>
+          </div>
+          <div>
+            <span className="text-muted-foreground font-medium">User Prompt:</span>
+            <pre className="mt-1 bg-muted/50 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto text-[11px]">{prompts.user}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StepMessage({ step }: { step: StepData }) {
   const toolCalls = step.toolCalls ?? []
   const toolResults = step.toolResults ?? []
 
   return (
     <>
-      {step.text && (
+      {step.prompts && (
+        <PromptsDetail prompts={step.prompts} />
+      )}
+      {step.text && !step.prompts && (
         <Message from="assistant">
           <MessageContent>
             <MessageResponse>{step.text}</MessageResponse>
@@ -435,14 +470,25 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           <Button
             size="sm"
             variant="outline"
-            onClick={() => doAction('decompose', async () => {
-              await api.decomposeIssue(issue.id)
-              onDataChange()
-            })}
+            onClick={async () => {
+              setActionLoading('decompose')
+              setActionError(null)
+              try {
+                await api.decomposeIssue(issue.id)
+                // Navigate away and back to force fresh data load with new epic status
+                onDataChange()
+                onBack()
+              } catch (e: unknown) {
+                setActionError(e instanceof Error ? e.message : String(e))
+                setActionLoading(null)
+              }
+            }}
             disabled={!!actionLoading}
           >
-            <Scissors className="size-3.5 mr-1" />
-            {actionLoading === 'decompose' ? 'Breaking down...' : 'Break into Stories'}
+            {actionLoading === 'decompose'
+              ? <><Spinner className="size-3.5 mr-1" /> Analyzing — this may take a minute...</>
+              : <><Scissors className="size-3.5 mr-1" /> Break into Stories</>
+            }
           </Button>
         )}
         {issue.status === 'awaiting_review' && (
