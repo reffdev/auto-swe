@@ -81,7 +81,7 @@ export class LlamaCppStt implements SttAdapter {
 
     const url = new URL("/inference", this.baseUrl).href;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    const timeout = setTimeout(() => controller.abort(), 120_000);
     let res: Response;
     try {
       res = await fetch(url, {
