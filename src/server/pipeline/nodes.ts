@@ -11,16 +11,7 @@ import { join, resolve } from "path";
 import { spawnSync } from "child_process";
 
 import type { PipelineStateType, PipelineConfig } from "./state";
-import {
-  MAX_RETRIES,
-  MAX_SCOUT_CYCLES,
-  SCOUT_DONE_THRESHOLD,
-  STAGE_TIMEOUT_MS,
-  SCOUT_STEP_LIMIT,
-  IMPLEMENT_STEP_LIMIT,
-  TEST_WRITE_STEP_LIMIT,
-  REVIEW_STEP_LIMIT,
-} from "./state";
+import { MAX_RETRIES } from "./state";
 import { runStage, type StepData } from "./run-stage";
 import {
   createSubmitScoutReportTool,
@@ -30,7 +21,6 @@ import {
   parseVerdict,
 } from "./parsers";
 import {
-  ContextBudget,
   makeFilesystemTools,
   makeReadOnlyTools,
   makeTestWriteTools,
@@ -43,7 +33,6 @@ import {
 } from "../tools";
 import {
   constructScoutPrompt,
-  constructScoutCompactPrompt,
   constructImplementPrompts,
   constructTestWritePrompts,
   constructReviewPrompts,
@@ -260,128 +249,78 @@ export async function scoutNode(
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
 
-  // Gather project context once (auto-read key files)
   const projectCtx = gatherProjectContext(state.worktreePath);
   console.log(`Pipeline: scout — auto-loaded ${projectCtx.fileCount} files (${projectCtx.totalChars.toLocaleString()} chars)`);
 
-  let compactedSoFar = "";
+  const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
+  ctx.db.updateRun(run.id, { machine_id: state.machineId });
+
   const userIssue = `## Issue: ${state.issueTitle}\n\n${state.issueDescription || "(No additional details)"}`;
+  const contextSection = projectCtx.context ? `\n\n${projectCtx.context}` : "";
 
-  for (let cycle = 0; cycle < MAX_SCOUT_CYCLES; cycle++) {
-    const budget = new ContextBudget(machine.context_limit ?? undefined);
-    const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
-    ctx.db.updateRun(run.id, { machine_id: state.machineId });
+  const infoSteps: StepData[] = [{
+    step: 0,
+    text: `**Scout stage starting**\n\n- Auto-loaded ${projectCtx.fileCount} project files (${projectCtx.totalChars.toLocaleString()} chars / ~${Math.round(projectCtx.totalChars / 4).toLocaleString()} tokens)\n- Files: ${AUTO_READ_FILES.filter(f => projectCtx.context.includes(f)).join(", ")}`,
+    tokens: { prompt: 0, completion: 0 },
+    durationMs: 0,
+  }];
 
-    const scoutInfoSteps: StepData[] = cycle === 0 ? [{
-      step: 0,
-      text: `**Scout stage starting**\n\n- Auto-loaded ${projectCtx.fileCount} project files (${projectCtx.totalChars.toLocaleString()} chars / ~${Math.round(projectCtx.totalChars / 4).toLocaleString()} tokens)\n- Files: ${AUTO_READ_FILES.filter(f => projectCtx.context.includes(f)).join(", ")}`,
-      tokens: { prompt: 0, completion: 0 },
-      durationMs: 0,
-    }] : [];
-
-    const contextSection = compactedSoFar
-      ? `\n\n## Prior Findings (from previous exploration cycles)\n\n${compactedSoFar}\n\nContinue exploring areas not yet covered. Do not re-read files already in the brief.`
-      : (projectCtx.context ? `\n\n${projectCtx.context}` : "");
-
-    console.log(`Pipeline: scout cycle ${cycle + 1}/${MAX_SCOUT_CYCLES}`);
-
-    // Create a per-cycle abort controller that submitScoutReport can trigger
-    const scoutStageAbort = new AbortController();
-    // Chain: if the pipeline-level abort fires, also abort this stage
-    if (abortSignal) {
-      abortSignal.addEventListener("abort", () => scoutStageAbort.abort(), { once: true });
-    }
-
-    let scoutOutput: string;
-    try {
-      scoutOutput = await runStage({
-        db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "scout",
-        model, modelId: state.modelId,
-        systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
-        userPrompt: userIssue + contextSection,
-        tools: { ...makeReadOnlyTools(state.worktreePath, budget), ...makeStoryContextTool(ctx.db, state.issueId), saveCheckpoint: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
-        maxSteps: SCOUT_STEP_LIMIT,
-        timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
-        abortSignal: scoutStageAbort.signal,
-        initialSteps: scoutInfoSteps,
-      });
-    } catch (err) {
-      // If the abort was triggered by submitScoutReport (not by pipeline cancel), that's success
-      if (hasSubmittedBrief() && scoutStageAbort.signal.aborted) {
-        console.log("Pipeline: scout stage ended via submitScoutReport");
-        scoutOutput = "";
-        // Fix the run status — runStage marked it as "fail" due to the abort
-        ctx.db.updateRun(run.id, { status: "pass", completed_at: new Date().toISOString() });
-      } else {
-        throw err; // real error — propagate
-      }
-    }
-
-    console.log(`Pipeline: scout raw output: ${scoutOutput.length} chars`);
-    const extracted = extractScoutBrief(scoutOutput);
-    const submittedViaTool = hasSubmittedBrief();
-    // Reset after extraction so next cycle starts clean
-    getAndClearSubmittedBrief();
-    console.log(`Pipeline: scout extracted report: ${extracted.length} chars (via ${submittedViaTool ? 'tool' : 'text'})`);
-
-    // If submitted via tool, the report is final — no compaction needed
-    if (submittedViaTool) {
-      console.log("Pipeline: scout report submitted via tool — done");
-      compactedSoFar = extracted;
-      break;
-    }
-
-    // If budget was barely used, the scout finished exploring — no need to compact
-    if (budget.usage < SCOUT_DONE_THRESHOLD) {
-      console.log(`Pipeline: scout finished (budget ${Math.round(budget.usage * 100)}% used, no compaction needed)`);
-      compactedSoFar = extracted;
-      break;
-    }
-
-    // Compact: merge new findings with existing brief
-    console.log(`Pipeline: scout compacting (budget ${Math.round(budget.usage * 100)}% used)`);
-    const compactRun = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
-    ctx.db.updateRun(compactRun.id, { machine_id: state.machineId });
-
-    const compactInput = compactedSoFar
-      ? `## Existing Brief\n\n${compactedSoFar}\n\n## New Findings\n\n${extracted}`
-      : `## Findings\n\n${extracted}`;
-
-    compactedSoFar = await runStage({
-      db: ctx.db, runId: compactRun.id, issueId: state.issueId, stageName: "scout-compact",
-      model, modelId: state.modelId,
-      systemPrompt: constructScoutCompactPrompt(),
-      userPrompt: compactInput,
-      tools: {} as ToolSet,
-      maxSteps: 1,
-      timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
-      abortSignal,
-    });
-
-    compactedSoFar = extractScoutBrief(compactedSoFar);
+  // Abort controller that saveCheckpoint can trigger to end the scout immediately
+  const scoutAbort = new AbortController();
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", () => scoutAbort.abort(), { once: true });
   }
 
-  if (!compactedSoFar || compactedSoFar.length < 10) {
-    throw new Error(`Scout produced an empty manifest — cannot proceed to implementation`);
-  }
-
-  // Validate manifest has files
+  let scoutOutput: string;
   try {
-    const parsed = JSON.parse(compactedSoFar);
+    scoutOutput = await runStage({
+      db: ctx.db, runId: run.id, issueId: state.issueId, stageName: "scout",
+      model, modelId: state.modelId,
+      systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
+      userPrompt: userIssue + contextSection,
+      tools: {
+        ...makeReadOnlyTools(state.worktreePath),
+        ...makeStoryContextTool(ctx.db, state.issueId),
+        saveCheckpoint: createSubmitScoutReportTool(scoutAbort),
+      } as ToolSet,
+      abortSignal: scoutAbort.signal,
+      initialSteps: infoSteps,
+    });
+  } catch (err) {
+    // saveCheckpoint aborts the stream — that's success, not an error
+    if (hasSubmittedBrief() && scoutAbort.signal.aborted) {
+      console.log("Pipeline: scout ended via saveCheckpoint");
+      scoutOutput = "";
+      ctx.db.updateRun(run.id, { status: "pass", completed_at: new Date().toISOString() });
+    } else {
+      throw err;
+    }
+  }
+
+  const brief = extractScoutBrief(scoutOutput);
+  getAndClearSubmittedBrief();
+  console.log(`Pipeline: scout brief: ${brief.length} chars`);
+
+  if (!brief || brief.length < 10) {
+    throw new Error("Scout produced an empty manifest — cannot proceed to implementation");
+  }
+
+  // Validate manifest
+  try {
+    const parsed = JSON.parse(brief);
     if (!parsed.files?.length) {
       throw new Error("Scout manifest contains no files — cannot proceed to implementation");
     }
     console.log(`Pipeline: scout manifest contains ${parsed.files.length} files`);
   } catch (e) {
     if (e instanceof SyntaxError) {
-      // Not JSON — legacy format, allow it through
-      console.log("Pipeline: scout output is legacy format (not JSON manifest)");
+      console.log("Pipeline: scout output is not JSON manifest — using as-is");
     } else {
       throw e;
     }
   }
 
-  return { scoutBrief: compactedSoFar };
+  return { scoutBrief: brief };
 }
 
 // ─── Implement Node ───────────────────────────────────────────────────────────
@@ -442,8 +381,6 @@ export async function implementNode(
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
       lookupDocs,
     } as ToolSet,
-    maxSteps: IMPLEMENT_STEP_LIMIT,
-    timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
     initialSteps: infoSteps,
   });
@@ -490,8 +427,6 @@ export async function testWriteNode(
       ...makePackageCheckTool(state.worktreePath),
       lookupDocs,
     } as ToolSet,
-    maxSteps: TEST_WRITE_STEP_LIMIT,
-    timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
   });
 
@@ -534,8 +469,6 @@ export async function reviewNode(
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.user,
     tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath) } as ToolSet,
-    maxSteps: REVIEW_STEP_LIMIT,
-    timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
   });
 

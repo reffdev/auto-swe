@@ -9,14 +9,6 @@ import type { Db, Machine, Project } from "../db";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const MAX_RETRIES = 3;
-export const MAX_SCOUT_CYCLES = 10;
-/** If the scout used less than this fraction of context, it's done exploring — skip compaction */
-export const SCOUT_DONE_THRESHOLD = 0.4;
-export const STAGE_TIMEOUT_MS = 15 * 60 * 1000; // 15 min per stage
-export const SCOUT_STEP_LIMIT = 40;
-export const IMPLEMENT_STEP_LIMIT = 60;
-export const TEST_WRITE_STEP_LIMIT = 40;
-export const REVIEW_STEP_LIMIT = 30;
 
 // ─── Pipeline State ───────────────────────────────────────────────────────────
 

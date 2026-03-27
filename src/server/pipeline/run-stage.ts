@@ -35,8 +35,7 @@ export interface RunStageOpts {
   systemPrompt: string;
   userPrompt: string;
   tools: ToolSet;
-  maxSteps: number;
-  timeoutMs: number;
+  maxSteps?: number;
   abortSignal?: AbortSignal;
   /** Pre-populated steps shown before the LLM starts (e.g., info about injected context) */
   initialSteps?: StepData[];
@@ -51,7 +50,7 @@ export interface RunStageOpts {
  * output, log LLM requests. Returns the final text output.
  */
 export async function runStage(opts: RunStageOpts): Promise<string> {
-  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, timeoutMs, abortSignal, initialSteps } = opts;
+  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, abortSignal, initialSteps } = opts;
 
   db.updateRun(runId, { status: "running", started_at: new Date().toISOString() });
 
@@ -146,11 +145,6 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     }, { once: true });
   }
 
-  // Promise.race for hard timeout — timer is cleared on success or failure
-  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutTimer = setTimeout(() => reject(new Error(`${stageName} stage timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
-  });
 
   let fullText: string;
   try {
@@ -196,9 +190,8 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       return text || "(no output)";
     })();
 
-    fullText = await Promise.race([agentPromise, timeoutPromise, cancelPromise]);
+    fullText = await Promise.race([agentPromise, cancelPromise]);
   } catch (err) {
-    if (timeoutTimer) clearTimeout(timeoutTimer);
     const durationMs = Date.now() - startTime;
     db.updateRun(runId, {
       status: "fail",
@@ -212,7 +205,6 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   }
 
   // Success
-  if (timeoutTimer) clearTimeout(timeoutTimer);
   const durationMs = Date.now() - startTime;
   if (fullText && !liveSteps.some(s => s.text === fullText)) {
     liveSteps.push({ step: stepCount + 1, text: fullText, tokens: { prompt: 0, completion: 0 }, durationMs: 0 });

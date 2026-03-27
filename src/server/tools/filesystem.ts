@@ -37,68 +37,13 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
     // No-op — read tracking removed, but callers still reference this
   }
 
-  /** Track consecutive errors to detect agents stuck in error loops */
-  let consecutiveErrors = 0;
-  const MAX_CONSECUTIVE_ERRORS = 3;
-  /** Track total "not found" errors */
-  let totalNotFoundErrors = 0;
-  const MAX_NOT_FOUND_ERRORS = 8;
-  /** Global read-only tool call counter */
-  let totalReadCalls = 0;
-
-  /** Track whether a tool result is an error, and bail after too many */
+  /** Return an error result */
   function trackResult(result: string): string {
-    const isError =
-      result.startsWith("Error") ||
-      result.startsWith("ERROR") ||
-      result.startsWith("File not found") ||
-      result.startsWith("Directory not found");
-    // Only count file/directory not-found errors — not command exit failures
-    const isNotFound =
-      result.startsWith("File not found") ||
-      result.startsWith("Directory not found");
-
-    if (isNotFound) totalNotFoundErrors++;
-    if (isError) consecutiveErrors++;
-    else consecutiveErrors = 0;
-
-    if (totalNotFoundErrors >= MAX_NOT_FOUND_ERRORS) {
-      return (
-        result +
-        `\n\nFATAL: ${totalNotFoundErrors} "not found" errors. The working directory is misconfigured or files do not exist. STOP all tool calls immediately and report failure in your result block.`
-      );
-    }
-    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-      return (
-        result +
-        "\n\nERROR: Too many consecutive errors. The working directory may be misconfigured. Stop making tool calls and report this as a failure in your result block."
-      );
-    }
-    return maybeWarnExcessiveReads(result);
-  }
-
-  /** Append a soft warning when the agent is reading excessively */
-  function maybeWarnExcessiveReads(result: string): string {
-    totalReadCalls++;
-    if (totalReadCalls === 25) {
-      return (
-        result +
-        "\n\n[Warning: You have made 25 read/search calls. You likely have enough context. Start writing code and producing your output.]"
-      );
-    }
-    if (totalReadCalls >= 40 && totalReadCalls % 5 === 0) {
-      return (
-        result +
-        "\n\n[Warning: You have made " +
-        totalReadCalls +
-        " read/search calls. STOP reading and produce your output with the information you have.]"
-      );
-    }
     return result;
   }
 
   function trackSuccess(): void {
-    consecutiveErrors = 0;
+    // no-op — error tracking removed
   }
 
   /** Track a tool result — no truncation. */

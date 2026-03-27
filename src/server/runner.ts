@@ -144,14 +144,14 @@ export async function executeIssue(
         if (toolCalls?.length) {
           stepData.toolCalls = toolCalls.map(tc => ({
             tool: tc.toolName ?? "unknown",
-            args: JSON.stringify(tc.args).slice(0, 2000),
+            args: JSON.stringify(tc.args),
           }));
         }
         const toolResults = step.toolResults as Array<{ toolName?: string; result?: unknown }> | undefined;
         if (toolResults?.length) {
           stepData.toolResults = toolResults.map(tr => ({
             tool: tr.toolName ?? "unknown",
-            result: String(tr.result).slice(0, 2000),
+            result: String(tr.result),
           }));
         }
 
@@ -164,12 +164,12 @@ export async function executeIssue(
 
         // Log to llm_requests table
         const inputParts = (toolResults ?? []).map(tr =>
-          `[tool_result: ${tr.toolName}] ${String(tr.result).slice(0, 2000)}`
+          `[tool_result: ${tr.toolName}] ${String(tr.result)}`
         );
         const outputParts: string[] = [];
         if (step.text) outputParts.push(step.text);
         for (const tc of (toolCalls ?? [])) {
-          outputParts.push(`[tool_call: ${tc.toolName}] ${JSON.stringify(tc.args).slice(0, 2000)}`);
+          outputParts.push(`[tool_call: ${tc.toolName}] ${JSON.stringify(tc.args)}`);
         }
 
         try {
