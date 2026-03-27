@@ -387,14 +387,12 @@ export class Db {
       issue_title: string | null;
       issue_status: string | null;
       issue_created_at: string | null;
-      issue_assignee: string | null;
       last_request_at: string;
       call_count: number;
       calls: Array<{
         id: string;
         timestamp: string;
         model: string;
-        status: "success" | "error";
         input_tokens: number;
         output_tokens: number;
         latency_ms: number;
@@ -405,167 +403,115 @@ export class Db {
     totalGroups: number;
     totalCalls: number;
   } {
-    const {
-      status,
-      model,
-      startDate,
-      endDate,
-      search,
-      page = 1,
-      pageSize = 20,
-    } = params;
-
+    const { model, startDate, endDate, search, page = 1, pageSize = 20 } = params;
     const offset = (page - 1) * pageSize;
 
-    // Build dynamic WHERE clause
-    const conditions: any[] = [];
+    // Build WHERE clause with parameterized values
+    const whereParts: string[] = [];
+    const whereParams: unknown[] = [];
 
-    if (status && status.length > 0) {
-      conditions.push(
-        sql`llm_requests.id IN (
-          SELECT lr.id FROM llm_requests lr
-          LEFT JOIN runs r ON lr.run_id = r.id
-          WHERE ${inArray(sql`r.status`, status)}
-        )`
-      );
+    if (model?.length) {
+      whereParts.push(`lr.model_id IN (${model.map(() => "?").join(",")})`);
+      whereParams.push(...model);
     }
-
-    if (model && model.length > 0) {
-      conditions.push(
-        sql`llm_requests.model_id IN (${inArray(sql`llm_requests.model_id`, model)})`
-      );
-    }
-
     if (startDate) {
-      conditions.push(sql`llm_requests.created_at >= ${startDate}`);
+      whereParts.push("lr.created_at >= ?");
+      whereParams.push(startDate);
     }
-
     if (endDate) {
-      conditions.push(sql`llm_requests.created_at <= ${endDate}`);
+      whereParts.push("lr.created_at <= ?");
+      whereParams.push(endDate);
+    }
+    if (search?.trim()) {
+      const pattern = `%${search.trim()}%`;
+      whereParts.push(`(
+        lr.model_id LIKE ?
+        OR lr.input_text LIKE ?
+        OR lr.output_text LIKE ?
+        OR EXISTS (SELECT 1 FROM issues i WHERE i.id = lr.issue_id AND i.title LIKE ?)
+      )`);
+      whereParams.push(pattern, pattern, pattern, pattern);
     }
 
-    if (search && search.trim()) {
-      const searchPattern = `%${search.trim()}%`;
-      conditions.push(
-        or(
-          sql`EXISTS (
-            SELECT 1 FROM issues i WHERE i.id = llm_requests.issue_id
-            AND (i.title LIKE ${searchPattern} OR i.description LIKE ${searchPattern})
-          )`,
-          sql`llm_requests.input_text LIKE ${searchPattern}`,
-          sql`llm_requests.output_text LIKE ${searchPattern}`,
-          sql`llm_requests.model_id LIKE ${searchPattern}`,
-          sql`EXISTS (
-            SELECT 1 FROM runs r WHERE r.id = llm_requests.run_id
-            AND r.status LIKE ${searchPattern}
-          )`
-        )
-      );
-    }
+    const whereSQL = whereParts.length > 0 ? "WHERE " + whereParts.join(" AND ") : "";
 
-    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    // Total calls matching filters
+    const totalCallsRow = this.sqlite.prepare(
+      `SELECT COUNT(*) as count FROM llm_requests lr ${whereSQL}`
+    ).get(...whereParams) as { count: number };
 
-    // Get total counts using raw SQL for efficiency
-    const totalCallsResult = this.sqlite.prepare(`
-      SELECT COUNT(*) as count FROM llm_requests
-      ${conditions.length > 0 ? 'WHERE ' + conditions.map(() => '1=1').join(' AND ') : ''}
-    `).get() as { count: number };
+    // Total groups matching filters
+    const totalGroupsRow = this.sqlite.prepare(
+      `SELECT COUNT(DISTINCT COALESCE(lr.issue_id, '__UNASSIGNED__')) as count FROM llm_requests lr ${whereSQL}`
+    ).get(...whereParams) as { count: number };
 
-    // Get grouped data with pagination
-    const groupsRaw = this.sqlite.prepare(`
-      WITH grouped AS (
-        SELECT
-          lr.issue_id,
-          i.title as issue_title,
-          i.status as issue_status,
-          i.created_at as issue_created_at,
-          lr.created_at as last_request_at,
-          COUNT(*) as call_count,
-          GROUP_CONCAT(lr.id) as call_ids
-        FROM llm_requests lr
-        LEFT JOIN issues i ON lr.issue_id = i.id
-        ${conditions.length > 0 ? 'WHERE ' + conditions.map(() => '1=1').join(' AND ') : ''}
-        GROUP BY COALESCE(lr.issue_id, '__UNASSIGNED__')
-        ORDER BY MAX(lr.created_at) DESC
-        LIMIT ? OFFSET ?
-      )
+    // Get paginated groups (one row per group)
+    const groupRows = this.sqlite.prepare(`
       SELECT
-        g.issue_id,
-        g.issue_title,
-        g.issue_status,
-        g.issue_created_at,
-        g.last_request_at,
-        g.call_count,
-        g.call_ids,
-        lr.id as call_id,
-        lr.created_at as call_timestamp,
-        lr.model_id,
-        CASE WHEN lr.duration_ms IS NOT NULL THEN 'success' ELSE 'error' END as status,
-        lr.prompt_tokens as input_tokens,
-        lr.completion_tokens as output_tokens,
-        COALESCE(lr.duration_ms, 0) as latency_ms,
-        substr(lr.input_text, 1, 200) as prompt_preview,
-        substr(lr.output_text, 1, 200) as response_preview
-      FROM grouped g
-      JOIN llm_requests lr ON lr.issue_id = g.issue_id OR (g.issue_id IS NULL AND lr.issue_id IS NULL)
-      WHERE lr.created_at IN (
-        SELECT lr2.created_at FROM llm_requests lr2
-        WHERE lr2.issue_id = g.issue_id OR (g.issue_id IS NULL AND lr2.issue_id IS NULL)
-        ORDER BY lr2.created_at DESC
-        LIMIT g.call_count
-      )
-      ORDER BY g.last_request_at DESC, lr.created_at DESC
-    `).all(offset, offset + pageSize) as any[];
+        COALESCE(lr.issue_id, '__UNASSIGNED__') as group_key,
+        lr.issue_id,
+        i.title as issue_title,
+        i.status as issue_status,
+        i.created_at as issue_created_at,
+        MAX(lr.created_at) as last_request_at,
+        COUNT(*) as call_count
+      FROM llm_requests lr
+      LEFT JOIN issues i ON lr.issue_id = i.id
+      ${whereSQL}
+      GROUP BY group_key
+      ORDER BY last_request_at DESC
+      LIMIT ? OFFSET ?
+    `).all(...whereParams, pageSize, offset) as Array<{
+      group_key: string; issue_id: string | null; issue_title: string | null;
+      issue_status: string | null; issue_created_at: string | null;
+      last_request_at: string; call_count: number;
+    }>;
 
-    // Process groups
-    const groupsMap = new Map<string, any>();
-    const groups: any[] = [];
+    // For each group, fetch its calls
+    const groups = groupRows.map(g => {
+      const isUnassigned = g.group_key === "__UNASSIGNED__";
+      const callCondition = isUnassigned ? "lr.issue_id IS NULL" : "lr.issue_id = ?";
+      const callParams: unknown[] = isUnassigned ? [] : [g.issue_id];
 
-    for (const row of groupsRaw) {
-      const groupId = row.issue_id || '__UNASSIGNED__';
-      
-      if (!groupsMap.has(groupId)) {
-        groupsMap.set(groupId, {
-          issue_id: row.issue_id,
-          issue_title: row.issue_title,
-          issue_status: row.issue_status,
-          issue_created_at: row.issue_created_at,
-          issue_assignee: null, // Not available in current schema
-          last_request_at: row.last_request_at,
-          call_count: row.call_count,
-          calls: [],
-        });
-        groups.push(groupsMap.get(groupId));
-      }
+      // Apply same filters to calls within the group
+      const callWhereParts = [callCondition, ...whereParts];
+      const callWhereParams = [...callParams, ...whereParams];
+      const callWhereSQL = "WHERE " + callWhereParts.join(" AND ");
 
-      groupsMap.get(groupId).calls.push({
-        id: row.call_id,
-        timestamp: row.call_timestamp,
-        model: row.model_id || '',
-        status: row.status as "success" | "error",
-        input_tokens: row.input_tokens,
-        output_tokens: row.output_tokens,
-        latency_ms: row.latency_ms,
-        prompt_preview: row.prompt_preview || '',
-        response_preview: row.response_preview || '',
-      });
-    }
+      const calls = this.sqlite.prepare(`
+        SELECT
+          lr.id,
+          lr.created_at as timestamp,
+          COALESCE(lr.model_id, '') as model,
+          lr.prompt_tokens as input_tokens,
+          lr.completion_tokens as output_tokens,
+          COALESCE(lr.duration_ms, 0) as latency_ms,
+          substr(COALESCE(lr.input_text, ''), 1, 200) as prompt_preview,
+          substr(COALESCE(lr.output_text, ''), 1, 200) as response_preview
+        FROM llm_requests lr
+        ${callWhereSQL}
+        ORDER BY lr.created_at DESC
+      `).all(...callWhereParams) as Array<{
+        id: string; timestamp: string; model: string;
+        input_tokens: number; output_tokens: number; latency_ms: number;
+        prompt_preview: string; response_preview: string;
+      }>;
 
-    // Sort calls within each group by timestamp
-    for (const group of groups) {
-      group.calls.sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    }
-
-    // Calculate total groups
-    const totalGroupsResult = this.sqlite.prepare(`
-      SELECT COUNT(DISTINCT COALESCE(issue_id, '__UNASSIGNED__')) as count FROM llm_requests
-      ${conditions.length > 0 ? 'WHERE ' + conditions.map(() => '1=1').join(' AND ') : ''}
-    `).get() as { count: number };
+      return {
+        issue_id: g.issue_id,
+        issue_title: g.issue_title,
+        issue_status: g.issue_status,
+        issue_created_at: g.issue_created_at,
+        last_request_at: g.last_request_at,
+        call_count: g.call_count,
+        calls,
+      };
+    });
 
     return {
       groups,
-      totalGroups: totalGroupsResult.count,
-      totalCalls: totalCallsResult.count,
+      totalGroups: totalGroupsRow.count,
+      totalCalls: totalCallsRow.count,
     };
   }
 

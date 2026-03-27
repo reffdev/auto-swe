@@ -27,18 +27,34 @@ interface IssueDetailProps {
   onDataChange: () => void
 }
 
-const STAGE_ORDER = ['scout', 'implement', 'test_write', 'review'] as const
+const FIXED_STAGES = ['scout', 'implement', 'test_write'] as const
 const STAGE_LABELS: Record<string, string> = {
   scout: 'Scout',
   implement: 'Implement',
   test_write: 'Test-Write',
-  review: 'Review',
+}
+
+function getStageLabel(stage: string): string {
+  if (stage.startsWith("review:")) {
+    const lens = stage.slice(7)
+    const lensInfo = LENS_STEPPER_CONFIG[lens]
+    return lensInfo?.label ?? `Review (${lens})`
+  }
+  return STAGE_LABELS[stage] ?? stage
 }
 const STAGE_ICONS: Record<string, typeof Search> = {
   scout: Search,
   implement: Code,
   test_write: TestTube,
-  review: ClipboardCheck,
+}
+
+const LENS_STEPPER_CONFIG: Record<string, { label: string; color: string; icon: typeof Search }> = {
+  general: { label: 'General', color: 'text-foreground', icon: ClipboardCheck },
+  security: { label: 'Security', color: 'text-orange-400', icon: Shield },
+  ui: { label: 'UI', color: 'text-purple-400', icon: Monitor },
+  performance: { label: 'Perf', color: 'text-cyan-400', icon: Zap },
+  testing: { label: 'Testing', color: 'text-green-400', icon: FlaskConical },
+  error_handling: { label: 'Errors', color: 'text-red-400', icon: ShieldAlert },
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -71,30 +87,60 @@ function StageStepper({ runs, activeRunId, onSelectRun }: {
   onSelectRun: (runId: string) => void
 }) {
   // Only show runs from the current pipeline execution.
-  // Current execution starts from the latest scout run — anything before it is a prior attempt.
   const latestScout = [...runs].reverse().find(r => r.stage === 'scout')
   const currentRuns = latestScout
     ? runs.filter(r => r.created_at >= latestScout.created_at)
     : runs
 
-  // Group by stage, pick latest per stage
+  // Group by exact stage — fixed stages + individual review lenses
   const stageRuns = new Map<string, Run>()
   for (const r of currentRuns) {
     if (r.stage) stageRuns.set(r.stage, r)
   }
 
+  // Collect review lens runs in order
+  const reviewRuns: Array<{ lensKey: string; run: Run }> = []
+  for (const r of currentRuns) {
+    if (r.stage?.startsWith("review:")) {
+      const lensKey = r.stage.slice(7)
+      // Only keep latest per lens
+      const existing = reviewRuns.findIndex(rr => rr.lensKey === lensKey)
+      if (existing >= 0) reviewRuns[existing] = { lensKey, run: r }
+      else reviewRuns.push({ lensKey, run: r })
+    }
+  }
+
+  // Build step list: fixed stages + review lenses
+  type StepInfo = { key: string; label: string; icon: typeof Search; color?: string; run?: Run }
+  const steps: StepInfo[] = FIXED_STAGES.map(stage => ({
+    key: stage,
+    label: STAGE_LABELS[stage],
+    icon: STAGE_ICONS[stage],
+    run: stageRuns.get(stage),
+  }))
+
+  for (const { lensKey, run } of reviewRuns) {
+    const config = LENS_STEPPER_CONFIG[lensKey]
+    steps.push({
+      key: `review:${lensKey}`,
+      label: config?.label ?? lensKey,
+      icon: config?.icon ?? ClipboardCheck,
+      color: config?.color,
+      run,
+    })
+  }
+
   return (
     <div className="px-6 py-3 border-b border-border flex items-center gap-1 overflow-x-auto">
-      {STAGE_ORDER.map((stage, i) => {
-        const run = stageRuns.get(stage)
-        const Icon = STAGE_ICONS[stage]
+      {steps.map((step, i) => {
+        const { run, icon: Icon, label, color } = step
         const isActive = run?.id === activeRunId
         const isDone = run?.status === 'pass'
         const isFail = run?.status === 'fail'
         const isRunning = run?.status === 'running' || run?.status === 'pending'
 
         return (
-          <div key={stage} className="flex items-center gap-1">
+          <div key={step.key} className="flex items-center gap-1">
             {i > 0 && <div className="w-4 h-px bg-border mx-0.5" />}
             <button
               onClick={() => run && onSelectRun(run.id)}
@@ -113,10 +159,11 @@ function StageStepper({ runs, activeRunId, onSelectRun }: {
               <span className={cn(
                 isDone && 'text-emerald-400',
                 isFail && 'text-destructive',
-                isRunning && 'text-foreground',
+                isRunning && (color ?? 'text-foreground'),
                 !run && 'text-muted-foreground',
+                !isDone && !isFail && !isRunning && run && (color ?? 'text-foreground'),
               )}>
-                {STAGE_LABELS[stage]}
+                {label}
               </span>
             </button>
           </div>
@@ -128,12 +175,81 @@ function StageStepper({ runs, activeRunId, onSelectRun }: {
 
 // ─── Tool Call Detail (collapsible) ───────────────────────────────────────────
 
+function toolPreview(tool: string, args: string, result?: string): string {
+  try {
+    const parsed = JSON.parse(args)
+    switch (tool) {
+      case 'readFile':
+      case 'writeFile':
+      case 'replaceInFile':
+      case 'appendToFile':
+      case 'deleteFile':
+      case 'getFileInfo':
+        return parsed.path ?? ''
+      case 'listDirectory':
+        return parsed.path ?? '.'
+      case 'moveFile':
+        return `${parsed.source ?? '?'} → ${parsed.destination ?? '?'}`
+      case 'searchFiles':
+        return parsed.pattern ? `/${parsed.pattern}/${parsed.glob ? ` in ${parsed.glob}` : ''}` : ''
+      case 'runCommand':
+        return parsed.command ? parsed.command.slice(0, 80) : ''
+      case 'readRelevantFiles':
+        if (result) {
+          const count = (result.match(/^### /gm) ?? []).length
+          return count > 0 ? `${count} files` : ''
+        }
+        return ''
+      case 'saveCheckpoint': {
+        const files = parsed.files
+        return Array.isArray(files) ? `${files.length} files` : ''
+      }
+      case 'gitStatus':
+      case 'gitDiff':
+        return ''
+      default:
+        return ''
+    }
+  } catch {
+    return ''
+  }
+}
+
+function resultPreview(tool: string, result?: string): string | null {
+  if (!result) return null
+  switch (tool) {
+    case 'readFile':
+    case 'readRelevantFiles': {
+      const lines = result.split('\n').length
+      return `${lines} lines`
+    }
+    case 'searchFiles': {
+      const matches = (result.match(/\n/g) ?? []).length
+      return matches > 0 ? `${matches} matches` : 'no matches'
+    }
+    case 'runCommand': {
+      const exitMatch = result.match(/^Exit (\d+)/)
+      if (exitMatch) return `exit ${exitMatch[1]}`
+      const lines = result.split('\n').length
+      return lines > 1 ? `${lines} lines output` : result.slice(0, 60)
+    }
+    case 'replaceInFile':
+      return result.includes('Replaced') ? '✓' : result.slice(0, 40)
+    case 'writeFile':
+      return result.includes('Wrote') ? '✓' : result.slice(0, 40)
+    default:
+      return null
+  }
+}
+
 function ToolCallDetail({ call, result, duration }: {
   call: { tool: string; args: string }
   result?: { tool: string; result: string }
   duration: number
 }) {
   const [open, setOpen] = useState(false)
+  const preview = toolPreview(call.tool, call.args, result?.result)
+  const resPreview = resultPreview(call.tool, result?.result)
 
   return (
     <div className="border border-border rounded-md overflow-hidden text-xs">
@@ -144,7 +260,9 @@ function ToolCallDetail({ call, result, duration }: {
         <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
         <Wrench className="size-3 shrink-0 text-muted-foreground" />
         <span className="font-medium text-foreground">{call.tool}</span>
-        <span className="ml-auto text-muted-foreground opacity-60">{formatDuration(duration)}</span>
+        {preview && <span className="text-muted-foreground font-mono truncate max-w-[50%]">{preview}</span>}
+        {resPreview && <span className="text-muted-foreground opacity-70">→ {resPreview}</span>}
+        <span className="ml-auto text-muted-foreground opacity-60 shrink-0">{formatDuration(duration)}</span>
       </button>
       {open && (
         <div className="px-3 py-2 space-y-2 border-t border-border">
@@ -605,7 +723,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
 
         return (
           <div className="px-6 py-2 border-b border-border flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
-            {displayRun.stage && <span>Stage: <strong className="text-foreground">{STAGE_LABELS[displayRun.stage] ?? displayRun.stage}</strong></span>}
+            {displayRun.stage && <span>Stage: <strong className="text-foreground">{getStageLabel(displayRun.stage)}</strong></span>}
             <span>Status: <strong className="text-foreground">{displayRun.status}</strong></span>
             {displayRun.duration_ms != null && <span>Duration: {formatDuration(displayRun.duration_ms)}</span>}
             {totalTokens != null && <span>Tokens{isEstimated ? '~' : ''}: {totalTokens.toLocaleString()}</span>}
@@ -643,7 +761,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
             {displayRun && (displayRun.status === 'running' || displayRun.status === 'pending') && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
                 <Spinner className="size-4" />
-                {displayRun.stage ? `${STAGE_LABELS[displayRun.stage]} is working` : 'Agent is working'}
+                {displayRun.stage ? `${getStageLabel(displayRun.stage)} is working` : 'Agent is working'}
                 {steps?.length ? ` (step ${steps.length})` : ''}...
               </div>
             )}
