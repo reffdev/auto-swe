@@ -60,9 +60,9 @@ describe("routeAfterTestGate", () => {
     expect(await routeAfterTestGate(state)).toBe("review");
   });
 
-  it("routes to implement when test errors exist and retries remain", async () => {
+  it("routes to test_write when test errors exist and retries remain", async () => {
     const state = makeState({ testErrors: "FAIL src/test.ts", testRetryCount: 1 });
-    expect(await routeAfterTestGate(state)).toBe("implement");
+    expect(await routeAfterTestGate(state)).toBe("test_write");
   });
 
   it("routes to review when retries exhausted", async () => {

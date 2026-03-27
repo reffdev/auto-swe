@@ -302,7 +302,7 @@ export async function executeStageRetry(
     // Use the thread_id from the last executePipeline run to resume from checkpoint
     const threadId = lastThreadIds.get(issue.id);
     if (!threadId) {
-      throw new Error("No checkpoint found — use 'Retry All' to start a fresh pipeline");
+      throw new Error("No checkpoint found (server may have restarted since the last run) — use 'Retry All' to start a fresh pipeline");
     }
 
     // Check if we have a checkpoint to resume from

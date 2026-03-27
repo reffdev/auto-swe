@@ -414,6 +414,7 @@ export async function testWriteNode(
     issueDescription: state.issueDescription,
     gitContext,
     projectContext: projectCtx.context,
+    testErrors: state.testErrors || undefined,
   });
 
   const output = await runStage({
@@ -430,7 +431,8 @@ export async function testWriteNode(
     abortSignal,
   });
 
-  return { testWriteOutput: output };
+  // Clear test errors after test-write runs — they'll be re-checked by the test gate
+  return { testWriteOutput: output, testErrors: "" };
 }
 
 // ─── Review Node ──────────────────────────────────────────────────────────────
@@ -675,7 +677,7 @@ export async function routeAfterTestGate(state: PipelineStateType): Promise<stri
     console.log("Pipeline: test gate — exhausted retries, proceeding anyway");
     return "review";
   }
-  return "implement";
+  return "test_write";
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────

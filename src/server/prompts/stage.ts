@@ -201,6 +201,7 @@ export function constructTestWritePrompts(opts: {
   issueDescription: string;
   gitContext?: string;
   projectContext?: string;
+  testErrors?: string;
 }): { system: string; user: string } {
   const system = `# Test Writing
 
@@ -238,6 +239,20 @@ reason: [why]
 ${opts.issueDescription || "(No additional details)"}
 
 `;
+
+  if (opts.testErrors) {
+    user += `## TESTS FAILING — FIX YOUR TESTS
+
+Your previous tests are failing. The worktree ALREADY contains your test files. Fix the failures below — do NOT rewrite tests from scratch.
+
+\`\`\`
+${opts.testErrors}
+\`\`\`
+
+---
+
+`;
+  }
 
   if (opts.gitContext) {
     user += `${opts.gitContext}\n\n`;
