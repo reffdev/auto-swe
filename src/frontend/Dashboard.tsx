@@ -9,6 +9,7 @@ import { MachineDetail } from './MachineDetail'
 import { DashboardLanding } from './DashboardLanding'
 import { Planner } from './Planner'
 import { ProjectSettings } from './ProjectSettings'
+import { LlmLogs } from './LlmLogs'
 import type { Issue, Run } from './api'
 
 export function Dashboard() {
@@ -58,10 +59,11 @@ export function Dashboard() {
   // Determine what to show in the main panel
   const showPlanner = selectedProjectId && location.pathname.includes('/planner')
   const showSettings = selectedProjectId && location.pathname.includes('/settings')
-  const showMachineDetail = selectedMachine && !selectedIssue && !showPlanner && !showSettings
-  const showIssueDetail = selectedIssue && !showPlanner && !showSettings
-  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showPlanner && !showSettings
-  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail && !showPlanner && !showSettings
+  const showLlmLogs = selectedProjectId && location.pathname.includes('/llm-logs')
+  const showMachineDetail = selectedMachine && !selectedIssue && !showPlanner && !showSettings && !showLlmLogs
+  const showIssueDetail = selectedIssue && !showPlanner && !showSettings && !showLlmLogs
+  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showPlanner && !showSettings && !showLlmLogs
+  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail && !showPlanner && !showSettings && !showLlmLogs
 
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null
 
@@ -129,6 +131,11 @@ export function Dashboard() {
             project={selectedProject}
             onBack={() => navigate(`/project/${selectedProjectId}`)}
             onDataChange={refresh}
+          />
+        )}
+        {showLlmLogs && selectedProject && (
+          <LlmLogs
+            projectId={selectedProjectId!}
           />
         )}
         {showIssueDetail && selectedIssue && (
