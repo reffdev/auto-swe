@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -256,18 +256,40 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
           <p className="px-3 py-2 text-xs text-muted-foreground">No projects yet</p>
         )}
         {projects.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => onSelectProject(p.id === selectedProjectId ? null : p.id)}
-            className={cn(
-              'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
-              'hover:bg-accent',
-              selectedProjectId === p.id && 'bg-accent font-medium',
+          <div key={p.id} className="relative">
+            <button
+              onClick={() => onSelectProject(p.id === selectedProjectId ? null : p.id)}
+              className={cn(
+                'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
+                'hover:bg-accent',
+                selectedProjectId === p.id && 'bg-accent font-medium',
+              )}
+            >
+              <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate flex-1">{p.name}</span>
+            </button>
+            {selectedProjectId === p.id && (
+              <div className="absolute left-0 top-0 bottom-0 -ml-[1px] w-[1px] bg-border" />
             )}
-          >
-            <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate">{p.name}</span>
-          </button>
+            {selectedProjectId === p.id && (
+              <div className="pl-6 space-y-0.5 mt-1">
+                <button
+                  onClick={() => navigate(`/project/${p.id}`)}
+                  className="w-full text-left px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors flex items-center gap-2"
+                >
+                  <FolderGit2 className="size-3" />
+                  Issues
+                </button>
+                <button
+                  onClick={() => navigate(`/project/${p.id}/llm-logs`)}
+                  className="w-full text-left px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors flex items-center gap-2"
+                >
+                  <Activity className="size-3" />
+                  LLM Logs
+                </button>
+              </div>
+            )}
+          </div>
         ))}
       </nav>
 
