@@ -448,7 +448,8 @@ export async function implementNode(
     initialSteps: infoSteps,
   });
 
-  return { implementOutput: output };
+  // Clear gate errors after implement runs — they'll be re-checked by the gates
+  return { implementOutput: output, buildErrors: "", testErrors: "" };
 }
 
 // ─── Test-Write Node ──────────────────────────────────────────────────────────
@@ -668,23 +669,28 @@ export async function buildGateNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { project } = config.configurable as PipelineConfig;
+  const { ctx, project } = config.configurable as PipelineConfig;
 
   if (!project.build_command) {
     console.log("Pipeline: build gate — no build command configured, skipping");
     return { buildErrors: "", buildRetryCount: 0 };
   }
 
+  const run = ctx.db.createRun({ issue_id: state.issueId, stage: "build_gate" });
+  ctx.db.updateRun(run.id, { machine_id: state.machineId, status: "running", started_at: new Date().toISOString() });
+
   console.log(`Pipeline: build gate — running: ${project.build_command}`);
   const result = runAndExtractErrors(project.build_command, state.worktreePath);
 
   if (result === "success") {
     console.log("Pipeline: build gate — passed");
+    ctx.db.updateRun(run.id, { status: "pass", output: "Build passed", completed_at: new Date().toISOString() });
     return { buildErrors: "", buildRetryCount: 0 };
   }
 
   const retryCount = state.buildRetryCount + 1;
   console.log(`Pipeline: build gate — FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
+  ctx.db.updateRun(run.id, { status: "fail", output: result, completed_at: new Date().toISOString() });
   return { buildErrors: result, buildRetryCount: retryCount };
 }
 
@@ -705,23 +711,28 @@ export async function testGateNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { project } = config.configurable as PipelineConfig;
+  const { ctx, project } = config.configurable as PipelineConfig;
 
   if (!project.test_command) {
     console.log("Pipeline: test gate — no test command configured, skipping");
     return { testErrors: "", testRetryCount: 0 };
   }
 
+  const run = ctx.db.createRun({ issue_id: state.issueId, stage: "test_gate" });
+  ctx.db.updateRun(run.id, { machine_id: state.machineId, status: "running", started_at: new Date().toISOString() });
+
   console.log(`Pipeline: test gate — running: ${project.test_command}`);
   const result = runAndExtractErrors(project.test_command, state.worktreePath);
 
   if (result === "success") {
     console.log("Pipeline: test gate — passed");
+    ctx.db.updateRun(run.id, { status: "pass", output: "Tests passed", completed_at: new Date().toISOString() });
     return { testErrors: "", testRetryCount: 0 };
   }
 
   const retryCount = state.testRetryCount + 1;
   console.log(`Pipeline: test gate — FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);
+  ctx.db.updateRun(run.id, { status: "fail", output: result, completed_at: new Date().toISOString() });
   return { testErrors: result, testRetryCount: retryCount };
 }
 

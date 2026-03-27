@@ -28,11 +28,13 @@ interface IssueDetailProps {
   onDataChange: () => void
 }
 
-const FIXED_STAGES = ['scout', 'implement', 'test_write'] as const
+const FIXED_STAGES = ['scout', 'implement', 'build_gate', 'test_write', 'test_gate'] as const
 const STAGE_LABELS: Record<string, string> = {
   scout: 'Scout',
   implement: 'Implement',
+  build_gate: 'Build',
   test_write: 'Test-Write',
+  test_gate: 'Tests',
 }
 
 function getStageLabel(stage: string): string {
@@ -46,7 +48,9 @@ function getStageLabel(stage: string): string {
 const STAGE_ICONS: Record<string, typeof Search> = {
   scout: Search,
   implement: Code,
+  build_gate: ClipboardCheck,
   test_write: TestTube,
+  test_gate: FlaskConical,
 }
 
 const LENS_STEPPER_CONFIG: Record<string, { label: string; color: string; icon: typeof Search }> = {

@@ -74,7 +74,7 @@ export function makeStoryContextTool(db: Db, issueId: string) {
 
         // Try exact title match first, then fuzzy
         const exact = siblings.find(s => s.title.toLowerCase() === query.toLowerCase());
-        const matches = exact ? [exact] : siblings.filter(s => fuzzyMatch(s.title, query));
+        const matches = (exact ? [exact] : siblings.filter(s => fuzzyMatch(s.title, query))).slice(0, 3);
 
         if (matches.length === 0) {
           // Try matching against descriptions too
