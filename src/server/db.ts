@@ -49,6 +49,7 @@ export class Db {
         id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL,
         git_remote TEXT, git_server_token TEXT,
         git_default_branch TEXT NOT NULL DEFAULT 'main', model_id TEXT,
+        build_command TEXT, test_command TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS issues (
@@ -104,6 +105,8 @@ export class Db {
       "ALTER TABLE issues ADD COLUMN parent_id TEXT",
       "ALTER TABLE issues ADD COLUMN sequence INTEGER",
       "ALTER TABLE issues ADD COLUMN depends_on TEXT",
+      "ALTER TABLE projects ADD COLUMN build_command TEXT",
+      "ALTER TABLE projects ADD COLUMN test_command TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }

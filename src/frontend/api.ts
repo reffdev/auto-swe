@@ -26,6 +26,8 @@ export interface Project {
   git_server_token: string | null;
   git_default_branch: string;
   model_id: string | null;
+  build_command: string | null;
+  test_command: string | null;
   created_at: string;
 }
 

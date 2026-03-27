@@ -9,6 +9,7 @@ const router = createHashRouter([
   { path: '/project/:projectId', element: <Dashboard /> },
   { path: '/project/:projectId/issue/:issueId', element: <Dashboard /> },
   { path: '/project/:projectId/planner/:conversationId?', element: <Dashboard /> },
+  { path: '/project/:projectId/settings', element: <Dashboard /> },
   { path: '/machine/:machineId', element: <Dashboard /> },
 ])
 

@@ -28,7 +28,7 @@ const CODING_STANDARDS = `
 - Maintain existing code style — match the patterns already in the file
 - Write concise, clear code
 - NEVER add inline comments unless a core maintainer would not understand the code without them
-- After making changes, run the build (\`runCommand\`) to verify your changes compile
+- After making changes, call \`checkBuild\` to verify your changes compile
 - Any docstrings must be VERY concise (1 line preferred)
 - Never add copyright/license headers unless requested`;
 
@@ -128,7 +128,7 @@ ${CODING_STANDARDS}
 ## Instructions
 
 - Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files
-- Run builds/tests to verify your changes
+- Call \`checkBuild\` to verify your changes compile
 - Do NOT commit, push, or write tests
 - When done, run \`gitStatus\` and \`gitDiff\` to verify
 
@@ -185,7 +185,7 @@ ${CODING_STANDARDS}
 1. Review the git diff in the user message to understand what changed
 2. Find existing test files to match the project's patterns (framework, naming, style)
 3. Write tests covering the key behaviors introduced or changed
-4. Run the tests with \`runCommand\` and fix any failures
+4. Call \`checkTests\` to run the tests — fix any failures
 5. Do NOT modify implementation files, commit, or push
 
 ## Output
@@ -327,8 +327,8 @@ ${lens.focus}
 ## Steps
 
 1. Read the changed files
-2. Run the specific unit tests from the test-write output (e.g., \`npx jest path/to/test.ts\`, NOT \`npm test\`)
-3. Optionally run linter or build (\`npm run build\`, \`npm run lint\`)
+2. Call \`checkTests\` to verify tests pass
+3. Call \`checkBuild\` to verify the build compiles
 4. Produce your verdict
 
 ## Verdict

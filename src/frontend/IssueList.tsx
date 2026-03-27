@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers } from 'lucide-react'
+import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -270,6 +270,9 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
           ))}
         </div>
         <div className="flex items-center gap-2">
+          <Button size="icon-sm" variant="ghost" onClick={() => navigate(`/project/${projectId}/settings`)}>
+            <Settings className="size-3.5" />
+          </Button>
           <Button size="sm" variant="outline" onClick={() => navigate(`/project/${projectId}/planner`)}>
             <MessageSquarePlus className="size-3.5 mr-1" />
             Plan with AI

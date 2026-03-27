@@ -36,6 +36,7 @@ import {
   makeTestWriteTools,
   makeVerifyTools,
   lookupDocs,
+  makeBuildCheckTools,
 } from "../tools";
 import {
   constructScoutPrompt,
@@ -386,7 +387,7 @@ export async function implementNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
+  const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "implement" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
@@ -430,6 +431,7 @@ export async function implementNode(
     userPrompt: implPrompts.user,
     tools: {
       ...makeFilesystemTools(state.worktreePath),
+      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }),
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
       lookupDocs,
     } as ToolSet,
@@ -448,7 +450,7 @@ export async function testWriteNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
+  const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "test_write" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
@@ -474,7 +476,7 @@ export async function testWriteNode(
     model, modelId: state.modelId,
     systemPrompt: testPrompts.system,
     userPrompt: testPrompts.user,
-    tools: { ...makeTestWriteTools(state.worktreePath) } as ToolSet,
+    tools: { ...makeTestWriteTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath) } as ToolSet,
     maxSteps: TEST_WRITE_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
@@ -489,7 +491,7 @@ export async function reviewNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
+  const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
   const lensKey = state.reviewLenses[state.currentLensIndex] ?? "general";
   const lens = REVIEW_LENSES[lensKey] ?? REVIEW_LENSES.general;
 
@@ -518,7 +520,7 @@ export async function reviewNode(
     model, modelId: state.modelId,
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.user,
-    tools: { ...makeVerifyTools(state.worktreePath) } as ToolSet,
+    tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath) } as ToolSet,
     maxSteps: REVIEW_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,

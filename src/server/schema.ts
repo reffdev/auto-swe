@@ -29,6 +29,8 @@ export const projects = sqliteTable("projects", {
   git_server_token: text("git_server_token"),
   git_default_branch: text("git_default_branch").notNull().default("main"),
   model_id: text("model_id"),
+  build_command: text("build_command"),
+  test_command: text("test_command"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 

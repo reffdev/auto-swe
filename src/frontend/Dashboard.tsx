@@ -8,6 +8,7 @@ import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
 import { DashboardLanding } from './DashboardLanding'
 import { Planner } from './Planner'
+import { ProjectSettings } from './ProjectSettings'
 import type { Issue, Run } from './api'
 
 export function Dashboard() {
@@ -56,10 +57,13 @@ export function Dashboard() {
 
   // Determine what to show in the main panel
   const showPlanner = selectedProjectId && location.pathname.includes('/planner')
-  const showMachineDetail = selectedMachine && !selectedIssue && !showPlanner
-  const showIssueDetail = selectedIssue && !showPlanner
-  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showPlanner
-  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail && !showPlanner
+  const showSettings = selectedProjectId && location.pathname.includes('/settings')
+  const showMachineDetail = selectedMachine && !selectedIssue && !showPlanner && !showSettings
+  const showIssueDetail = selectedIssue && !showPlanner && !showSettings
+  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showPlanner && !showSettings
+  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail && !showPlanner && !showSettings
+
+  const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null
 
   return (
     <TooltipProvider>
@@ -118,6 +122,13 @@ export function Dashboard() {
           <Planner
             projectId={selectedProjectId}
             conversationId={conversationId}
+          />
+        )}
+        {showSettings && selectedProject && (
+          <ProjectSettings
+            project={selectedProject}
+            onBack={() => navigate(`/project/${selectedProjectId}`)}
+            onDataChange={refresh}
           />
         )}
         {showIssueDetail && selectedIssue && (
