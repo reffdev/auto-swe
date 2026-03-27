@@ -68,7 +68,9 @@ story: 2
 title: [Story title]
 depends_on: 1
 description:
-[This story depends on story 1 completing first]
+[This story depends on story 1 completing first.
+IMPORTANT: When referencing other stories, use their title, not their number.
+e.g. "shall integrate with the API from 'Add user auth endpoint'" not "from Story 1"]
 review_lenses: general, ui
 
 story: 3
@@ -83,6 +85,7 @@ review_lenses: general
 
 - Each story must be independently implementable and testable
 - Use \`depends_on\` to declare which stories must complete first (by number). Stories without shared dependencies can run in parallel.
+- When a story's description references another story, use the other story's **title** — not "Story 1" or "the previous story". Each story is implemented independently and the agent has no concept of story numbers.
 - Do NOT split work that touches the same files into separate stories — that causes merge conflicts
 - Let the complexity dictate the number of stories. A small feature might be 2, a large initiative could be 10+.
 - Bias toward fewer, larger stories — the agent handles more per pass than you might expect

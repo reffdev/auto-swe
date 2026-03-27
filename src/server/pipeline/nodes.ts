@@ -38,6 +38,7 @@ import {
   lookupDocs,
   makeBuildCheckTools,
   makePackageCheckTool,
+  makeStoryContextTool,
   runAndExtractErrors,
 } from "../tools";
 import {
@@ -298,7 +299,7 @@ export async function scoutNode(
         model, modelId: state.modelId,
         systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
         userPrompt: userIssue + contextSection,
-        tools: { ...makeReadOnlyTools(state.worktreePath, budget), saveCheckpoint: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
+        tools: { ...makeReadOnlyTools(state.worktreePath, budget), ...makeStoryContextTool(ctx.db, state.issueId), saveCheckpoint: createSubmitScoutReportTool(scoutStageAbort) } as ToolSet,
         maxSteps: SCOUT_STEP_LIMIT,
         timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
         abortSignal: scoutStageAbort.signal,
@@ -437,6 +438,7 @@ export async function implementNode(
       ...makeFilesystemTools(state.worktreePath),
       ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }),
       ...makePackageCheckTool(state.worktreePath),
+      ...makeStoryContextTool(ctx.db, state.issueId),
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
       lookupDocs,
     } as ToolSet,
