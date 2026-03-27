@@ -9,7 +9,7 @@ import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
-import { executePipeline, executeStageRetry, cancelPipeline, type PipelineContext } from "./pipeline/index";
+import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type PipelineContext } from "./pipeline/index";
 
 import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
 import { getGenerationSpeed } from "./stats";
@@ -459,6 +459,10 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     // If cancelled, the pipeline's catch block will set status to "failed"
     res.json({ cancelled: true, issue: db.getIssue(issue.id) });
+  });
+
+  router.get("/issues/:id/has-checkpoint", (req, res) => {
+    res.json({ hasCheckpoint: hasCheckpoint(req.params.id) });
   });
 
   router.post("/issues/:id/retry-stage", (req, res) => {

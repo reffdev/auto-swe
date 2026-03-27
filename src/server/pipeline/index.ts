@@ -153,6 +153,10 @@ export function getActivePipelineIds(): string[] {
   return [...activePipelines.keys()];
 }
 
+export function hasCheckpoint(issueId: string): boolean {
+  return lastThreadIds.has(issueId);
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 export interface PipelineContext {

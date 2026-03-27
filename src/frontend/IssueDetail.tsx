@@ -553,7 +553,17 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
   const [viewingRunId, setViewingRunId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'pipeline' | 'diff'>('pipeline')
   const [diffEverOpened, setDiffEverOpened] = useState(false)
+  const [checkpointAvailable, setCheckpointAvailable] = useState(false)
   const { allRuns, activeRun, activeRunOutput } = useLiveOutput(pollRuns)
+
+  // Check if a checkpoint exists for failed issues
+  useEffect(() => {
+    if (issue.status === 'failed') {
+      api.checkHasCheckpoint(issue.id).then(r => setCheckpointAvailable(r.hasCheckpoint)).catch(() => setCheckpointAvailable(false))
+    } else {
+      setCheckpointAvailable(false)
+    }
+  }, [issue.status, issue.id])
 
   // Auto-switch to diff tab when PR is ready for review
   const hasBranch = !!issue.git_branch
@@ -699,7 +709,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
               <RotateCcw className="size-3.5 mr-1" />
               {actionLoading === 'retry' ? 'Retrying...' : 'Retry All'}
             </Button>
-            {allRuns.some(r => r.stage) && (
+            {checkpointAvailable && (
               <Button
                 size="sm"
                 variant="outline"

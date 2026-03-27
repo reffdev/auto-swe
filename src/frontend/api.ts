@@ -208,6 +208,10 @@ export function retryStage(id: string): Promise<{ issue: Issue }> {
   return json(`/api/issues/${id}/retry-stage`, { method: "POST" });
 }
 
+export function checkHasCheckpoint(id: string): Promise<{ hasCheckpoint: boolean }> {
+  return json(`/api/issues/${id}/has-checkpoint`);
+}
+
 // ─── Issue runs (all stages) ──────────────────────────────────────────────────
 
 export function getIssueRuns(issueId: string): Promise<Run[]> {
