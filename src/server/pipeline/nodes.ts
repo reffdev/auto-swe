@@ -35,6 +35,7 @@ import {
   makeReadOnlyTools,
   makeTestWriteTools,
   makeVerifyTools,
+  lookupDocs,
 } from "../tools";
 import {
   constructScoutPrompt,
@@ -430,6 +431,7 @@ export async function implementNode(
     tools: {
       ...makeFilesystemTools(state.worktreePath),
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
+      lookupDocs,
     } as ToolSet,
     maxSteps: IMPLEMENT_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,

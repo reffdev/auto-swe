@@ -13,3 +13,4 @@ export {
 } from "./filesystem";
 export { fetchUrlTool } from "./fetch";
 export { makeTodoTool } from "./todo";
+export { lookupDocs } from "./context7";
