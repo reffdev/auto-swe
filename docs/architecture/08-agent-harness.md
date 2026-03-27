@@ -82,50 +82,27 @@ Key points:
 
 The harness creates different tool sets per stage to enforce boundaries:
 
-```mermaid
-graph LR
-    subgraph Scout["Scout Tools"]
-        SR[readFile]
-        SS[searchFiles]
-        SL[listDirectory]
-        SI[getFileInfo]
-        SC[saveCheckpoint]
-    end
-
-    subgraph Implement["Implement Tools"]
-        IR[readFile]
-        IW[writeFile]
-        IS[searchFiles]
-        IL[listDirectory]
-        IC[runCommand]
-        IG[gitStatus / gitDiff]
-        IE[replaceInFile]
-        IA[appendToFile]
-        ID[deleteFile]
-        IM[moveFile]
-        IF[getFileInfo]
-        IRR[readRelevantFiles]
-    end
-
-    subgraph TestWrite["Test-Write Tools"]
-        TR[readFile]
-        TW[writeFile]
-        TS[searchFiles]
-        TL[listDirectory]
-        TC[runCommand]
-        TA[appendToFile]
-        TI[getFileInfo]
-    end
-
-    subgraph Review["Review Tools"]
-        RR[readFile]
-        RS[searchFiles]
-        RL[listDirectory]
-        RC[runCommand]
-        RG[gitStatus / gitDiff]
-        RI[getFileInfo]
-    end
-```
+| Tool | Scout | Implement | Test-Write | Review |
+|------|:-----:|:---------:|:----------:|:------:|
+| readFile | ✓ | ✓ | ✓ | ✓ |
+| searchFiles | ✓ | ✓ | ✓ | ✓ |
+| listDirectory | ✓ | ✓ | ✓ | ✓ |
+| getFileInfo | ✓ | ✓ | ✓ | ✓ |
+| writeFile | | ✓ | ✓ | |
+| replaceInFile | | ✓ | | |
+| appendToFile | | ✓ | ✓ | |
+| deleteFile | | ✓ | | |
+| moveFile | | ✓ | | |
+| runCommand | | ✓ | ✓ | ✓ |
+| gitStatus / gitDiff | | ✓ | | ✓ |
+| saveCheckpoint | ✓ | | | |
+| readRelevantFiles | | ✓ | | |
+| checkBuild | | ✓ | ✓ | ✓ |
+| checkTests | | ✓ | ✓ | ✓ |
+| checkPackage | | ✓ | ✓ | |
+| lookupDocs | | ✓ | ✓ | |
+| getRelatedStories | ✓ | ✓ | | |
+| findStory | ✓ | ✓ | | |
 
 ## Prompt Strategy
 
@@ -163,7 +140,13 @@ Stages don't share context directly — the harness passes data through pipeline
 graph LR
     Scout -->|"scoutBrief\n(JSON manifest)"| Resolve["Server resolves\nto file list"]
     Resolve -->|"file list in\nuser prompt"| Implement
+    Implement -->|"code changes\nin worktree"| BuildGate["Build Gate\n(server-side)"]
+    BuildGate -->|"buildErrors\nor pass"| Implement
+    BuildGate -->|pass| TestWrite
     Implement -->|"implementOutput\n(text summary)"| TestWrite
+    TestWrite -->|"test changes\nin worktree"| TestGate["Test Gate\n(server-side)"]
+    TestGate -->|"testErrors\nor pass"| Implement
+    TestGate -->|pass| Review
     TestWrite -->|"testWriteOutput\n(text summary)"| Review
 
     GitContext["captureGitContext()\ngit status + diff"] -->|injected| TestWrite
@@ -173,7 +156,10 @@ graph LR
     ProjectContext -->|injected| Review
 ```
 
-Note: `implementOutput` and `testWriteOutput` are only the LLM's **text** responses — not the full tool call history. The actual code changes live in the worktree (visible via `gitDiff`).
+Notes:
+- `implementOutput` and `testWriteOutput` are only the LLM's **text** responses — not the full tool call history. The actual code changes live in the worktree (visible via `gitDiff`).
+- Build/test errors are cleared when implement re-runs, preventing stale error accumulation.
+- Gates only run when the project has `build_command` / `test_command` configured.
 
 ## Isolation Model
 
@@ -224,10 +210,12 @@ graph TD
     LLMError --> StageFail
 
     StageFail -->|"Scout empty"| PipelineFail[Pipeline Fail]
-    StageFail -->|"Review reject\n+ retries left"| RetryImpl[Retry Implement]
-    StageFail -->|"Review reject\n+ retries exhausted"| NextLens[Next Lens]
     StageFail -->|"Other stage"| PipelineFail
 
+    StagePass -->|"Build gate fail\n(up to 3x)"| RetryImpl[Back to Implement]
+    StagePass -->|"Test gate fail\n(up to 3x)"| RetryImpl
+    StagePass -->|"Review reject"| RetryImpl
+    StagePass -->|"Review reject\n+ retries exhausted"| NextLens[Next Lens]
     StagePass -->|"More lenses"| NextReview[Next Review Lens]
     StagePass -->|"All lenses pass"| GitOps[GitOps]
 ```

@@ -9,6 +9,8 @@ erDiagram
         string workdir
         string git_remote
         string model_id
+        string build_command
+        string test_command
     }
 
     ISSUE ||--o{ RUN : has
@@ -64,9 +66,9 @@ erDiagram
 | Table | Purpose |
 |-------|---------|
 | `machines` | LLM server endpoints (base_url, model_id, status, context_limit) |
-| `projects` | Git repos to work on (workdir, remote, default branch) |
+| `projects` | Git repos to work on (workdir, remote, default branch, build/test commands) |
 | `issues` | Work items — standalone, epic parents, or epic children |
-| `runs` | One per pipeline stage execution (scout, implement, test_write, review:lens, git_ops) |
+| `runs` | One per pipeline stage execution (scout, implement, build_gate, test_write, test_gate, review:lens, git_ops) |
 | `llm_requests` | Per-step LLM call logs with token counts and duration |
 | `planner_conversations` | Interactive planning sessions |
 | `planner_messages` | Messages within planning conversations |

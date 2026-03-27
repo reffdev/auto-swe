@@ -27,8 +27,22 @@ export interface ApiOptions {
   pipelineCtx?: PipelineContext;
 }
 
+// Compute version once at startup — cheap to serve, no git calls per request
+const STARTUP_COMMIT = (() => {
+  try {
+    return spawnSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf-8", shell: true }).stdout?.trim() ?? "unknown";
+  } catch { return "unknown"; }
+})();
+const STARTUP_TIME = Date.now();
+
 export function createApiRouter(db: Db, options?: ApiOptions): Router {
   const router = Router();
+
+  // ─── Version (lightweight, for restart detection) ──────────────────────
+
+  router.get("/version", (_req, res) => {
+    res.json({ commit: STARTUP_COMMIT, startedAt: STARTUP_TIME });
+  });
 
   // ─── Consolidated poll ──────────────────────────────────────────────────
 

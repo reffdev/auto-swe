@@ -22,51 +22,50 @@ function RestartOverlay() {
       setDots(d => d.length >= 3 ? '' : d + '.')
     }, 500)
 
-    // Capture the current commit before restart so we can verify it changed
-    let commitBefore = ''
-    fetch('/api/server-info').then(r => r.json()).then(d => { commitBefore = d.commit }).catch(() => {})
-
     let cancelled = false
-    const check = async () => {
-      // Phase 1: wait for server to go down (process.exit after build)
+    let versionBefore: { commit: string; startedAt: number } | null = null
+
+    const run = async () => {
+      // Capture current version
+      try {
+        const res = await fetch('/api/version', { signal: AbortSignal.timeout(3000) })
+        if (res.ok) versionBefore = await res.json()
+      } catch { /* server may already be restarting */ }
+
       setStatus('Building...')
-      let sawDown = false
+
+      // Poll /api/version until we get a response with a different startedAt
+      // (different startedAt = server restarted, even if commit is the same)
       while (!cancelled) {
         await new Promise(r => setTimeout(r, 2000))
         try {
-          const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
-          if (res.ok) continue
-        } catch { /* server is down */ }
-        sawDown = true
-        break
-      }
+          const res = await fetch('/api/version', { signal: AbortSignal.timeout(3000) })
+          if (!res.ok) {
+            setStatus('Restarting...')
+            continue
+          }
+          const version = await res.json() as { commit: string; startedAt: number }
 
-      if (!sawDown) return
+          // Server is up — check if it's a new instance
+          if (!versionBefore || version.startedAt !== versionBefore.startedAt) {
+            const updated = versionBefore && version.commit !== versionBefore.commit
+            setDetails(`${version.commit}${updated ? ' (updated)' : ' (restarted)'}`)
+            setStatus('Server is back! Reloading...')
+            await new Promise(r => setTimeout(r, 1000))
+            window.location.reload()
+            return
+          }
 
-      // Phase 2: wait for new server to come back
-      setStatus('Restarting...')
-      while (!cancelled) {
-        await new Promise(r => setTimeout(r, 2000))
-        try {
-          const res = await fetch('/health', { signal: AbortSignal.timeout(3000) })
-          if (!res.ok) continue
-
-          // Verify the update actually applied
-          try {
-            const info = await (await fetch('/api/server-info')).json()
-            const updated = commitBefore && info.commit !== commitBefore
-            setDetails(`${info.branch}@${info.commit}${updated ? ' (updated)' : ''}`)
-          } catch { /* fine */ }
-
-          setStatus('Server is back! Reloading...')
-          await new Promise(r => setTimeout(r, 1000))
-          window.location.reload()
-          return
-        } catch { /* still down */ }
+          // Same instance still running — build/restart hasn't happened yet
+          setStatus('Building...')
+        } catch {
+          // Server is down
+          setStatus('Restarting...')
+        }
       }
     }
 
-    const timer = setTimeout(check, 1000)
+    const timer = setTimeout(run, 1000)
 
     return () => {
       cancelled = true
