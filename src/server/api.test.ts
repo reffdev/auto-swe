@@ -488,3 +488,354 @@ describe("validation edge cases", () => {
     expect(res.body).toHaveLength(1);
   });
 });
+
+// ─── Grouped LLM Logs ────────────────────────────────────────────────────────
+
+describe("GET /api/llm-logs/grouped", () => {
+  it("returns empty groups when no LLM requests exist", async () => {
+    const res = await request(app).get("/api/llm-logs/grouped");
+    expect(res.status).toBe(200);
+    expect(res.body.groups).toEqual([]);
+    expect(res.body.totalGroups).toBe(0);
+    expect(res.body.totalCalls).toBe(0);
+  });
+
+  it("returns grouped LLM requests by issue", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue1 = db.createIssue({ project_id: p.id, title: "Issue 1" });
+    const issue2 = db.createIssue({ project_id: p.id, title: "Issue 2" });
+    
+    // Create LLM requests for issue1
+    db.createLlmRequest({ 
+      issue_id: issue1.id, 
+      input_text: "Hello", 
+      output_text: "Hi",
+      model_id: "gpt-4",
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      duration_ms: 200
+    });
+    db.createLlmRequest({ 
+      issue_id: issue1.id, 
+      input_text: "How are you?", 
+      output_text: "I'm good",
+      model_id: "gpt-4",
+      prompt_tokens: 15,
+      completion_tokens: 10,
+      duration_ms: 300
+    });
+    
+    // Create LLM requests for issue2
+    db.createLlmRequest({ 
+      issue_id: issue2.id, 
+      input_text: "Test", 
+      output_text: "Passed",
+      model_id: "gpt-3.5",
+      prompt_tokens: 5,
+      completion_tokens: 3,
+      duration_ms: 150
+    });
+    
+    // Create unassigned LLM request
+    db.createLlmRequest({ 
+      input_text: "Unassigned", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      prompt_tokens: 8,
+      completion_tokens: 4,
+      duration_ms: 100
+    });
+
+    const res = await request(app).get("/api/llm-logs/grouped");
+    expect(res.status).toBe(200);
+    
+    const { groups, totalGroups, totalCalls } = res.body;
+    expect(totalGroups).toBe(3); // issue1, issue2, unassigned
+    expect(totalCalls).toBe(4);
+    expect(groups).toHaveLength(3);
+    
+    // Find groups by issue title
+    const issue1Group = groups.find(g => g.issue_title === "Issue 1");
+    const issue2Group = groups.find(g => g.issue_title === "Issue 2");
+    const unassignedGroup = groups.find(g => g.issue_id === null);
+    
+    expect(issue1Group).toBeDefined();
+    expect(issue1Group!.call_count).toBe(2);
+    expect(issue1Group!.calls).toHaveLength(2);
+    expect(issue1Group!.calls[0].model).toBe("gpt-4");
+    expect(issue1Group!.calls[0].status).toBe("success");
+    expect(issue1Group!.calls[0].prompt_preview).toBe("Hello");
+    expect(issue1Group!.calls[0].response_preview).toBe("Hi");
+    
+    expect(issue2Group).toBeDefined();
+    expect(issue2Group!.call_count).toBe(1);
+    expect(issue2Group!.calls[0].model).toBe("gpt-3.5");
+    
+    expect(unassignedGroup).toBeDefined();
+    expect(unassignedGroup!.call_count).toBe(1);
+    expect(unassignedGroup!.issue_id).toBeNull();
+    expect(unassignedGroup!.issue_title).toBeNull();
+  });
+
+  it("filters by status (success/error)", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    // Create success request
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Success", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      duration_ms: 200
+    });
+    
+    // Create error request (no duration_ms)
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Error", 
+      output_text: "Failed",
+      model_id: "gpt-4"
+    });
+
+    // Filter by success
+    let res = await request(app).get("/api/llm-logs/grouped?status=success");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+    expect(res.body.groups[0].calls[0].status).toBe("success");
+
+    // Filter by error
+    res = await request(app).get("/api/llm-logs/grouped?status=error");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+    expect(res.body.groups[0].calls[0].status).toBe("error");
+  });
+
+  it("filters by model", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Model 1", 
+      output_text: "Response",
+      model_id: "gpt-4"
+    });
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Model 2", 
+      output_text: "Response",
+      model_id: "gpt-3.5"
+    });
+
+    const res = await request(app).get("/api/llm-logs/grouped?model=gpt-4");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+    expect(res.body.groups[0].calls[0].model).toBe("gpt-4");
+  });
+
+  it("filters by multiple models", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Model 1", 
+      output_text: "Response",
+      model_id: "gpt-4"
+    });
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Model 2", 
+      output_text: "Response",
+      model_id: "gpt-3.5"
+    });
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Model 3", 
+      output_text: "Response",
+      model_id: "claude-3"
+    });
+
+    const res = await request(app).get("/api/llm-logs/grouped?model=gpt-4&model=gpt-3.5");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(2);
+    const models = res.body.groups[0].calls.map((c: any) => c.model);
+    expect(models).toContain("gpt-4");
+    expect(models).toContain("gpt-3.5");
+  });
+
+  it("filters by date range", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Old", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      created_at: "2024-01-01T00:00:00Z"
+    });
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "New", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      created_at: "2024-06-01T00:00:00Z"
+    });
+
+    // Filter by date range
+    const res = await request(app).get("/api/llm-logs/grouped?start_date=2024-05-01&end_date=2024-07-01");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+    expect(res.body.groups[0].calls[0].prompt_preview).toBe("New");
+  });
+
+  it("searches across issue title, prompt, response, model, and status", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Bug Fix", description: "Fix the bug" });
+    
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Fix the bug in the code", 
+      output_text: "Applied fix",
+      model_id: "gpt-4",
+      duration_ms: 200
+    });
+
+    // Search by issue title
+    let res = await request(app).get("/api/llm-logs/grouped?search=Bug");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+
+    // Search by prompt
+    res = await request(app).get("/api/llm-logs/grouped?search=bug");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+
+    // Search by model
+    res = await request(app).get("/api/llm-logs/grouped?search=gpt-4");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+  });
+
+  it("paginates results", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    // Create 5 LLM requests
+    for (let i = 0; i < 5; i++) {
+      db.createLlmRequest({ 
+        issue_id: issue.id, 
+        input_text: `Request ${i}`, 
+        output_text: `Response ${i}`,
+        model_id: "gpt-4",
+        duration_ms: 100 + i * 50
+      });
+    }
+
+    // First page (page_size=2)
+    let res = await request(app).get("/api/llm-logs/grouped?page=1&page_size=2");
+    expect(res.status).toBe(200);
+    expect(res.body.groups[0].call_count).toBe(2);
+    expect(res.body.totalCalls).toBe(5);
+    expect(res.body.totalGroups).toBe(1);
+
+    // Second page
+    res = await request(app).get("/api/llm-logs/grouped?page=2&page_size=2");
+    expect(res.status).toBe(200);
+    expect(res.body.groups[0].call_count).toBe(2);
+    expect(res.body.totalCalls).toBe(5);
+
+    // Third page (only 1 left)
+    res = await request(app).get("/api/llm-logs/grouped?page=3&page_size=2");
+    expect(res.status).toBe(200);
+    expect(res.body.groups[0].call_count).toBe(1);
+    expect(res.body.totalCalls).toBe(5);
+  });
+
+  it("returns calls sorted by timestamp descending", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    // Create LLM requests with different timestamps
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "First", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      duration_ms: 100,
+      created_at: "2024-01-01T00:00:00Z"
+    });
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Second", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      duration_ms: 200,
+      created_at: "2024-01-02T00:00:00Z"
+    });
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Third", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      duration_ms: 300,
+      created_at: "2024-01-03T00:00:00Z"
+    });
+
+    const res = await request(app).get("/api/llm-logs/grouped");
+    expect(res.status).toBe(200);
+    
+    const calls = res.body.groups[0].calls;
+    expect(calls).toHaveLength(3);
+    // Should be sorted by timestamp descending (most recent first)
+    expect(calls[0].prompt_preview).toBe("Third");
+    expect(calls[1].prompt_preview).toBe("Second");
+    expect(calls[2].prompt_preview).toBe("First");
+  });
+
+  it("truncates prompt and response previews to 200 chars", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    const longText = "A".repeat(300);
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: longText, 
+      output_text: longText,
+      model_id: "gpt-4",
+      duration_ms: 100
+    });
+
+    const res = await request(app).get("/api/llm-logs/grouped");
+    expect(res.status).toBe(200);
+    
+    const call = res.body.groups[0].calls[0];
+    expect(call.prompt_preview.length).toBe(200);
+    expect(call.response_preview.length).toBe(200);
+  });
+
+  it("handles empty search string", async () => {
+    const p = db.createProject({ name: "test", workdir: testDir });
+    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
+    
+    db.createLlmRequest({ 
+      issue_id: issue.id, 
+      input_text: "Test", 
+      output_text: "Response",
+      model_id: "gpt-4",
+      duration_ms: 100
+    });
+
+    const res = await request(app).get("/api/llm-logs/grouped?search=");
+    expect(res.status).toBe(200);
+    expect(res.body.totalCalls).toBe(1);
+  });
+
+  it("returns error on invalid parameters", async () => {
+    const res = await request(app).get("/api/llm-logs/grouped?page=invalid");
+    expect(res.status).toBe(200); // Should default to page 1
+    expect(res.body.groups).toBeDefined();
+  });
+});

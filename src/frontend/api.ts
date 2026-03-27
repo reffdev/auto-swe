@@ -72,6 +72,35 @@ export interface PollResponse {
   runs: Run[];
 }
 
+export interface GroupedLlmLogCall {
+  id: string;
+  timestamp: string;
+  model: string;
+  status: "success" | "error";
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+  prompt_preview: string;
+  response_preview: string;
+}
+
+export interface GroupedLlmLog {
+  issue_id: string | null;
+  issue_title: string | null;
+  issue_status: string | null;
+  issue_created_at: string | null;
+  issue_assignee: string | null;
+  last_request_at: string;
+  call_count: number;
+  calls: GroupedLlmLogCall[];
+}
+
+export interface GroupedLlmLogsResponse {
+  groups: GroupedLlmLog[];
+  totalGroups: number;
+  totalCalls: number;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const API_TIMEOUT_MS = 30_000;
@@ -229,6 +258,30 @@ export interface DiffFile {
 
 export function getPrDiff(issueId: string): Promise<{ files: DiffFile[]; branch: string; base: string }> {
   return json(`/api/issues/${issueId}/pr-diff`);
+}
+
+// ─── Grouped LLM Logs ─────────────────────────────────────────────────────────
+
+export function getGroupedLlmLogs(params?: {
+  status?: string[];
+  model?: string[];
+  start_date?: string;
+  end_date?: string;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<GroupedLlmLogsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set('status', params.status.join(','));
+  if (params?.model) qs.set('model', params.model.join(','));
+  if (params?.start_date) qs.set('start_date', params.start_date);
+  if (params?.end_date) qs.set('end_date', params.end_date);
+  if (params?.search) qs.set('search', params.search);
+  if (params?.page) qs.set('page', params.page.toString());
+  if (params?.page_size) qs.set('page_size', params.page_size.toString());
+  
+  const query = qs.toString();
+  return json(`/api/llm-logs/grouped${query ? '?' + query : ''}`);
 }
 
 // ─── Planner ──────────────────────────────────────────────────────────────────
