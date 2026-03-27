@@ -18,9 +18,13 @@ import type { PipelineConfig } from "./state";
 import {
   scoutNode,
   implementNode,
+  buildGateNode,
   testWriteNode,
+  testGateNode,
   reviewNode,
   gitOpsNode,
+  routeAfterBuildGate,
+  routeAfterTestGate,
   routeAfterReview,
 } from "./nodes";
 import {
@@ -110,13 +114,17 @@ const checkpointer = SqliteSaver.fromConnString(dbPath);
 const graph = new StateGraph(PipelineState)
   .addNode("scout", scoutNode)
   .addNode("implement", implementNode)
+  .addNode("build_gate", buildGateNode)
   .addNode("test_write", testWriteNode)
+  .addNode("test_gate", testGateNode)
   .addNode("review", reviewNode)
   .addNode("git_ops", gitOpsNode)
   .addEdge(START, "scout")
   .addEdge("scout", "implement")
-  .addEdge("implement", "test_write")
-  .addEdge("test_write", "review")
+  .addEdge("implement", "build_gate")
+  .addConditionalEdges("build_gate", routeAfterBuildGate)
+  .addEdge("test_write", "test_gate")
+  .addConditionalEdges("test_gate", routeAfterTestGate)
   .addConditionalEdges("review", routeAfterReview)
   .addEdge("git_ops", END)
   .compile({ checkpointer });

@@ -37,6 +37,8 @@ import {
   makeVerifyTools,
   lookupDocs,
   makeBuildCheckTools,
+  makePackageCheckTool,
+  runAndExtractErrors,
 } from "../tools";
 import {
   constructScoutPrompt,
@@ -422,6 +424,8 @@ export async function implementNode(
     issueTitle: state.issueTitle,
     issueDescription: state.issueDescription,
     reviewFeedback: state.reviewFeedback || undefined,
+    buildErrors: state.buildErrors || undefined,
+    testErrors: state.testErrors || undefined,
   });
 
   const output = await runStage({
@@ -432,6 +436,7 @@ export async function implementNode(
     tools: {
       ...makeFilesystemTools(state.worktreePath),
       ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }),
+      ...makePackageCheckTool(state.worktreePath),
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
       lookupDocs,
     } as ToolSet,
@@ -476,7 +481,12 @@ export async function testWriteNode(
     model, modelId: state.modelId,
     systemPrompt: testPrompts.system,
     userPrompt: testPrompts.user,
-    tools: { ...makeTestWriteTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath) } as ToolSet,
+    tools: {
+      ...makeTestWriteTools(state.worktreePath),
+      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }),
+      ...makePackageCheckTool(state.worktreePath),
+      lookupDocs,
+    } as ToolSet,
     maxSteps: TEST_WRITE_STEP_LIMIT,
     timeoutMs: ctx.agentTimeoutMs ?? STAGE_TIMEOUT_MS,
     abortSignal,
@@ -646,6 +656,80 @@ export async function gitOpsNode(
   }
 
   return {};
+}
+
+// ─── Build Gate (after implement) ─────────────────────────────────────────────
+
+const MAX_BUILD_RETRIES = 3;
+
+export async function buildGateNode(
+  state: PipelineStateType,
+  config: LangGraphRunnableConfig
+): Promise<Partial<PipelineStateType>> {
+  const { project } = config.configurable as PipelineConfig;
+
+  if (!project.build_command) {
+    console.log("Pipeline: build gate — no build command configured, skipping");
+    return { buildErrors: "", buildRetryCount: 0 };
+  }
+
+  console.log(`Pipeline: build gate — running: ${project.build_command}`);
+  const result = runAndExtractErrors(project.build_command, state.worktreePath);
+
+  if (result === "success") {
+    console.log("Pipeline: build gate — passed");
+    return { buildErrors: "", buildRetryCount: 0 };
+  }
+
+  const retryCount = state.buildRetryCount + 1;
+  console.log(`Pipeline: build gate — FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
+  return { buildErrors: result, buildRetryCount: retryCount };
+}
+
+export async function routeAfterBuildGate(state: PipelineStateType): Promise<string> {
+  if (!state.buildErrors) return "test_write";
+  if (state.buildRetryCount >= MAX_BUILD_RETRIES) {
+    console.log("Pipeline: build gate — exhausted retries, proceeding anyway");
+    return "test_write";
+  }
+  return "implement";
+}
+
+// ─── Test Gate (after test-write) ─────────────────────────────────────────────
+
+const MAX_TEST_RETRIES = 3;
+
+export async function testGateNode(
+  state: PipelineStateType,
+  config: LangGraphRunnableConfig
+): Promise<Partial<PipelineStateType>> {
+  const { project } = config.configurable as PipelineConfig;
+
+  if (!project.test_command) {
+    console.log("Pipeline: test gate — no test command configured, skipping");
+    return { testErrors: "", testRetryCount: 0 };
+  }
+
+  console.log(`Pipeline: test gate — running: ${project.test_command}`);
+  const result = runAndExtractErrors(project.test_command, state.worktreePath);
+
+  if (result === "success") {
+    console.log("Pipeline: test gate — passed");
+    return { testErrors: "", testRetryCount: 0 };
+  }
+
+  const retryCount = state.testRetryCount + 1;
+  console.log(`Pipeline: test gate — FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);
+  return { testErrors: result, testRetryCount: retryCount };
+}
+
+export async function routeAfterTestGate(state: PipelineStateType): Promise<string> {
+  if (!state.testErrors) return "review";
+  if (state.testRetryCount >= MAX_TEST_RETRIES) {
+    console.log("Pipeline: test gate — exhausted retries, proceeding anyway");
+    return "review";
+  }
+  return "implement";
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────

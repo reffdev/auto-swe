@@ -10,7 +10,7 @@ import { spawnSync } from "child_process";
 const DEFAULT_BUILD_COMMAND = "npx tsc --noEmit";
 const DEFAULT_TEST_COMMAND = "npx jest --passWithNoTests --no-colors";
 
-function runAndExtractErrors(command: string, workdir: string): string {
+export function runAndExtractErrors(command: string, workdir: string): string {
   const result = spawnSync(command, {
     cwd: workdir,
     encoding: "utf-8",

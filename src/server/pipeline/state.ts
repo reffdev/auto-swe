@@ -45,6 +45,12 @@ export const PipelineState = Annotation.Root({
   reviewLenses:     Annotation<string[]>({ reducer: (_, b) => b, default: () => ["general"] }),
   currentLensIndex: Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
 
+  // Build/test gate
+  buildErrors:      Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
+  testErrors:       Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
+  buildRetryCount:  Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
+  testRetryCount:   Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
+
   // Error tracking
   error:            Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
 });

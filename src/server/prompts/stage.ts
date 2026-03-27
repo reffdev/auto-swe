@@ -91,8 +91,10 @@ export function constructImplementPrompts(opts: {
   issueTitle: string;
   issueDescription: string;
   reviewFeedback?: string;
+  buildErrors?: string;
+  testErrors?: string;
 }): { system: string; user: string } {
-  const isRetry = !!opts.reviewFeedback;
+  const isRetry = !!(opts.reviewFeedback || opts.buildErrors || opts.testErrors);
 
   const system = isRetry
     ? `# Implementation — Fix Requested
@@ -142,7 +144,35 @@ summary: [what was changed and why]
 
   let user = `## Issue: ${opts.issueTitle}\n\n${opts.issueDescription || "(No additional details)"}\n\n`;
 
-  if (isRetry) {
+  if (opts.buildErrors) {
+    user += `## BUILD FAILING — FIX THESE ERRORS
+
+Your previous changes do not compile. The worktree ALREADY contains your code. Fix the build errors below.
+
+\`\`\`
+${opts.buildErrors}
+\`\`\`
+
+---
+
+`;
+  }
+
+  if (opts.testErrors) {
+    user += `## TESTS FAILING — FIX THESE ERRORS
+
+Your previous changes cause test failures. The worktree ALREADY contains your code. Fix the failing tests below.
+
+\`\`\`
+${opts.testErrors}
+\`\`\`
+
+---
+
+`;
+  }
+
+  if (opts.reviewFeedback) {
     user += `## REVIEW FEEDBACK — FIX THESE ISSUES
 
 Your previous implementation was **rejected**. The worktree ALREADY contains your previous code changes. Do NOT start from scratch. Read the feedback below and make targeted fixes.

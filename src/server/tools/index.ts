@@ -14,4 +14,5 @@ export {
 export { fetchUrlTool } from "./fetch";
 export { makeTodoTool } from "./todo";
 export { lookupDocs } from "./context7";
-export { makeBuildCheckTools } from "./build-check";
+export { makeBuildCheckTools, runAndExtractErrors } from "./build-check";
+export { makePackageCheckTool } from "./package-check";
