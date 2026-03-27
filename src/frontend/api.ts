@@ -244,6 +244,10 @@ export function decomposeIssue(id: string): Promise<{ epic: Issue; stories: Issu
 
 // ─── Issue Lenses ─────────────────────────────────────────────────────────────
 
+export function updateIssue(id: string, data: { title?: string; description?: string }): Promise<Issue> {
+  return json(`/api/issues/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+
 export function updateIssueLenses(id: string, lenses: string[]): Promise<Issue> {
   return json(`/api/issues/${id}/lenses`, { method: "PATCH", body: JSON.stringify({ lenses }) });
 }

@@ -236,10 +236,6 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
-    if (issue.status !== "pending") {
-      res.status(409).json({ error: "can only edit pending issues" });
-      return;
-    }
     const { title, description } = req.body;
     db.updateIssue(req.params.id, { title, description });
     res.json(db.getIssue(req.params.id));

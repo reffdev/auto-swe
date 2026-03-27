@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert, Layers, Scissors } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert, Layers, Scissors, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import {
@@ -392,6 +393,69 @@ function useLiveOutput(runs: Run[]) {
 
 // ─── Lens chips ──────────────────────────────────────────────────────────────
 
+// ─── Editable description ─────────────────────────────────────────────────────
+
+function EditableDescription({ issue, onDataChange }: { issue: Issue; onDataChange: () => void }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(issue.description)
+  const [saving, setSaving] = useState(false)
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await api.updateIssue(issue.id, { description: draft })
+      onDataChange()
+      setEditing(false)
+    } catch { /* ignore */ }
+    finally { setSaving(false) }
+  }
+
+  const handleCancel = () => {
+    setDraft(issue.description)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div className="ml-9 mt-1">
+        <Textarea
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          rows={Math.max(4, draft.split('\n').length + 1)}
+          className="text-sm font-mono"
+          autoFocus
+        />
+        <div className="flex items-center gap-2 mt-2">
+          <Button size="sm" onClick={handleSave} disabled={saving}>
+            <Check className="size-3 mr-1" />
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={handleCancel} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="group/desc flex items-start gap-1 ml-9 mt-1">
+      {issue.description
+        ? <p className="text-sm text-muted-foreground flex-1 whitespace-pre-wrap">{issue.description}</p>
+        : <p className="text-sm text-muted-foreground/50 italic flex-1">No description</p>
+      }
+      <button
+        onClick={() => { setDraft(issue.description); setEditing(true) }}
+        className="opacity-0 group-hover/desc:opacity-100 transition-opacity shrink-0 p-1 rounded hover:bg-accent"
+      >
+        <Pencil className="size-3 text-muted-foreground" />
+      </button>
+    </div>
+  )
+}
+
+// ─── Lens chips ──────────────────────────────────────────────────────────────
+
 const ALL_LENSES = [
   { key: 'general', label: 'General', icon: ClipboardCheck, color: 'text-foreground bg-accent' },
   { key: 'security', label: 'Security', icon: Shield, color: 'text-orange-400 bg-orange-500/20' },
@@ -548,9 +612,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
             </span>
           )}
         </div>
-        {issue.description && (
-          <p className="text-sm text-muted-foreground ml-9">{issue.description}</p>
-        )}
+        <EditableDescription issue={issue} onDataChange={onDataChange} />
         <LensChips issue={issue} editable={issue.status === 'pending'} onDataChange={onDataChange} />
         {issue.parent_id && (
           <button
