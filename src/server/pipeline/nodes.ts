@@ -248,7 +248,7 @@ export async function scoutNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, model, abortSignal } = config.configurable as PipelineConfig;
+  const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
 
   const projectCtx = gatherProjectContext(state.worktreePath);
   console.log(`Pipeline: scout — auto-loaded ${projectCtx.fileCount} files (${projectCtx.totalChars.toLocaleString()} chars)`);
@@ -286,7 +286,7 @@ export async function scoutNode(
       } as ToolSet,
       abortSignal: scoutAbort.signal,
       initialSteps: infoSteps,
-      contextLimit: machine.context_limit ?? undefined,
+      contextLimit: project.context_limit ?? machine.context_limit ?? undefined,
       worktreePath: state.worktreePath,
     });
   } catch (err) {
@@ -386,7 +386,7 @@ export async function implementNode(
     } as ToolSet,
     abortSignal,
     initialSteps: infoSteps,
-    contextLimit: machine.context_limit ?? undefined,
+    contextLimit: project.context_limit ?? machine.context_limit ?? undefined,
     worktreePath: state.worktreePath,
   });
 
@@ -434,7 +434,7 @@ export async function testWriteNode(
       lookupDocs,
     } as ToolSet,
     abortSignal,
-    contextLimit: machine.context_limit ?? undefined,
+    contextLimit: project.context_limit ?? machine.context_limit ?? undefined,
     worktreePath: state.worktreePath,
   });
 
@@ -491,7 +491,7 @@ export async function reviewNode(
     userPrompt: reviewPrompts.user,
     tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }) } as ToolSet,
     abortSignal,
-    contextLimit: machine.context_limit ?? undefined,
+    contextLimit: project.context_limit ?? machine.context_limit ?? undefined,
     worktreePath: state.worktreePath,
   });
 

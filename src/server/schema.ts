@@ -31,6 +31,7 @@ export const projects = sqliteTable("projects", {
   model_id: text("model_id"),
   build_command: text("build_command"),
   test_command: text("test_command"),
+  context_limit: integer("context_limit"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
