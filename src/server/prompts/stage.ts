@@ -216,28 +216,34 @@ ${CODING_STANDARDS}
 1. Review the git diff in the user message to understand what changed
 2. Find existing test files to match the project's patterns (framework, naming, style)
 3. Write tests covering the key behaviors introduced or changed
-4. Call \`checkTests\` once to verify your tests compile and run
+4. Call \`checkTests\` to verify your tests compile and run
 5. Do NOT modify implementation files, commit, or push
 
 ## IMPORTANT: Your job is ONLY to write tests
 
-- Write the tests, run them once, then report the results — even if tests fail
-- Do NOT try to fix implementation code to make tests pass
-- Do NOT rewrite your tests repeatedly to work around implementation bugs
-- If tests fail because the implementation is wrong, that is the correct outcome — report it
-- A failing test that correctly identifies a bug is a SUCCESS for you
-- The test results will be sent back to the implementer for fixing
+- Write the tests, run them, then report the results
+- Do NOT modify implementation files to make tests pass
+- Do NOT rewrite your tests to work around implementation bugs
+- If tests fail because the implementation is wrong, report \`status: needs_fix\` — the failures will be sent back to the implementer
 
 ## Output
 
+If tests pass:
 \`\`\`result
 status: done
 test_files: [list of test files created or modified]
 run_command: [command to run just these tests]
-summary: [what's tested and the pass/fail results]
+summary: [what's tested]
 \`\`\`
 
-Or if not applicable:
+If tests fail due to implementation bugs (NOT test bugs):
+\`\`\`result
+status: needs_fix
+test_files: [list of test files created or modified]
+issues: [describe what's failing and why the implementation needs to change]
+\`\`\`
+
+If not applicable:
 \`\`\`result
 status: skipped
 reason: [why]
@@ -250,9 +256,9 @@ ${opts.issueDescription || "(No additional details)"}
 `;
 
   if (opts.testErrors) {
-    user += `## PREVIOUS TEST RUN FAILED
+    user += `## TEST GATE FAILED
 
-Your previous tests had failures. The worktree ALREADY contains your test files. Fix only genuine test bugs (wrong assertions, missing mocks, bad setup). If the tests are correct and the implementation is wrong, leave the tests as-is — the failures will be reported back to the implementer.
+You reported tests as passing, but the automated test gate found failures. The worktree ALREADY contains your test files. Investigate the errors below — fix genuine test bugs (wrong assertions, missing mocks, bad setup). If the tests are correct and the implementation is wrong, report \`status: needs_fix\`.
 
 \`\`\`
 ${opts.testErrors}

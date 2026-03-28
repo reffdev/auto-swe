@@ -1,4 +1,4 @@
-import { routeAfterBuildGate, routeAfterTestGate, routeAfterReview } from "./nodes";
+import { routeAfterBuildGate, routeAfterTestWrite, routeAfterTestGate, routeAfterReview } from "./nodes";
 import type { PipelineStateType } from "./state";
 
 function makeState(overrides: Partial<PipelineStateType>): PipelineStateType {
@@ -19,6 +19,7 @@ function makeState(overrides: Partial<PipelineStateType>): PipelineStateType {
     retryCount: 0,
     reviewLenses: ["general"],
     currentLensIndex: 0,
+    testWriteVerdict: "",
     buildErrors: "",
     testErrors: "",
     buildRetryCount: 0,
@@ -49,6 +50,20 @@ describe("routeAfterBuildGate", () => {
   it("routes to fail_pipeline when retries exhausted", async () => {
     const state = makeState({ buildErrors: "error TS1234: stuff", buildRetryCount: 3 });
     expect(await routeAfterBuildGate(state)).toBe("fail_pipeline");
+  });
+});
+
+// ─── Test-Write Router ──────────────────────────────────────────────────────
+
+describe("routeAfterTestWrite", () => {
+  it("routes to test_gate when verdict is pass", async () => {
+    const state = makeState({ testWriteVerdict: "pass" });
+    expect(await routeAfterTestWrite(state)).toBe("test_gate");
+  });
+
+  it("routes to implement when verdict is needs_fix", async () => {
+    const state = makeState({ testWriteVerdict: "needs_fix" });
+    expect(await routeAfterTestWrite(state)).toBe("implement");
   });
 });
 

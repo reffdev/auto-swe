@@ -99,3 +99,20 @@ export function parseVerdict(output: string): {
   // Truly unparseable — no status field, no accept/reject keywords
   return { status: "reject", feedback: "Could not parse review verdict from output", failureClass: "unparseable" };
 }
+
+/** Parse test-write output for pass/needs_fix verdict */
+export function parseTestVerdict(output: string): {
+  status: "pass" | "needs_fix";
+  feedback: string;
+} {
+  const match = output.match(/```result\s*\n([\s\S]*?)```/);
+  const block = match?.[1] ?? output;
+
+  if (/status:\s*needs_fix/i.test(block)) {
+    const feedbackMatch = block.match(/(?:feedback|issues|errors):\s*([\s\S]*?)(?=\n\w+:|$)/);
+    return { status: "needs_fix", feedback: feedbackMatch?.[1]?.trim() ?? block.trim() };
+  }
+
+  // "done", "pass", "skipped" all count as pass — tests are written, let the gate verify
+  return { status: "pass", feedback: "" };
+}

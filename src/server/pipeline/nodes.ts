@@ -19,6 +19,7 @@ import {
   getAndClearSubmittedBrief,
   hasSubmittedBrief,
   parseVerdict,
+  parseTestVerdict,
 } from "./parsers";
 import {
   makeFilesystemTools,
@@ -431,8 +432,20 @@ export async function testWriteNode(
     abortSignal,
   });
 
-  // Clear test errors after test-write runs — they'll be re-checked by the test gate
-  return { testWriteOutput: output, testErrors: "" };
+  const testVerdict = parseTestVerdict(output);
+  console.log(`Pipeline: test-write verdict = ${testVerdict.status}`);
+
+  if (testVerdict.status === "needs_fix") {
+    console.log("Pipeline: test-write reports implementation needs fixing");
+    return {
+      testWriteOutput: output,
+      testWriteVerdict: "needs_fix",
+      testErrors: testVerdict.feedback,
+    };
+  }
+
+  // Clear test errors — they'll be re-checked by the test gate
+  return { testWriteOutput: output, testWriteVerdict: "pass", testErrors: "" };
 }
 
 // ─── Review Node ──────────────────────────────────────────────────────────────
@@ -470,7 +483,7 @@ export async function reviewNode(
     model, modelId: state.modelId,
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.user,
-    tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath) } as ToolSet,
+    tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }) } as ToolSet,
     abortSignal,
   });
 
@@ -686,12 +699,21 @@ export async function testGateNode(
   return { testErrors: result, testRetryCount: retryCount };
 }
 
+export async function routeAfterTestWrite(state: PipelineStateType): Promise<string> {
+  if (state.testWriteVerdict === "needs_fix") {
+    console.log("Pipeline: test-write says implementation needs fixing — routing to implement");
+    return "implement";
+  }
+  return "test_gate";
+}
+
 export async function routeAfterTestGate(state: PipelineStateType): Promise<string> {
   if (!state.testErrors) return "review";
   if (state.testRetryCount >= MAX_TEST_RETRIES) {
     console.error("Pipeline: test gate — exhausted retries, failing pipeline");
     return "fail_pipeline";
   }
+  // Gate failed but test_write said pass — send back to test_write to investigate
   return "test_write";
 }
 

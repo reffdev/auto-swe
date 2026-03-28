@@ -37,6 +37,9 @@ export const PipelineState = Annotation.Root({
   reviewLenses:     Annotation<string[]>({ reducer: (_, b) => b, default: () => ["general"] }),
   currentLensIndex: Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
 
+  // Test-write verdict: "pass" (proceed to gate) or "needs_fix" (back to implement)
+  testWriteVerdict: Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
+
   // Build/test gate
   buildErrors:      Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
   testErrors:       Annotation<string>({ reducer: (_, b) => b, default: () => "" }),

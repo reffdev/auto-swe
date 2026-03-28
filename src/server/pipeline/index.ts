@@ -25,6 +25,7 @@ import {
   gitOpsNode,
   failPipelineNode,
   routeAfterBuildGate,
+  routeAfterTestWrite,
   routeAfterTestGate,
   routeAfterReview,
 } from "./nodes";
@@ -39,7 +40,7 @@ import {
 import type { Db, Machine, Issue, Project } from "../db";
 
 // Re-export public parsers for tests and external consumers
-export { extractScoutBrief, parseVerdict } from "./parsers";
+export { extractScoutBrief, parseVerdict, parseTestVerdict } from "./parsers";
 export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
 // ─── LLM provider with per-request timeout + retry ────────────────────────────
@@ -133,7 +134,7 @@ const graph = new StateGraph(PipelineState)
   .addEdge("scout", "implement")
   .addConditionalEdges("implement", (state) => state.error ? "fail_pipeline" : "build_gate")
   .addConditionalEdges("build_gate", routeAfterBuildGate)
-  .addEdge("test_write", "test_gate")
+  .addConditionalEdges("test_write", routeAfterTestWrite)
   .addConditionalEdges("test_gate", routeAfterTestGate)
   .addConditionalEdges("review", routeAfterReview)
   .addEdge("git_ops", END)
