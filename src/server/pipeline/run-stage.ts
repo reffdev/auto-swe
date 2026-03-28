@@ -269,7 +269,15 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         });
         let text = "";
         for await (const chunk of result.textStream) { text += chunk; }
-        await result.steps;
+        const steps = await result.steps;
+        const finishReason = steps[steps.length - 1]?.finishReason;
+        console.log(`Pipeline [${stageName}]: stream ended — ${steps.length} steps, finishReason=${finishReason}, text=${text.length} chars`);
+
+        // Detect abnormal stream termination
+        if (finishReason === "error" || finishReason === "unknown") {
+          throw new Error(`LLM stream ended abnormally (finishReason: ${finishReason})`);
+        }
+
         return text || "(no output)";
       })();
 
