@@ -720,6 +720,18 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
                 {actionLoading === 'retry-stage' ? 'Resuming...' : 'Resume from Checkpoint'}
               </Button>
             )}
+            {issue.scout_brief && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground"
+                onClick={() => doAction('clear-scout', () => api.clearScoutCache(issue.id))}
+                disabled={!!actionLoading}
+              >
+                <Search className="size-3.5 mr-1" />
+                {actionLoading === 'clear-scout' ? 'Clearing...' : 'Clear Scout Cache'}
+              </Button>
+            )}
           </>
         )}
         {issue.status !== 'running' && (

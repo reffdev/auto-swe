@@ -479,6 +479,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json({ cancelled: true, issue: db.getIssue(issue.id) });
   });
 
+  router.post("/issues/:id/clear-scout", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    db.updateIssue(issue.id, { scout_brief: null as any, scout_commit: null as any });
+    res.json({ issue: db.getIssue(issue.id) });
+  });
+
   router.get("/issues/:id/has-checkpoint", (req, res) => {
     res.json({ hasCheckpoint: hasCheckpoint(req.params.id) });
   });

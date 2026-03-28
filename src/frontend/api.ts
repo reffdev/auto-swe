@@ -48,6 +48,8 @@ export interface Issue {
   parent_id: string | null;
   sequence: number | null;
   depends_on: string | null;  // JSON array of issue IDs, e.g. '["uuid1","uuid2"]'
+  scout_brief: string | null;
+  scout_commit: string | null;
   retry_count: number;
   created_at: string;
   completed_at: string | null;
@@ -207,6 +209,10 @@ export function cancelIssue(id: string): Promise<{ cancelled: boolean; issue: Is
 
 export function deleteIssue(id: string): Promise<{ deleted: boolean }> {
   return json(`/api/issues/${id}`, { method: "DELETE" });
+}
+
+export function clearScoutCache(id: string): Promise<{ issue: Issue }> {
+  return json(`/api/issues/${id}/clear-scout`, { method: "POST" });
 }
 
 export function retryStage(id: string): Promise<{ issue: Issue }> {
