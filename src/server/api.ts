@@ -259,6 +259,20 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getIssue(req.params.id));
   });
 
+  router.delete("/issues/:id", (req, res) => {
+    const issue = db.getIssue(req.params.id);
+    if (!issue) {
+      res.status(404).json({ error: "issue not found" });
+      return;
+    }
+    if (issue.status === "running") {
+      res.status(409).json({ error: "cannot delete a running issue — cancel it first" });
+      return;
+    }
+    db.deleteIssue(issue.id);
+    res.json({ deleted: true });
+  });
+
   // ─── Issue actions ──────────────────────────────────────────────────────
   // approve, retry, approve-pr, reject-pr are defined here as stubs.
   // The approve/retry handlers will be wired to the runner in a later step.

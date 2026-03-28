@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert, Layers, Scissors, Pencil } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert, Layers, Scissors, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Spinner } from '@/components/ui/spinner'
@@ -722,9 +722,25 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
             )}
           </>
         )}
+        {issue.status !== 'running' && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-destructive hover:text-destructive hover:bg-destructive/10 ml-auto"
+            onClick={() => {
+              if (confirm(`Delete "${issue.title}"? This cannot be undone.`)) {
+                doAction('delete', async () => { await api.deleteIssue(issue.id); onBack() })
+              }
+            }}
+            disabled={!!actionLoading}
+          >
+            <Trash2 className="size-3.5 mr-1" />
+            {actionLoading === 'delete' ? 'Deleting...' : 'Delete'}
+          </Button>
+        )}
         {issue.git_pr_url && (
           <a href={issue.git_pr_url} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-sm text-blue-400 hover:underline ml-auto">
+            className="inline-flex items-center gap-1 text-sm text-blue-400 hover:underline">
             PR #{issue.git_pr_number} <ExternalLink className="size-3" />
           </a>
         )}

@@ -296,6 +296,47 @@ describe("issues", () => {
       .send({ title: "New" });
     expect(res.status).toBe(409);
   });
+
+  it("DELETE /api/issues/:id deletes a pending issue", async () => {
+    const issue = db.createIssue({ project_id: projectId, title: "To delete" });
+    const res = await request(app).delete(`/api/issues/${issue.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(true);
+    // Verify it's gone
+    const get = await request(app).get(`/api/issues/${issue.id}`);
+    expect(get.status).toBe(404);
+  });
+
+  it("DELETE /api/issues/:id deletes associated runs and llm requests", async () => {
+    const issue = db.createIssue({ project_id: projectId, title: "With data" });
+    db.createRun({ issue_id: issue.id, stage: "scout" });
+    db.createLlmRequest({ issue_id: issue.id, input_text: "test", output_text: "test" });
+    const res = await request(app).delete(`/api/issues/${issue.id}`);
+    expect(res.status).toBe(200);
+    // Runs and LLM requests should be cleaned up
+    expect(db.getRunsForIssue(issue.id)).toHaveLength(0);
+    expect(db.getLlmRequests(issue.id)).toHaveLength(0);
+  });
+
+  it("DELETE /api/issues/:id rejects running issue", async () => {
+    const issue = db.createIssue({ project_id: projectId, title: "Running" });
+    db.updateIssue(issue.id, { status: "running" });
+    const res = await request(app).delete(`/api/issues/${issue.id}`);
+    expect(res.status).toBe(409);
+  });
+
+  it("DELETE /api/issues/:id returns 404 for nonexistent", async () => {
+    const res = await request(app).delete("/api/issues/nonexistent");
+    expect(res.status).toBe(404);
+  });
+
+  it("DELETE /api/issues/:id allows deleting failed issue", async () => {
+    const issue = db.createIssue({ project_id: projectId, title: "Failed" });
+    db.updateIssue(issue.id, { status: "failed" });
+    const res = await request(app).delete(`/api/issues/${issue.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(true);
+  });
 });
 
 // ─── Issue actions ──────────────────────────────────────────────────────────

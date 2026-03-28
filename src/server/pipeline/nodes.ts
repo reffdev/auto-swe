@@ -340,13 +340,6 @@ export async function implementNode(
   const retryInfo = state.retryCount > 0 ? ` | Retry ${state.retryCount}/3 with review feedback` : "";
   console.log(`Pipeline: implement stage — resolved brief: ${reportLen} chars (~${reportTokensEst} tokens)${retryInfo}`);
 
-  if (reportLen < 200 && state.retryCount === 0) {
-    const msg = `Scout brief is too short (${reportLen} chars) — aborting pipeline. The scout failed to produce a useful report.`;
-    console.error(`Pipeline: ${msg}`);
-    ctx.db.updateRun(run.id, { status: "fail", output: msg, completed_at: new Date().toISOString() });
-    return { error: msg };
-  }
-
   if (reportLen < 500) {
     console.warn("Pipeline: WARNING — resolved brief is very short (<500 chars), implement will likely re-explore");
   }

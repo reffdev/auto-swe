@@ -204,6 +204,10 @@ export function cancelIssue(id: string): Promise<{ cancelled: boolean; issue: Is
   return json(`/api/issues/${id}/cancel`, { method: "POST" });
 }
 
+export function deleteIssue(id: string): Promise<{ deleted: boolean }> {
+  return json(`/api/issues/${id}`, { method: "DELETE" });
+}
+
 export function retryStage(id: string): Promise<{ issue: Issue }> {
   return json(`/api/issues/${id}/retry-stage`, { method: "POST" });
 }

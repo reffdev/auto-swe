@@ -273,6 +273,14 @@ export class Db {
     this.drizzle.update(schema.issues).set(clean).where(eq(schema.issues.id, id)).run();
   }
 
+  deleteIssue(id: string): boolean {
+    // Delete associated runs and LLM requests first
+    this.sqlite.prepare("DELETE FROM runs WHERE issue_id = ?").run(id);
+    this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(id);
+    const result = this.drizzle.delete(schema.issues).where(eq(schema.issues.id, id)).run();
+    return result.changes > 0;
+  }
+
   // ─── Runs ─────────────────────────────────────────────────────────────────
 
   getRun(id: string): Run | null {
