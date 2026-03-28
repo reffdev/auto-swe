@@ -1,18 +1,15 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { Dashboard } from './Dashboard'
+import { ROUTE_PATHS } from './routes'
 
 function renderWithRouter(initialEntry = '/') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/project/:projectId" element={<Dashboard />} />
-        <Route path="/project/:projectId/issue/:issueId" element={<Dashboard />} />
-        <Route path="/project/:projectId/planner/:conversationId?" element={<Dashboard />} />
-        <Route path="/project/:projectId/settings" element={<Dashboard />} />
-        <Route path="/project/:projectId/llm-logs" element={<Dashboard />} />
-        <Route path="/machine/:machineId" element={<Dashboard />} />
+        {ROUTE_PATHS.map(path => (
+          <Route key={path} path={path} element={<Dashboard />} />
+        ))}
       </Routes>
     </MemoryRouter>
   )
