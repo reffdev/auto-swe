@@ -216,8 +216,17 @@ ${CODING_STANDARDS}
 1. Review the git diff in the user message to understand what changed
 2. Find existing test files to match the project's patterns (framework, naming, style)
 3. Write tests covering the key behaviors introduced or changed
-4. Call \`checkTests\` to run the tests — fix any failures
+4. Call \`checkTests\` once to verify your tests compile and run
 5. Do NOT modify implementation files, commit, or push
+
+## IMPORTANT: Your job is ONLY to write tests
+
+- Write the tests, run them once, then report the results — even if tests fail
+- Do NOT try to fix implementation code to make tests pass
+- Do NOT rewrite your tests repeatedly to work around implementation bugs
+- If tests fail because the implementation is wrong, that is the correct outcome — report it
+- A failing test that correctly identifies a bug is a SUCCESS for you
+- The test results will be sent back to the implementer for fixing
 
 ## Output
 
@@ -225,7 +234,7 @@ ${CODING_STANDARDS}
 status: done
 test_files: [list of test files created or modified]
 run_command: [command to run just these tests]
-summary: [what's tested and the results]
+summary: [what's tested and the pass/fail results]
 \`\`\`
 
 Or if not applicable:
@@ -241,9 +250,9 @@ ${opts.issueDescription || "(No additional details)"}
 `;
 
   if (opts.testErrors) {
-    user += `## TESTS FAILING — FIX YOUR TESTS
+    user += `## PREVIOUS TEST RUN FAILED
 
-Your previous tests are failing. The worktree ALREADY contains your test files. Fix the failures below — do NOT rewrite tests from scratch.
+Your previous tests had failures. The worktree ALREADY contains your test files. Fix only genuine test bugs (wrong assertions, missing mocks, bad setup). If the tests are correct and the implementation is wrong, leave the tests as-is — the failures will be reported back to the implementer.
 
 \`\`\`
 ${opts.testErrors}
@@ -252,6 +261,7 @@ ${opts.testErrors}
 ---
 
 `;
+
   }
 
   if (opts.gitContext) {
