@@ -285,11 +285,27 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
    - Does the code actually address the issue described?
    - Are there broken imports, missing dependencies, or syntax errors?
    - Is there debug code, console.logs, or commented-out code that shouldn't be there?
-   - Are the tests actually testing the right things?
    - REJECT if the change rewrites, restructures, or reorganizes existing files beyond what the issue requires
    - REJECT if existing function signatures, constructor parameters, return types, or exports were changed unless the issue specifically requires it
    - REJECT if files were rewritten entirely instead of making targeted additions
-   - Changes should be additive — new functions/methods/endpoints added alongside existing code, not replacing it`,
+   - Changes should be additive — new functions/methods/endpoints added alongside existing code, not replacing it
+
+   Wiring completeness — trace new features across every layer they touch. REJECT if:
+   - A new page/view exists but is not registered in the project's router or navigation config
+   - A new API endpoint exists but has no corresponding client-side call, or vice versa
+   - A new component exists but is never imported or rendered
+   - A new database column or table exists but is not read or written where it should be
+   - Any layer in the feature's data path is disconnected — follow the full chain from UI to API to data and back
+
+   Collateral damage — REJECT if:
+   - Files unrelated to the issue were modified, even for cosmetic reasons (formatting, style changes, renaming, type tweaks)
+   - Existing tests were weakened or changed to accommodate new code rather than fixing the new code
+   - Existing behavior was altered as a side effect of the new feature
+
+   Dead code — REJECT if:
+   - New functions, parameters, or props are declared but never used or called
+   - New imports that are unused
+   - New configuration or options that have no effect`,
   },
   security: {
     name: "Security Review",
@@ -327,7 +343,14 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
    - Could these tests pass while the feature is actually broken?
    - Are there missing test cases for the requirements described in the issue?
    - Are tests isolated — no hidden dependencies on execution order or external state?
-   - Only reject for genuine testing gaps, not style or code correctness.`,
+
+   Mock fidelity — REJECT if:
+   - Tests mock a different module than the code under test actually imports
+   - Tests duplicate shared definitions (routes, constants, schemas) inline instead of importing the source of truth — these drift silently
+   - Mock return values are shaped differently from the real implementation (missing fields, wrong types, impossible states)
+   - Test data represents scenarios the real code path cannot produce
+
+   Only reject for genuine testing gaps, not style or code correctness.`,
   },
   error_handling: {
     name: "Error Handling Review",
