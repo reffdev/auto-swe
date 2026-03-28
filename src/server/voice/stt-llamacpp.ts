@@ -76,10 +76,15 @@ export class LlamaCppStt implements SttAdapter {
       `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
       `Content-Type: audio/wav\r\n\r\n`
     );
+    const modelField = Buffer.from(
+      `\r\n--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="model"\r\n\r\n` +
+      `whisper`
+    );
     const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([preamble, wav, epilogue]);
+    const body = Buffer.concat([preamble, wav, modelField, epilogue]);
 
-    const url = new URL("/inference", this.baseUrl).href;
+    const url = new URL("/v1/audio/transcriptions", this.baseUrl).href;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120_000);
     let res: Response;
