@@ -120,9 +120,13 @@ function createModelProvider(machine: Machine) {
             try {
               const { done, value } = await reader.read();
               if (done) { streamDone = true; clearTimer(); controller.close(); return; }
-              // Only reset the inactivity timer on chunks with actual data —
-              // SSE keepalives (empty lines, comments) shouldn't prevent timeout
-              if (value && value.length > 16) resetTimer();
+              // Only reset the inactivity timer on chunks with real token data.
+              // SSE keepalives, empty deltas, and comments shouldn't prevent timeout.
+              if (value && value.length > 0) {
+                const text = new TextDecoder().decode(value);
+                const hasContent = text.includes('"content"') && !/"content"\s*:\s*""/.test(text);
+                if (hasContent) resetTimer();
+              }
               controller.enqueue(value);
             } catch (err) {
               clearTimer();
