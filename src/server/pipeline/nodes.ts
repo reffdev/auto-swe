@@ -4,7 +4,7 @@
 
 import type { LangGraphRunnableConfig } from "@langchain/langgraph";
 import { END } from "@langchain/langgraph";
-import { tool as aiTool, type ToolSet } from "ai";
+import { tool as aiTool, generateText, type ToolSet } from "ai";
 import { z } from "zod";
 import { readFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
@@ -465,7 +465,7 @@ export async function reviewNode(
     lens,
   });
 
-  const output = await runStage({
+  let output = await runStage({
     db: ctx.db, runId: run.id, issueId: state.issueId, stageName: `review:${lensKey}`,
     model, modelId: state.modelId,
     systemPrompt: reviewPrompts.system,
@@ -474,8 +474,27 @@ export async function reviewNode(
     abortSignal,
   });
 
-  const verdict = parseVerdict(output);
+  let verdict = parseVerdict(output);
   console.log(`Pipeline: review verdict = ${verdict.status} (${verdict.failureClass}) [lens: ${lens.name}]`);
+
+  // If unparseable, nudge the same conversation to produce a valid verdict block
+  const MAX_VERDICT_RETRIES = 2;
+  for (let attempt = 0; attempt < MAX_VERDICT_RETRIES && verdict.failureClass === "unparseable"; attempt++) {
+    console.log(`Pipeline: review output unparseable — asking reviewer to reformat (attempt ${attempt + 2})`);
+    const followUp = await generateText({
+      model,
+      system: reviewPrompts.system,
+      messages: [
+        { role: "user", content: reviewPrompts.user },
+        { role: "assistant", content: output },
+        { role: "user", content: "Your previous response did not contain a valid verdict block. You MUST end your response with exactly one of these formats:\n\n```verdict\nstatus: accept\nsummary: [why this passes]\n```\n\nor\n\n```verdict\nstatus: reject\nfeedback: [specific actionable feedback]\n```\n\nPlease produce your verdict now." },
+      ],
+      abortSignal,
+    });
+    output = followUp.text || output;
+    verdict = parseVerdict(output);
+    console.log(`Pipeline: review verdict (retry ${attempt + 2}) = ${verdict.status} (${verdict.failureClass}) [lens: ${lens.name}]`);
+  }
 
   if (verdict.status === "accept") {
     // Lens passed — advance to next lens, reset retry count for the new lens
@@ -488,25 +507,13 @@ export async function reviewNode(
     };
   }
 
-  // If we couldn't parse the verdict at all, treat as reject — never auto-accept garbage.
+  // Still unparseable after retries — fail the pipeline
   if (verdict.failureClass === "unparseable") {
-    console.log("Pipeline: review output unparseable — treating as REJECT (safety: never auto-accept unparseable output)");
-    const newRetryCount = state.retryCount + 1;
-    if (newRetryCount >= MAX_RETRIES) {
-      console.error(`Pipeline: review lens "${lens.name}" exhausted retries on unparseable output — FAILING`);
-      return {
-        reviewOutput: output,
-        reviewVerdict: "reject",
-        reviewFeedback: "Review output was unparseable after all retries — review could not be completed.",
-        retryCount: newRetryCount,
-        error: `Pipeline failed — review lens "${lens.name}" produced unparseable output after ${MAX_RETRIES} retries.`,
-      };
-    }
+    console.error(`Pipeline: review lens "${lens.name}" could not produce a parseable verdict — FAILING`);
     return {
       reviewOutput: output,
       reviewVerdict: "reject",
-      reviewFeedback: "Review output was unparseable — the reviewer did not produce a valid verdict block. Re-implement and ensure the review can produce a clear verdict.",
-      retryCount: newRetryCount,
+      error: `Pipeline failed — review lens "${lens.name}" could not produce a parseable verdict.`,
     };
   }
 
