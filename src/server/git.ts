@@ -199,8 +199,17 @@ export async function setupWorktree(
           await git("rev-parse --abbrev-ref HEAD", worktreePath)
         ).trim();
         if (currentBranch === branch) {
-          console.log(`Git: reusing existing worktree for branch ${branch}`);
-          return { ok: true };
+          // Rebase onto latest origin so worktree has current code + previous work
+          try {
+            const defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
+            await git(`rebase origin/${defaultBranch}`, worktreePath);
+            console.log(`Git: reusing existing worktree for branch ${branch} (rebased onto origin/${defaultBranch})`);
+            return { ok: true };
+          } catch {
+            // Rebase conflict — abort and start fresh
+            try { await git("rebase --abort", worktreePath); } catch { /* already aborted */ }
+            console.log(`Git: rebase failed for branch ${branch} — removing worktree to start fresh`);
+          }
         }
       } catch {
         // Not a valid git worktree — stale directory
