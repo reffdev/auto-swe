@@ -12,7 +12,7 @@ import type { Db } from "./db";
 import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type PipelineContext } from "./pipeline/index";
 
 import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
-import { getGenerationSpeed } from "./stats";
+import { getGenerationSpeed, getAllMachineSpeeds } from "./stats";
 import { selectPlannerMachine } from "./planner-llm";
 import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
@@ -689,6 +689,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       machines: { active, total: machines.length },
       issues: { queued, pr_open: prOpen, failed },
       speed,
+      machineSpeed: getAllMachineSpeeds(),
     });
   });
 

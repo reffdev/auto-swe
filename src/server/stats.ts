@@ -28,6 +28,7 @@ const COLLECT_INTERVAL_MS = 30_000; // refresh every 30s
 const FETCH_TIMEOUT_MS = 3_000;
 
 let cachedSpeed: SpeedResult = { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
+const cachedMachineSpeed = new Map<string, SpeedResult>(); // machineId → speed
 let lastCollectTime = 0;
 let collectInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -98,10 +99,18 @@ async function collect(db: Db): Promise<void> {
   );
 
   const active: Array<{ promptTps: number; completionTps: number }> = [];
-  for (const r of results) {
+  cachedMachineSpeed.clear();
+
+  for (let i = 0; i < machines.length; i++) {
+    const r = results[i];
     if (r.status === "fulfilled" && r.value) {
-      if (r.value.promptTps > 0 || r.value.completionTps > 0) {
+      const { promptTps, completionTps } = r.value;
+      if (promptTps > 0 || completionTps > 0) {
         active.push(r.value);
+        cachedMachineSpeed.set(machines[i].id, {
+          prompt_tokens_per_sec: Math.round(promptTps * 10) / 10,
+          completion_tokens_per_sec: Math.round(completionTps * 10) / 10,
+        });
       }
     }
   }
@@ -135,7 +144,17 @@ export function stopStatsCollector(): void {
 
 // ─── Public API (reads from cache) ──────────────────────────────────────────
 
-/** Get cached generation speed. Never hits remote machines — reads from background collector. */
+/** Get cached average generation speed. Never hits remote machines. */
 export function getGenerationSpeed(): SpeedResult {
   return cachedSpeed;
+}
+
+/** Get cached per-machine generation speed. */
+export function getMachineSpeed(machineId: string): SpeedResult {
+  return cachedMachineSpeed.get(machineId) ?? { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
+}
+
+/** Get all cached machine speeds. */
+export function getAllMachineSpeeds(): Record<string, SpeedResult> {
+  return Object.fromEntries(cachedMachineSpeed);
 }

@@ -74,12 +74,16 @@ function createModelProvider(machine: Machine) {
       for (let attempt = 0; attempt <= MAX_SERVER_ERROR_RETRIES; attempt++) {
         if (callerSignal?.aborted) throw new Error("Aborted");
         try {
-          // Combine caller's abort signal with our connect timeout
-          const signals = [AbortSignal.timeout(LLM_CONNECT_TIMEOUT_MS)];
+          // Use a connect timeout that we cancel once headers arrive.
+          // The caller's signal (for cancel/compaction) stays active for the stream body.
+          const connectAbort = new AbortController();
+          const connectTimer = setTimeout(() => connectAbort.abort(), LLM_CONNECT_TIMEOUT_MS);
+          const signals: AbortSignal[] = [connectAbort.signal];
           if (callerSignal) signals.push(callerSignal);
-          const combinedSignal = AbortSignal.any(signals);
+          const connectSignal = AbortSignal.any(signals);
 
-          res = await fetch(url as string, { ...init as RequestInit, signal: combinedSignal });
+          res = await fetch(url as string, { ...init as RequestInit, signal: connectSignal });
+          clearTimeout(connectTimer); // headers received — cancel the connect timeout
         } catch (err) {
           // Connection error (timeout, refused, etc.)
           if (attempt >= MAX_SERVER_ERROR_RETRIES) throw err;
