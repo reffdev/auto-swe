@@ -33,8 +33,8 @@ const STAGE_LABELS: Record<string, string> = {
   scout: 'Scout',
   implement: 'Implement',
   build_gate: 'Build',
-  test_write: 'Test-Write',
-  test_gate: 'Tests',
+  test_write: 'Tests',
+  test_gate: 'Validate',
 }
 
 function getStageLabel(stage: string): string {
@@ -86,10 +86,11 @@ function parseSteps(output: string | null): StepData[] | null {
 
 // ─── Stage Stepper ────────────────────────────────────────────────────────────
 
-function StageStepper({ runs, activeRunId, onSelectRun }: {
+function StageStepper({ runs, activeRunId, onSelectRun, reviewLenses }: {
   runs: Run[]
   activeRunId: string | null
   onSelectRun: (runId: string) => void
+  reviewLenses?: string[]
 }) {
   // Only show runs from the current pipeline execution.
   const latestScout = [...runs].reverse().find(r => r.stage === 'scout')
@@ -103,19 +104,19 @@ function StageStepper({ runs, activeRunId, onSelectRun }: {
     if (r.stage) stageRuns.set(r.stage, r)
   }
 
-  // Collect review lens runs in order
-  const reviewRuns: Array<{ lensKey: string; run: Run }> = []
+  // Collect review lens runs — latest per lens
+  const reviewRunMap = new Map<string, Run>()
   for (const r of currentRuns) {
     if (r.stage?.startsWith("review:")) {
-      const lensKey = r.stage.slice(7)
-      // Only keep latest per lens
-      const existing = reviewRuns.findIndex(rr => rr.lensKey === lensKey)
-      if (existing >= 0) reviewRuns[existing] = { lensKey, run: r }
-      else reviewRuns.push({ lensKey, run: r })
+      reviewRunMap.set(r.stage.slice(7), r)
     }
   }
 
-  // Build step list: fixed stages + review lenses
+  // Determine which lenses to show: configured lenses (always), plus any that ran but aren't in the config
+  const configuredLenses = reviewLenses ?? []
+  const allLensKeys = [...new Set([...configuredLenses, ...reviewRunMap.keys()])]
+
+  // Build step list: fixed stages + review lenses (always visible, dimmed if no run yet)
   type StepInfo = { key: string; label: string; icon: typeof Search; color?: string; run?: Run }
   const steps: StepInfo[] = FIXED_STAGES.map(stage => ({
     key: stage,
@@ -124,16 +125,24 @@ function StageStepper({ runs, activeRunId, onSelectRun }: {
     run: stageRuns.get(stage),
   }))
 
-  for (const { lensKey, run } of reviewRuns) {
+  for (const lensKey of allLensKeys) {
     const config = LENS_STEPPER_CONFIG[lensKey]
     steps.push({
       key: `review:${lensKey}`,
       label: config?.label ?? lensKey,
       icon: config?.icon ?? ClipboardCheck,
       color: config?.color,
-      run,
+      run: reviewRunMap.get(lensKey),
     })
   }
+
+  // GitOps comes after all review lenses
+  steps.push({
+    key: 'git_ops',
+    label: 'Submit',
+    icon: GitBranch,
+    run: stageRuns.get('git_ops'),
+  })
 
   return (
     <div className="px-6 py-3 border-b border-border flex items-center gap-1 overflow-x-auto">
@@ -798,6 +807,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           runs={allRuns}
           activeRunId={displayRun?.id ?? null}
           onSelectRun={(id) => setViewingRunId(id === activeRun?.id ? null : id)}
+          reviewLenses={(() => { try { return JSON.parse(issue.review_lenses || '[]') } catch { return [] } })()}
         />
       )}
 
