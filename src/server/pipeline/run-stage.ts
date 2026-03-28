@@ -180,7 +180,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
       const result = streamText({
         model, system: systemPrompt, messages,
-        tools, maxSteps,
+        tools, maxSteps: maxSteps ?? 50,
         abortSignal,
         onStepFinish: onStep,
       });
