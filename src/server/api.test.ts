@@ -590,11 +590,11 @@ describe("GET /api/llm-logs/grouped", () => {
       duration_ms: 200
     });
     
-    // Create error request (no duration_ms)
-    db.createLlmRequest({ 
-      issue_id: issue.id, 
-      input_text: "Error", 
-      output_text: "Failed",
+    // Create error request (empty output = error)
+    db.createLlmRequest({
+      issue_id: issue.id,
+      input_text: "Error",
+      output_text: "",
       model_id: "gpt-4"
     });
 
@@ -719,39 +719,35 @@ describe("GET /api/llm-logs/grouped", () => {
     expect(res.body.totalCalls).toBe(1);
   });
 
-  it("paginates results", async () => {
+  it("paginates groups", async () => {
     const p = db.createProject({ name: "test", workdir: testDir });
-    const issue = db.createIssue({ project_id: p.id, title: "Test Issue" });
-    
-    // Create 5 LLM requests
-    for (let i = 0; i < 5; i++) {
-      db.createLlmRequest({ 
-        issue_id: issue.id, 
-        input_text: `Request ${i}`, 
-        output_text: `Response ${i}`,
+    // Create 3 issues with requests so we get 3 groups
+    const issues = [
+      db.createIssue({ project_id: p.id, title: "Issue A" }),
+      db.createIssue({ project_id: p.id, title: "Issue B" }),
+      db.createIssue({ project_id: p.id, title: "Issue C" }),
+    ];
+    for (const issue of issues) {
+      db.createLlmRequest({
+        issue_id: issue.id,
+        input_text: `Request for ${issue.title}`,
+        output_text: "Response",
         model_id: "gpt-4",
-        duration_ms: 100 + i * 50
       });
     }
 
-    // First page (page_size=2)
+    // First page (page_size=2) — 2 groups
     let res = await request(app).get("/api/llm-logs/grouped?page=1&page_size=2");
     expect(res.status).toBe(200);
-    expect(res.body.groups[0].call_count).toBe(2);
-    expect(res.body.totalCalls).toBe(5);
-    expect(res.body.totalGroups).toBe(1);
+    expect(res.body.groups).toHaveLength(2);
+    expect(res.body.totalGroups).toBe(3);
+    expect(res.body.totalCalls).toBe(3);
 
-    // Second page
+    // Second page — 1 group remaining
     res = await request(app).get("/api/llm-logs/grouped?page=2&page_size=2");
     expect(res.status).toBe(200);
-    expect(res.body.groups[0].call_count).toBe(2);
-    expect(res.body.totalCalls).toBe(5);
-
-    // Third page (only 1 left)
-    res = await request(app).get("/api/llm-logs/grouped?page=3&page_size=2");
-    expect(res.status).toBe(200);
-    expect(res.body.groups[0].call_count).toBe(1);
-    expect(res.body.totalCalls).toBe(5);
+    expect(res.body.groups).toHaveLength(1);
+    expect(res.body.totalCalls).toBe(3);
   });
 
   it("returns calls sorted by timestamp descending", async () => {

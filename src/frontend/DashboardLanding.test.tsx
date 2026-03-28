@@ -182,7 +182,6 @@ describe('DashboardLanding', () => {
       name: '',
       base_url: 'http://localhost:11434',
       model_id: 'llama3',
-      enabled: 1,
     })
     expect(mockOnRefresh).toHaveBeenCalled()
 

@@ -23,6 +23,7 @@ import {
   testGateNode,
   reviewNode,
   gitOpsNode,
+  failPipelineNode,
   routeAfterBuildGate,
   routeAfterTestGate,
   routeAfterReview,
@@ -127,6 +128,7 @@ const graph = new StateGraph(PipelineState)
   .addNode("test_gate", testGateNode)
   .addNode("review", reviewNode)
   .addNode("git_ops", gitOpsNode)
+  .addNode("fail_pipeline", failPipelineNode)
   .addEdge(START, "scout")
   .addEdge("scout", "implement")
   .addEdge("implement", "build_gate")
@@ -135,6 +137,7 @@ const graph = new StateGraph(PipelineState)
   .addConditionalEdges("test_gate", routeAfterTestGate)
   .addConditionalEdges("review", routeAfterReview)
   .addEdge("git_ops", END)
+  .addEdge("fail_pipeline", END)
   .compile({ checkpointer });
 
 // ─── Active pipeline tracking (for cancellation) ─────────────────────────────

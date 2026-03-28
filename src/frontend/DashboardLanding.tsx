@@ -16,7 +16,7 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
   const handleNewProject = () => {
     const name = prompt('Project name:')
     if (name) {
-      api.createProject({ name, workdir: '', git_remote: undefined, git_server_token: undefined, git_default_branch: 'main', model_id: undefined })
+      api.createProject({ name, workdir: '', git_remote: null, git_server_token: null, git_default_branch: 'main', model_id: null })
         .then(() => onRefresh())
     }
   }

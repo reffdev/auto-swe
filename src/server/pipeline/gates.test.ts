@@ -46,9 +46,9 @@ describe("routeAfterBuildGate", () => {
     expect(await routeAfterBuildGate(state)).toBe("implement");
   });
 
-  it("routes to test_write when retries exhausted", async () => {
+  it("routes to fail_pipeline when retries exhausted", async () => {
     const state = makeState({ buildErrors: "error TS1234: stuff", buildRetryCount: 3 });
-    expect(await routeAfterBuildGate(state)).toBe("test_write");
+    expect(await routeAfterBuildGate(state)).toBe("fail_pipeline");
   });
 });
 
@@ -65,9 +65,9 @@ describe("routeAfterTestGate", () => {
     expect(await routeAfterTestGate(state)).toBe("test_write");
   });
 
-  it("routes to review when retries exhausted", async () => {
+  it("routes to fail_pipeline when retries exhausted", async () => {
     const state = makeState({ testErrors: "FAIL src/test.ts", testRetryCount: 3 });
-    expect(await routeAfterTestGate(state)).toBe("review");
+    expect(await routeAfterTestGate(state)).toBe("fail_pipeline");
   });
 });
 

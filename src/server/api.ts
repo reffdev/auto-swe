@@ -250,6 +250,10 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
+    if (issue.status !== "pending" && issue.status !== "failed") {
+      res.status(409).json({ error: `cannot edit issue in status '${issue.status}'` });
+      return;
+    }
     const { title, description } = req.body;
     db.updateIssue(req.params.id, { title, description });
     res.json(db.getIssue(req.params.id));
@@ -611,16 +615,20 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   // ─── Grouped LLM Logs ──────────────────────────────────────────────────────
 
   router.get("/llm-logs/grouped", (req, res) => {
-    const status = req.query.status as string | undefined;
-    const model = req.query.model as string | undefined;
     const startDate = req.query.start_date as string | undefined;
     const endDate = req.query.end_date as string | undefined;
     const search = req.query.search as string | undefined;
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = parseInt(req.query.page_size as string) || 20;
 
-    const statusArray = status ? status.split(',').filter(s => s) : undefined;
-    const modelArray = model ? model.split(',').filter(m => m) : undefined;
+    // Handle both repeated params (?model=a&model=b) and comma-separated (?model=a,b)
+    const toArray = (v: unknown): string[] | undefined => {
+      if (!v) return undefined;
+      if (Array.isArray(v)) return v.flatMap(s => String(s).split(',')).filter(Boolean);
+      return String(v).split(',').filter(Boolean);
+    };
+    const statusArray = toArray(req.query.status);
+    const modelArray = toArray(req.query.model);
 
     try {
       const result = db.getGroupedLlmLogs({

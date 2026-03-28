@@ -340,6 +340,13 @@ export async function implementNode(
   const retryInfo = state.retryCount > 0 ? ` | Retry ${state.retryCount}/3 with review feedback` : "";
   console.log(`Pipeline: implement stage — resolved brief: ${reportLen} chars (~${reportTokensEst} tokens)${retryInfo}`);
 
+  if (reportLen < 200 && state.retryCount === 0) {
+    const msg = `Scout brief is too short (${reportLen} chars) — aborting pipeline. The scout failed to produce a useful report.`;
+    console.error(`Pipeline: ${msg}`);
+    ctx.db.updateRun(run.id, { status: "fail", output: msg, completed_at: new Date().toISOString() });
+    return { error: msg };
+  }
+
   if (reportLen < 500) {
     console.warn("Pipeline: WARNING — resolved brief is very short (<500 chars), implement will likely re-explore");
   }
@@ -488,30 +495,37 @@ export async function reviewNode(
     };
   }
 
-  // If we couldn't parse the verdict at all, don't send garbage feedback to implement.
-  // Treat it as accept — the review ran to completion without explicitly rejecting.
+  // If we couldn't parse the verdict at all, treat as reject — never auto-accept garbage.
   if (verdict.failureClass === "unparseable") {
-    console.log("Pipeline: review output unparseable — treating as accept (no explicit rejection found)");
-    const nextIndex = state.currentLensIndex + 1;
+    console.log("Pipeline: review output unparseable — treating as REJECT (safety: never auto-accept unparseable output)");
+    const newRetryCount = state.retryCount + 1;
+    if (newRetryCount >= MAX_RETRIES) {
+      console.log(`Pipeline: review lens "${lens.name}" exhausted retries on unparseable output — FAILING`);
+      return {
+        reviewOutput: output,
+        reviewVerdict: "reject",
+        reviewFeedback: "Review output was unparseable after all retries — review could not be completed.",
+        retryCount: newRetryCount,
+      };
+    }
     return {
       reviewOutput: output,
-      reviewVerdict: "accept",
-      currentLensIndex: nextIndex,
-      retryCount: 0,
+      reviewVerdict: "reject",
+      reviewFeedback: "Review output was unparseable — the reviewer did not produce a valid verdict block. Re-implement and ensure the review can produce a clear verdict.",
+      retryCount: newRetryCount,
     };
   }
 
   // Lens rejected — will we have retries left?
   const newRetryCount = state.retryCount + 1;
   if (newRetryCount >= MAX_RETRIES) {
-    // Exhausted retries for this lens — move on rather than blocking the pipeline
-    console.log(`Pipeline: review lens "${lens.name}" exhausted retries, advancing to next lens`);
-    const nextIndex = state.currentLensIndex + 1;
+    console.error(`Pipeline: review lens "${lens.name}" exhausted retries — failing pipeline`);
     return {
       reviewOutput: output,
-      reviewVerdict: "accept",
-      currentLensIndex: nextIndex,
-      retryCount: 0,
+      reviewVerdict: "reject",
+      reviewFeedback: verdict.feedback || "Review rejected after all retries exhausted.",
+      retryCount: newRetryCount,
+      error: `Pipeline failed — review lens "${lens.name}" rejected after ${MAX_RETRIES} retries.`,
     };
   }
 
@@ -632,8 +646,8 @@ export async function buildGateNode(
 export async function routeAfterBuildGate(state: PipelineStateType): Promise<string> {
   if (!state.buildErrors) return "test_write";
   if (state.buildRetryCount >= MAX_BUILD_RETRIES) {
-    console.log("Pipeline: build gate — exhausted retries, proceeding anyway");
-    return "test_write";
+    console.error("Pipeline: build gate — exhausted retries, failing pipeline");
+    return "fail_pipeline";
   }
   return "implement";
 }
@@ -674,10 +688,21 @@ export async function testGateNode(
 export async function routeAfterTestGate(state: PipelineStateType): Promise<string> {
   if (!state.testErrors) return "review";
   if (state.testRetryCount >= MAX_TEST_RETRIES) {
-    console.log("Pipeline: test gate — exhausted retries, proceeding anyway");
-    return "review";
+    console.error("Pipeline: test gate — exhausted retries, failing pipeline");
+    return "fail_pipeline";
   }
   return "test_write";
+}
+
+// ─── Fail node (terminates pipeline with error) ──────────────────────────────
+
+export async function failPipelineNode(
+  state: PipelineStateType,
+): Promise<Partial<PipelineStateType>> {
+  const errors = [state.buildErrors, state.testErrors].filter(Boolean).join("\n\n");
+  return {
+    error: `Pipeline failed — retries exhausted.\n\n${errors}`,
+  };
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────

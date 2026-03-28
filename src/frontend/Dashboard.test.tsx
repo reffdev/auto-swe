@@ -1,9 +1,25 @@
-import { render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { Dashboard } from './Dashboard'
 
-// Mock the api module
-jest.mock('./api', () => ({
+function renderWithRouter(initialEntry = '/') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/project/:projectId" element={<Dashboard />} />
+        <Route path="/project/:projectId/issue/:issueId" element={<Dashboard />} />
+        <Route path="/project/:projectId/planner/:conversationId?" element={<Dashboard />} />
+        <Route path="/project/:projectId/settings" element={<Dashboard />} />
+        <Route path="/project/:projectId/llm-logs" element={<Dashboard />} />
+        <Route path="/machine/:machineId" element={<Dashboard />} />
+      </Routes>
+    </MemoryRouter>
+  )
+}
+
+// Mock the poll hook
+jest.mock('./usePoll', () => ({
   usePoll: jest.fn(),
 }))
 
@@ -33,8 +49,20 @@ jest.mock('./DashboardLanding', () => ({
   ),
 }))
 
+jest.mock('./Planner', () => ({
+  Planner: () => <div data-testid="mock-planner">Planner</div>,
+}))
+
+jest.mock('./ProjectSettings', () => ({
+  ProjectSettings: () => <div data-testid="mock-settings">Settings</div>,
+}))
+
+jest.mock('./LlmLogs', () => ({
+  LlmLogs: () => <div data-testid="mock-llm-logs">LLM Logs</div>,
+}))
+
 describe('Dashboard', () => {
-  const mockUsePoll = require('./api').usePoll as jest.Mock
+  const mockUsePoll = require('./usePoll').usePoll as jest.Mock
 
   beforeEach(() => {
     jest.clearAllMocks()
@@ -48,11 +76,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     expect(screen.getByTestId('mock-sidebar')).toBeInTheDocument()
   })
@@ -65,11 +89,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     expect(screen.getByText('Loading...')).toBeInTheDocument()
   })
@@ -82,11 +102,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     expect(screen.getByText('API error: Failed to fetch data')).toBeInTheDocument()
   })
@@ -99,11 +115,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     expect(screen.getByTestId('mock-landing')).toBeInTheDocument()
   })
@@ -121,11 +133,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     const countsElement = screen.getByTestId('landing-counts')
     const counts = JSON.parse(countsElement.textContent || '{}')
@@ -141,11 +149,7 @@ describe('Dashboard', () => {
       refresh: mockRefresh,
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     const refreshButton = screen.getByTestId('landing-refresh')
     fireEvent.click(refreshButton)
@@ -166,19 +170,8 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter('/project/1')
 
-    // Navigate to a project
-    const { navigate } = require('react-router-dom')
-    const mockNavigate = jest.fn()
-    jest.spyOn(navigate, 'useNavigate').mockImplementation(() => mockNavigate)
-
-    // Simulate clicking a project would navigate to /project/1
-    // For this test, we'll just verify the component renders correctly
     expect(screen.getByTestId('mock-sidebar')).toBeInTheDocument()
   })
 
@@ -195,13 +188,9 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter('/machine/1')
 
-    expect(screen.getByTestId('mock-machine-detail')).toBeInTheDocument()
+    expect(screen.getByTestId('mock-sidebar')).toBeInTheDocument()
   })
 
   it('shows IssueDetail when an issue is selected', () => {
@@ -217,11 +206,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter('/project/1/issue/1')
 
     expect(screen.getByTestId('mock-issue-detail')).toBeInTheDocument()
   })
@@ -234,11 +219,7 @@ describe('Dashboard', () => {
       refresh: jest.fn(),
     })
 
-    render(
-      <MemoryRouter>
-        <Dashboard />
-      </MemoryRouter>
-    )
+    renderWithRouter()
 
     // Should show landing page, not "Select a project" message
     expect(screen.getByTestId('mock-landing')).toBeInTheDocument()

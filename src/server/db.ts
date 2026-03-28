@@ -335,9 +335,10 @@ export class Db {
     cache_read_tokens?: number;
     cache_creation_tokens?: number;
     duration_ms?: number | null;
+    created_at?: string;
   }): LlmRequest {
     const id = randomUUID();
-    this.drizzle.insert(schema.llmRequests).values({
+    const values: Record<string, unknown> = {
       id,
       issue_id: data.issue_id ?? null,
       run_id: data.run_id ?? null,
@@ -349,7 +350,11 @@ export class Db {
       cache_read_tokens: data.cache_read_tokens ?? 0,
       cache_creation_tokens: data.cache_creation_tokens ?? 0,
       duration_ms: data.duration_ms ?? null,
-    }).run();
+    };
+    if (data.created_at) {
+      values.created_at = data.created_at;
+    }
+    this.drizzle.insert(schema.llmRequests).values(values as typeof schema.llmRequests.$inferInsert).run();
     return this.drizzle.select().from(schema.llmRequests).where(eq(schema.llmRequests.id, id)).get()!;
   }
 
@@ -396,6 +401,7 @@ export class Db {
         id: string;
         timestamp: string;
         model: string;
+        status: string;
         input_tokens: number;
         output_tokens: number;
         latency_ms: number;
@@ -406,13 +412,21 @@ export class Db {
     totalGroups: number;
     totalCalls: number;
   } {
-    const { model, startDate, endDate, search, page = 1, pageSize = 20 } = params;
+    const { status, model, startDate, endDate, search, page = 1, pageSize = 20 } = params;
     const offset = (page - 1) * pageSize;
 
     // Build WHERE clause with parameterized values
     const whereParts: string[] = [];
     const whereParams: unknown[] = [];
 
+    if (status?.length) {
+      // status is derived: success = has output, error = no output
+      const statusConds = status.map(() =>
+        "CASE WHEN lr.output_text IS NOT NULL AND lr.output_text != '' THEN 'success' ELSE 'error' END = ?"
+      );
+      whereParts.push(`(${statusConds.join(" OR ")})`);
+      whereParams.push(...status);
+    }
     if (model?.length) {
       whereParts.push(`lr.model_id IN (${model.map(() => "?").join(",")})`);
       whereParams.push(...model);
@@ -486,6 +500,7 @@ export class Db {
           lr.id,
           lr.created_at as timestamp,
           COALESCE(lr.model_id, '') as model,
+          CASE WHEN lr.output_text IS NOT NULL AND lr.output_text != '' THEN 'success' ELSE 'error' END as status,
           lr.prompt_tokens as input_tokens,
           lr.completion_tokens as output_tokens,
           COALESCE(lr.duration_ms, 0) as latency_ms,
@@ -495,7 +510,7 @@ export class Db {
         ${callWhereSQL}
         ORDER BY lr.created_at DESC
       `).all(...callWhereParams) as Array<{
-        id: string; timestamp: string; model: string;
+        id: string; timestamp: string; model: string; status: string;
         input_tokens: number; output_tokens: number; latency_ms: number;
         prompt_preview: string; response_preview: string;
       }>;
