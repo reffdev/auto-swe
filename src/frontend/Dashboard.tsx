@@ -73,6 +73,7 @@ export function Dashboard() {
       <Sidebar
         projects={projects}
         machines={machines}
+        issues={issues}
         selectedProjectId={selectedProjectId}
         selectedMachineId={selectedMachineId}
         onSelectProject={(id) => {

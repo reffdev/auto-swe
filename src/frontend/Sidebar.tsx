@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw, Activity } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -8,7 +8,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { useNavigate } from 'react-router-dom'
 import * as api from './api'
-import type { Project, Machine } from './api'
+import type { Project, Machine, Issue } from './api'
 
 // ─── Restart Overlay ─────────────────────────────────────────────────────────
 
@@ -82,6 +82,83 @@ function RestartOverlay() {
         {details && <p className="text-xs text-muted-foreground font-mono">{details}</p>}
         <p className="text-xs text-muted-foreground">Do not close this tab</p>
       </div>
+    </div>
+  )
+}
+
+// ─── Stats Panel ─────────────────────────────────────────────────────────────
+
+interface Stats {
+  machines: { active: number; total: number };
+  issues: { queued: number; pr_open: number; failed: number };
+  speed: { prompt_tokens_per_sec: number | null; completion_tokens_per_sec: number | null };
+}
+
+function StatsPanel() {
+  const [stats, setStats] = useState<Stats | null>(null)
+
+  useEffect(() => {
+    const fetchStats = () => {
+      fetch('/api/stats').then(r => r.json()).then(setStats).catch(() => {})
+    }
+    fetchStats()
+    const interval = setInterval(fetchStats, 10_000)
+    return () => clearInterval(interval)
+  }, [])
+
+  if (!stats) return null
+
+  const promptTps = stats.speed.prompt_tokens_per_sec
+  const completionTps = stats.speed.completion_tokens_per_sec
+
+  return (
+    <div className="px-3 py-2 border-t border-border space-y-1.5">
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <Cpu className="size-3 shrink-0" />
+          <span>Machines</span>
+        </div>
+        <span className="text-right font-mono">
+          <span className={stats.machines.active > 0 ? 'text-emerald-400' : ''}>{stats.machines.active}</span>
+          <span className="text-muted-foreground">/{stats.machines.total}</span>
+        </span>
+
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <Activity className="size-3 shrink-0" />
+          <span>Queued</span>
+        </div>
+        <span className="text-right font-mono">{stats.issues.queued}</span>
+
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <GitPullRequest className="size-3 shrink-0" />
+          <span>PRs Open</span>
+        </div>
+        <span className="text-right font-mono">
+          {stats.issues.pr_open > 0 ? <span className="text-blue-400">{stats.issues.pr_open}</span> : '0'}
+        </span>
+
+        {stats.issues.failed > 0 && (
+          <>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <AlertTriangle className="size-3 shrink-0" />
+              <span>Failed</span>
+            </div>
+            <span className="text-right font-mono text-destructive">{stats.issues.failed}</span>
+          </>
+        )}
+      </div>
+
+      {(promptTps || completionTps) && (
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground pt-0.5">
+          <Zap className="size-3 shrink-0 text-yellow-500" />
+          <span className="font-mono">
+            {promptTps ? `${Math.round(promptTps)} in` : ''}
+            {promptTps && completionTps ? ' / ' : ''}
+            {completionTps ? `${Math.round(completionTps)} out` : ''}
+            <span className="text-muted-foreground/60"> tok/s</span>
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -209,6 +286,7 @@ function NewMachineDialog({ open, onClose, onCreated }: {
 interface SidebarProps {
   projects: Project[]
   machines: Machine[]
+  issues: Issue[]
   selectedProjectId: string | null
   selectedMachineId: string | null
   onSelectProject: (id: string | null) => void
@@ -221,7 +299,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
   working: 'bg-green-500 animate-pulse',
 }
 
-export function Sidebar({ projects, machines, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
+export function Sidebar({ projects, machines, issues, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
   const navigate = useNavigate()
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
@@ -306,22 +384,44 @@ export function Sidebar({ projects, machines, selectedProjectId, selectedMachine
         {machines.length === 0 && (
           <p className="px-3 py-2 text-xs text-muted-foreground">No machines yet</p>
         )}
-        {machines.map((m) => (
-          <button
-            key={m.id}
-            onClick={() => onSelectMachine(m.id === selectedMachineId ? null : m.id)}
-            className={cn(
-              'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
-              'hover:bg-accent',
-              selectedMachineId === m.id && 'bg-accent font-medium',
-            )}
-          >
-            <Server className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate flex-1">{m.name || m.model_id}</span>
-            <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
-          </button>
-        ))}
+        {machines.map((m) => {
+          const activeIssue = m.status === 'working' && m.current_run_id
+            ? issues.find(i => i.id === m.current_run_id)
+            : null
+          return (
+            <div key={m.id} className="flex items-center">
+              <button
+                onClick={() => onSelectMachine(m.id === selectedMachineId ? null : m.id)}
+                className={cn(
+                  'flex-1 text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
+                  'hover:bg-accent',
+                  selectedMachineId === m.id && 'bg-accent font-medium',
+                )}
+              >
+                <Server className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate flex-1">{m.name || m.model_id}</span>
+                <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
+              </button>
+              {activeIssue && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    navigate(`/project/${activeIssue.project_id}/issue/${activeIssue.id}`)
+                  }}
+                  title={activeIssue.title}
+                  className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
+                >
+                  <ArrowRight className="size-3.5" />
+                </button>
+              )}
+            </div>
+          )
+        })}
       </nav>
+
+      {/* Stats */}
+      <div className="mt-auto" />
+      <StatsPanel />
 
       {/* Update & Restart */}
       <div className="p-2 border-t border-border space-y-1">

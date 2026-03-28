@@ -145,8 +145,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "project not found" });
       return;
     }
-    const { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command, context_limit } = req.body;
-    db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command, context_limit });
+    const { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command } = req.body;
+    db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command });
     res.json(db.getProject(req.params.id));
   });
 
@@ -674,7 +674,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   // ─── Stats (compact, for M5 StickC / external monitoring) ───────────────
 
-  router.get("/stats", async (_req, res) => {
+  router.get("/stats", (_req, res) => {
     const machines = db.getMachines().filter(m => m.enabled === 1);
     const active = machines.filter(m => m.status === "working").length;
 
@@ -683,7 +683,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const prOpen = issues.filter(i => i.status === "awaiting_review").length;
     const failed = issues.filter(i => i.status === "failed").length;
 
-    const speed = await getGenerationSpeed(db, machines);
+    const speed = getGenerationSpeed();
 
     res.json({
       machines: { active, total: machines.length },

@@ -1,11 +1,14 @@
 /**
- * Live stats calculation — token generation speed from llama.cpp metrics
- * with DB fallback.
+ * Live stats with background collection.
+ *
+ * A background collector fetches metrics from connected llama.cpp machines
+ * every 30s. The /api/stats endpoint reads from cache — never hits remote
+ * machines directly.
  */
 
 import type { Db, Machine } from "./db";
 
-interface SpeedResult {
+export interface SpeedResult {
   prompt_tokens_per_sec: number | null;
   completion_tokens_per_sec: number | null;
 }
@@ -19,22 +22,25 @@ interface MetricsEntry {
   duration_ms: number;
 }
 
-// ─── Fetch speed from llama.cpp /api/metrics ─────────────────────────────────
+// ─── Background collector ────────────────────────────────────────────────────
+
+const COLLECT_INTERVAL_MS = 30_000; // refresh every 30s
+const FETCH_TIMEOUT_MS = 3_000;
+
+let cachedSpeed: SpeedResult = { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
+let lastCollectTime = 0;
+let collectInterval: ReturnType<typeof setInterval> | null = null;
 
 async function fetchMachineMetrics(baseUrl: string): Promise<{
   promptTps: number;
   completionTps: number;
 } | null> {
-  // base_url is typically "http://host:port/v1" — metrics is at the server root, not under /v1
   const url = new URL(baseUrl);
   const metricsUrl = `${url.protocol}//${url.host}/api/metrics`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 2000);
-
   try {
     const res = await fetch(metricsUrl, {
-      signal: controller.signal,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { Accept: "application/json" },
     });
     if (!res.ok) return null;
@@ -44,26 +50,17 @@ async function fetchMachineMetrics(baseUrl: string): Promise<{
 
     // Filter to entries from the last 5 minutes
     const fiveMinAgo = Date.now() - 5 * 60 * 1000;
-    const recent = entries.filter(e => {
-      const ts = new Date(e.timestamp).getTime();
-      return ts > fiveMinAgo;
-    });
-
+    const recent = entries.filter(e => new Date(e.timestamp).getTime() > fiveMinAgo);
     if (recent.length === 0) return null;
 
-    // Average prompt_per_second and tokens_per_second across recent entries
     const promptTps = recent.reduce((sum, e) => sum + (e.prompt_per_second ?? 0), 0) / recent.length;
     const completionTps = recent.reduce((sum, e) => sum + (e.tokens_per_second ?? 0), 0) / recent.length;
 
     return { promptTps, completionTps };
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
-
-// ─── DB fallback ──────────────────────────────────────────────────────────────
 
 function getSpeedFromDb(db: Db): SpeedResult {
   try {
@@ -92,38 +89,53 @@ function getSpeedFromDb(db: Db): SpeedResult {
   }
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+async function collect(db: Db): Promise<void> {
+  const machines = db.getMachines().filter(m => m.enabled === 1);
 
-export async function getGenerationSpeed(
-  db: Db,
-  machines: Machine[]
-): Promise<SpeedResult> {
-  // Try /metrics on all enabled machines in parallel
+  // Fetch from all machines in parallel
   const results = await Promise.allSettled(
     machines.map(m => fetchMachineMetrics(m.base_url))
   );
 
-  // Collect non-null, non-zero results
   const active: Array<{ promptTps: number; completionTps: number }> = [];
   for (const r of results) {
     if (r.status === "fulfilled" && r.value) {
-      // Only include machines with non-zero throughput (skip idle/sleeping)
       if (r.value.promptTps > 0 || r.value.completionTps > 0) {
         active.push(r.value);
       }
     }
   }
 
-  // Average across active machines
   if (active.length > 0) {
-    const avgPrompt = active.reduce((s, m) => s + m.promptTps, 0) / active.length;
-    const avgCompletion = active.reduce((s, m) => s + m.completionTps, 0) / active.length;
-    return {
-      prompt_tokens_per_sec: Math.round(avgPrompt * 10) / 10,
-      completion_tokens_per_sec: Math.round(avgCompletion * 10) / 10,
+    cachedSpeed = {
+      prompt_tokens_per_sec: Math.round(active.reduce((s, m) => s + m.promptTps, 0) / active.length * 10) / 10,
+      completion_tokens_per_sec: Math.round(active.reduce((s, m) => s + m.completionTps, 0) / active.length * 10) / 10,
     };
+  } else {
+    cachedSpeed = getSpeedFromDb(db);
   }
 
-  // Fallback to DB
-  return getSpeedFromDb(db);
+  lastCollectTime = Date.now();
+}
+
+/** Start the background stats collector. Call once at server startup. */
+export function startStatsCollector(db: Db): void {
+  if (collectInterval) return; // already running
+  collect(db).catch(() => {}); // initial collect
+  collectInterval = setInterval(() => collect(db).catch(() => {}), COLLECT_INTERVAL_MS);
+}
+
+/** Stop the background collector. */
+export function stopStatsCollector(): void {
+  if (collectInterval) {
+    clearInterval(collectInterval);
+    collectInterval = null;
+  }
+}
+
+// ─── Public API (reads from cache) ──────────────────────────────────────────
+
+/** Get cached generation speed. Never hits remote machines — reads from background collector. */
+export function getGenerationSpeed(): SpeedResult {
+  return cachedSpeed;
 }

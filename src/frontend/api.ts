@@ -28,7 +28,6 @@ export interface Project {
   model_id: string | null;
   build_command: string | null;
   test_command: string | null;
-  context_limit: number | null;
   created_at: string;
 }
 

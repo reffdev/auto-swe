@@ -36,12 +36,21 @@ describe('Sidebar', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    // Mock fetch for server info
-    global.fetch = jest.fn(() =>
-      Promise.resolve({
+    // Mock fetch for server info and stats
+    global.fetch = jest.fn((url: string) => {
+      if (url.includes('/api/stats')) {
+        return Promise.resolve({
+          json: () => Promise.resolve({
+            machines: { active: 1, total: 2 },
+            issues: { queued: 0, pr_open: 0, failed: 0 },
+            speed: { prompt_tokens_per_sec: null, completion_tokens_per_sec: null },
+          }),
+        })
+      }
+      return Promise.resolve({
         json: () => Promise.resolve({ commit: 'abc123', branch: 'main' }),
       })
-    ) as jest.Mock
+    }) as jest.Mock
     // Mock useNavigate
     ;(useNavigate as jest.Mock).mockImplementation(() => mockNavigate)
   })
@@ -52,6 +61,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -71,6 +81,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -91,6 +102,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -112,6 +124,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -130,6 +143,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -148,6 +162,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -166,6 +181,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -184,6 +200,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -205,6 +222,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -225,6 +243,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={projects}
           machines={[]}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -248,6 +267,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={projects}
           machines={[]}
+          issues={[]}
           selectedProjectId={'proj1'}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -271,6 +291,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={machines}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
@@ -297,6 +318,7 @@ describe('Sidebar', () => {
         <Sidebar
           projects={[]}
           machines={machines}
+          issues={[]}
           selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}

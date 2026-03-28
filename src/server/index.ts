@@ -12,6 +12,7 @@ import { existsSync } from "fs";
 import { Db } from "./db";
 import { createApiRouter } from "./api";
 import { createPlannerRouter } from "./planner-api";
+import { startStatsCollector } from "./stats";
 import { createVoiceRouter } from "./voice";
 import { LlamaCppStt } from "./voice/stt-llamacpp";
 import { LlamaCppLlm } from "./voice/llm-llamacpp";
@@ -81,7 +82,10 @@ if (existsSync(clientDir)) {
   console.log(`Serving frontend from ${clientDir}`);
 }
 
-// 7. Start server
+// 7. Start background services
+startStatsCollector(db);
+
+// 8. Start server
 const server = app.listen(PORT, () => {
   console.log(`auto-swe server listening on http://localhost:${PORT}`);
 });

@@ -14,17 +14,13 @@ interface ProjectSettingsProps {
 export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettingsProps) {
   const [buildCommand, setBuildCommand] = useState(project.build_command ?? '')
   const [testCommand, setTestCommand] = useState(project.test_command ?? '')
-  const [contextLimit, setContextLimit] = useState(project.context_limit?.toString() ?? '')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const parsedContextLimit = contextLimit ? parseInt(contextLimit) || null : null
-
   const hasChanges =
     (buildCommand || null) !== (project.build_command ?? null) ||
-    (testCommand || null) !== (project.test_command ?? null) ||
-    parsedContextLimit !== (project.context_limit ?? null)
+    (testCommand || null) !== (project.test_command ?? null)
 
   const handleSave = async () => {
     setSaving(true)
@@ -34,7 +30,6 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
       await api.updateProject(project.id, {
         build_command: buildCommand || null,
         test_command: testCommand || null,
-        context_limit: parsedContextLimit,
       } as Partial<Project>)
       onDataChange()
       setSaved(true)
@@ -119,23 +114,7 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
           </div>
         </section>
 
-        {/* Context limit */}
-        <section>
-          <h3 className="text-sm font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Context Window</h3>
-          <div>
-            <label className="block text-sm text-muted-foreground mb-1">Context Limit (tokens)</label>
-            <Input
-              value={contextLimit}
-              onChange={e => setContextLimit(e.target.value)}
-              placeholder="e.g. 32768"
-              className="font-mono text-sm max-w-xs"
-              type="number"
-            />
-            <p className="text-xs text-muted-foreground mt-1">
-              When a stage's prompt tokens reach 75% of this limit, the agent checkpoints its progress and restarts with fresh context. Leave empty to disable compaction. Overrides the machine setting.
-            </p>
-          </div>
-        </section>
+
 
         {/* Save */}
         <div className="flex items-center gap-3">

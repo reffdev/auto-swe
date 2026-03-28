@@ -109,7 +109,7 @@ export class Db {
       "ALTER TABLE issues ADD COLUMN scout_commit TEXT",
       "ALTER TABLE projects ADD COLUMN build_command TEXT",
       "ALTER TABLE projects ADD COLUMN test_command TEXT",
-      "ALTER TABLE projects ADD COLUMN context_limit INTEGER",
+      "ALTER TABLE projects ADD COLUMN context_limit INTEGER", // unused — context_limit is per-machine only
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -214,7 +214,7 @@ export class Db {
     return this.getProject(id)!;
   }
 
-  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "model_id" | "build_command" | "test_command" | "context_limit">>): void {
+  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "model_id" | "build_command" | "test_command">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.projects).set(clean).where(eq(schema.projects.id, id)).run();
