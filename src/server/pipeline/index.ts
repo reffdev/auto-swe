@@ -120,7 +120,9 @@ function createModelProvider(machine: Machine) {
             try {
               const { done, value } = await reader.read();
               if (done) { streamDone = true; clearTimer(); controller.close(); return; }
-              resetTimer();
+              // Only reset the inactivity timer on chunks with actual data —
+              // SSE keepalives (empty lines, comments) shouldn't prevent timeout
+              if (value && value.length > 16) resetTimer();
               controller.enqueue(value);
             } catch (err) {
               clearTimer();
