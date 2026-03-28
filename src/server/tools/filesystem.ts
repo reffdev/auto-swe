@@ -730,8 +730,15 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
         const content = normalizeEol(readFileSync(fullPath, "utf-8"));
-        const normalizedOldStr = normalizeEol(old_str);
-        const normalizedNewStr = normalizeEol(new_str);
+        let normalizedOldStr = normalizeEol(old_str);
+        let normalizedNewStr = normalizeEol(new_str);
+
+        // Fix double-escaped newlines — some models send \\n instead of \n in tool args
+        if (normalizedOldStr.includes("\\n") && !content.includes("\\n")) {
+          normalizedOldStr = normalizedOldStr.replace(/\\n/g, "\n");
+          normalizedNewStr = normalizedNewStr.replace(/\\n/g, "\n");
+        }
+
         let count = content.split(normalizedOldStr).length - 1;
 
         // Retry with normalised indentation when exact match fails
