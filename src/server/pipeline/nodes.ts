@@ -322,25 +322,58 @@ export async function scoutNode(
     }
   }
 
-  const brief = extractScoutBrief(scoutOutput);
+  let brief = extractScoutBrief(scoutOutput);
   getAndClearSubmittedBrief();
   console.log(`Pipeline: scout brief: ${brief.length} chars`);
 
-  if (!brief || brief.length < 10) {
-    throw new Error("Scout produced an empty manifest — cannot proceed to implementation");
+  // Validate manifest — must be valid JSON with a files array. Retry if not.
+  const MAX_SCOUT_RETRIES = 2;
+  for (let attempt = 0; attempt < MAX_SCOUT_RETRIES; attempt++) {
+    let isValid = false;
+    try {
+      if (!brief || brief.length < 10) throw new SyntaxError("empty");
+      const parsed = JSON.parse(brief);
+      if (!parsed.files?.length) throw new Error("no files");
+      console.log(`Pipeline: scout manifest contains ${parsed.files.length} files`);
+      isValid = true;
+    } catch {
+      // Not valid — ask the scout to fix it
+    }
+
+    if (isValid) break;
+
+    console.log(`Pipeline: scout manifest invalid — asking for correction (attempt ${attempt + 2})`);
+    const followUp = await generateText({
+      model,
+      system: constructScoutPrompt({ workingDir: state.worktreePath }),
+      messages: [
+        { role: "user", content: userIssue + contextSection },
+        { role: "assistant", content: scoutOutput || "(no output)" },
+        { role: "user", content: "You did not call saveCheckpoint with a valid file list. You MUST call saveCheckpoint now with your findings. The parameter is an object with a `files` array where each entry has `path` (string) and `reason` (string). Call it now." },
+      ],
+      tools: {
+        saveCheckpoint: createSubmitScoutReportTool(new AbortController()),
+      } as ToolSet,
+      maxSteps: 2,
+      abortSignal,
+    });
+
+    // Check if the tool was called during the follow-up
+    brief = extractScoutBrief(followUp.text || "");
+    getAndClearSubmittedBrief();
+    console.log(`Pipeline: scout retry brief: ${brief.length} chars`);
   }
 
-  // Validate manifest — must be valid JSON with a files array
+  // Final validation
   try {
+    if (!brief || brief.length < 10) throw new SyntaxError("empty");
     const parsed = JSON.parse(brief);
     if (!parsed.files?.length) {
-      throw new Error("Scout manifest contains no files — cannot proceed to implementation");
+      throw new Error("Scout manifest contains no files after retries — cannot proceed");
     }
-    console.log(`Pipeline: scout manifest contains ${parsed.files.length} files`);
   } catch (e) {
     if (e instanceof SyntaxError) {
-      console.error("Pipeline: scout did not produce a JSON file manifest (saveCheckpoint was not called or produced invalid output)");
-      throw new Error("Scout did not produce a valid file manifest — the saveCheckpoint tool must be called with a list of relevant files");
+      throw new Error("Scout did not produce a valid file manifest after retries — saveCheckpoint was never called correctly");
     }
     throw e;
   }
