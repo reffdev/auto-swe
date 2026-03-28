@@ -82,30 +82,56 @@ function createModelProvider(machine: Machine) {
 
       if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {
         const reader = res.body.getReader();
+        let streamDone = false;
         let lastChunkTime = Date.now();
+
+        // Single persistent inactivity timer — resets on every chunk.
+        // Controller ref is set in start(), used by the timer callback.
+        let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+        let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+
+        const clearTimer = () => {
+          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+        };
+
+        const resetTimer = () => {
+          if (streamDone) return;
+          lastChunkTime = Date.now();
+          clearTimer();
+          inactivityTimer = setTimeout(() => {
+            if (streamDone) return;
+            streamDone = true;
+            inactivityTimer = null;
+            const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
+            console.log(`Pipeline: LLM stream inactive for ${elapsed}s (limit: ${LLM_REQUEST_TIMEOUT_MS / 1000}s) — aborting stream`);
+            reader.cancel("LLM stream inactivity timeout");
+            try { streamController?.error(new Error(`LLM stream timed out — no data for ${elapsed}s`)); } catch { /* controller may already be closed */ }
+          }, LLM_REQUEST_TIMEOUT_MS);
+        };
+
         const watchedStream = new ReadableStream({
+          start(controller) {
+            streamController = controller;
+            resetTimer();
+          },
           async pull(controller) {
-            const timeoutId = setTimeout(() => {
-              const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
-              console.log(`Pipeline: LLM stream inactive for ${elapsed}s (limit: ${LLM_REQUEST_TIMEOUT_MS / 1000}s) — aborting stream`);
-              reader.cancel("LLM stream inactivity timeout");
-              controller.error(new Error(`LLM stream timed out — no data for ${elapsed}s`));
-            }, LLM_REQUEST_TIMEOUT_MS);
+            if (streamDone) return;
 
             try {
               const { done, value } = await reader.read();
-              clearTimeout(timeoutId);
-              lastChunkTime = Date.now();
-              if (done) { controller.close(); return; }
+              if (done) { streamDone = true; clearTimer(); controller.close(); return; }
+              resetTimer();
               controller.enqueue(value);
             } catch (err) {
-              clearTimeout(timeoutId);
+              clearTimer();
+              if (streamDone) return;
+              streamDone = true;
               const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
               console.log(`Pipeline: LLM stream error after ${elapsed}s of inactivity: ${err instanceof Error ? err.message : err}`);
-              controller.error(err);
+              try { controller.error(err); } catch { /* controller may already be errored */ }
             }
           },
-          cancel() { reader.cancel(); },
+          cancel() { streamDone = true; clearTimer(); reader.cancel(); },
         });
 
         return new Response(watchedStream, {
