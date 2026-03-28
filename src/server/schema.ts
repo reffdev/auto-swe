@@ -53,6 +53,8 @@ export const issues = sqliteTable("issues", {
   parent_id: text("parent_id"),        // references issues(id), null = top-level/standalone
   sequence: integer("sequence"),        // display ordering within an epic, null = standalone
   depends_on: text("depends_on"),      // JSON array of issue IDs this depends on, e.g. '["uuid1","uuid2"]'
+  scout_brief: text("scout_brief"),
+  scout_commit: text("scout_commit"),  // HEAD commit when scout ran — re-scout if changed
   retry_count: integer("retry_count").notNull().default(0),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   completed_at: text("completed_at"),

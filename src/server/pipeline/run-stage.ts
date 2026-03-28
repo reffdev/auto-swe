@@ -298,13 +298,24 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           });
           try { db.updateRun(runId, { output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
 
+          // Build a summary of what the agent did so it can produce a meaningful checkpoint
+          const workSummary = liveSteps
+            .filter(s => s.toolCalls?.length || s.text)
+            .map(s => {
+              const parts: string[] = [];
+              if (s.toolCalls?.length) parts.push(s.toolCalls.map(tc => `[${tc.tool}] ${tc.args.slice(0, 200)}`).join("; "));
+              if (s.text) parts.push(s.text.slice(0, 300));
+              return `Step ${s.step}: ${parts.join(" → ")}`;
+            })
+            .join("\n");
+
           // Ask the LLM for a checkpoint report
           const checkpointResult = await generateText({
             model,
             system: systemPrompt,
             messages: [
               { role: "user", content: currentUserPrompt },
-              { role: "assistant", content: "(work in progress)" },
+              { role: "assistant", content: `Here is a summary of what I've done so far:\n\n${workSummary}` },
               { role: "user", content: CHECKPOINT_PROMPT },
             ],
             abortSignal,

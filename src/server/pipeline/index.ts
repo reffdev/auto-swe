@@ -14,7 +14,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { resolve } from "path";
 
 import { PipelineState } from "./state";
-import type { PipelineConfig } from "./state";
+import type { PipelineConfig, PipelineStateType } from "./state";
 import {
   scoutNode,
   implementNode,
@@ -153,30 +153,53 @@ function createModelProvider(machine: Machine) {
   return provider;
 }
 
+// ─── Graph wiring (shared between production and tests) ─────────────────────
+
+type NodeFn = (state: any, config?: any) => Promise<any>;
+
+export interface PipelineNodes {
+  scout: NodeFn;
+  implement: NodeFn;
+  build_gate: NodeFn;
+  test_write: NodeFn;
+  test_gate: NodeFn;
+  review: NodeFn;
+  git_ops: NodeFn;
+  fail_pipeline: NodeFn;
+}
+
+/** Build the pipeline graph with given node implementations. Single source of truth for edges. */
+export function buildPipelineGraph(nodes: PipelineNodes, opts?: { checkpointer?: any }) {
+  return new StateGraph(PipelineState)
+    .addNode("scout", nodes.scout)
+    .addNode("implement", nodes.implement)
+    .addNode("build_gate", nodes.build_gate)
+    .addNode("test_write", nodes.test_write)
+    .addNode("test_gate", nodes.test_gate)
+    .addNode("review", nodes.review)
+    .addNode("git_ops", nodes.git_ops)
+    .addNode("fail_pipeline", nodes.fail_pipeline)
+    .addEdge(START, "scout")
+    .addEdge("scout", "implement")
+    .addConditionalEdges("implement", (state: PipelineStateType) => state.error ? "fail_pipeline" : "build_gate")
+    .addConditionalEdges("build_gate", routeAfterBuildGate)
+    .addConditionalEdges("test_write", routeAfterTestWrite)
+    .addConditionalEdges("test_gate", routeAfterTestGate)
+    .addConditionalEdges("review", routeAfterReview)
+    .addEdge("git_ops", END)
+    .addEdge("fail_pipeline", END)
+    .compile(opts?.checkpointer ? { checkpointer: opts.checkpointer } : undefined);
+}
+
 // ─── Graph Definition (with persistent SQLite checkpointing) ──────────────────
 
 const dbPath = resolve(process.env.DB_PATH ?? "./open-swe.db");
 const checkpointer = SqliteSaver.fromConnString(dbPath);
 
-const graph = new StateGraph(PipelineState)
-  .addNode("scout", scoutNode)
-  .addNode("implement", implementNode)
-  .addNode("build_gate", buildGateNode)
-  .addNode("test_write", testWriteNode)
-  .addNode("test_gate", testGateNode)
-  .addNode("review", reviewNode)
-  .addNode("git_ops", gitOpsNode)
-  .addNode("fail_pipeline", failPipelineNode)
-  .addEdge(START, "scout")
-  .addEdge("scout", "implement")
-  .addConditionalEdges("implement", (state) => state.error ? "fail_pipeline" : "build_gate")
-  .addConditionalEdges("build_gate", routeAfterBuildGate)
-  .addConditionalEdges("test_write", routeAfterTestWrite)
-  .addConditionalEdges("test_gate", routeAfterTestGate)
-  .addConditionalEdges("review", routeAfterReview)
-  .addEdge("git_ops", END)
-  .addEdge("fail_pipeline", END)
-  .compile({ checkpointer });
+const graph = buildPipelineGraph(
+  { scout: scoutNode, implement: implementNode, build_gate: buildGateNode, test_write: testWriteNode, test_gate: testGateNode, review: reviewNode, git_ops: gitOpsNode, fail_pipeline: failPipelineNode },
+  { checkpointer },
+);
 
 // ─── Active pipeline tracking (for cancellation) ─────────────────────────────
 

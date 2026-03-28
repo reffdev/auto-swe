@@ -105,6 +105,8 @@ export class Db {
       "ALTER TABLE issues ADD COLUMN parent_id TEXT",
       "ALTER TABLE issues ADD COLUMN sequence INTEGER",
       "ALTER TABLE issues ADD COLUMN depends_on TEXT",
+      "ALTER TABLE issues ADD COLUMN scout_brief TEXT",
+      "ALTER TABLE issues ADD COLUMN scout_commit TEXT",
       "ALTER TABLE projects ADD COLUMN build_command TEXT",
       "ALTER TABLE projects ADD COLUMN test_command TEXT",
       "ALTER TABLE projects ADD COLUMN context_limit INTEGER",
@@ -267,7 +269,7 @@ export class Db {
 
   updateIssue(
     id: string,
-    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "review_lenses" | "parent_id" | "sequence" | "depends_on" | "completed_at" | "retry_count">>
+    data: Partial<Pick<Issue, "title" | "description" | "status" | "git_branch" | "git_worktree" | "git_pr_url" | "git_pr_number" | "github_issue_number" | "github_issue_url" | "review_lenses" | "parent_id" | "sequence" | "depends_on" | "completed_at" | "retry_count" | "scout_brief" | "scout_commit">>
   ): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;

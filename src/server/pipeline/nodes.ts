@@ -244,11 +244,33 @@ function captureGitContext(worktreePath: string, header = "## Git Changes"): str
 
 // ─── Scout Node (multi-cycle explore + compact) ──────────────────────────────
 
+function getHeadCommit(worktreePath: string): string {
+  try {
+    return spawnSync("git", ["rev-parse", "HEAD"], { cwd: worktreePath, encoding: "utf-8", shell: true }).stdout?.trim() || "";
+  } catch { return ""; }
+}
+
 export async function scoutNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
   const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
+
+  // Check for cached scout brief — reuse if the codebase hasn't changed
+  const currentCommit = getHeadCommit(state.worktreePath);
+  const issue = ctx.db.getIssue(state.issueId);
+  if (issue?.scout_brief && issue.scout_commit && issue.scout_commit === currentCommit) {
+    console.log(`Pipeline: scout — reusing cached brief (${issue.scout_brief.length} chars, commit ${currentCommit.slice(0, 8)})`);
+    const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
+    ctx.db.updateRun(run.id, {
+      machine_id: state.machineId,
+      status: "pass",
+      output: JSON.stringify([{ step: 0, text: `**Scout skipped** — reusing cached brief from commit ${currentCommit.slice(0, 8)}`, tokens: { prompt: 0, completion: 0 }, durationMs: 0 }]),
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+    });
+    return { scoutBrief: issue.scout_brief };
+  }
 
   const projectCtx = gatherProjectContext(state.worktreePath);
   console.log(`Pipeline: scout — auto-loaded ${projectCtx.fileCount} files (${projectCtx.totalChars.toLocaleString()} chars)`);
@@ -323,6 +345,10 @@ export async function scoutNode(
     }
   }
 
+  // Cache the brief so retries can skip scout if codebase unchanged
+  ctx.db.updateIssue(state.issueId, { scout_brief: brief, scout_commit: currentCommit });
+  console.log(`Pipeline: scout brief cached (commit ${currentCommit.slice(0, 8)})`);
+
   return { scoutBrief: brief };
 }
 
@@ -390,8 +416,8 @@ export async function implementNode(
     worktreePath: state.worktreePath,
   });
 
-  // Clear gate errors after implement runs — they'll be re-checked by the gates
-  return { implementOutput: output, buildErrors: "", testErrors: "" };
+  // Clear gate errors and test verdict after implement runs — they'll be re-checked by the gates
+  return { implementOutput: output, buildErrors: "", testErrors: "", testWriteVerdict: "" };
 }
 
 // ─── Test-Write Node ──────────────────────────────────────────────────────────
