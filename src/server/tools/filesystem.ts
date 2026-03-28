@@ -196,6 +196,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         writeFileSync(fullPath, content, "utf-8");
         resetFileReadCount(result.cleaned);
         trackSuccess();
+        console.log(`[writeFile] ${result.cleaned} (${content.length} bytes)`);
         return `Wrote ${content.length} bytes to ${result.cleaned}`;
       } catch (e) {
         return trackResult(`Error writing file: ${e}`);
@@ -828,15 +829,20 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
           }
         }
 
-        if (count === 0)
+        if (count === 0) {
+          console.log(`[replaceInFile] FAILED — string not found in ${path}`);
           return trackResult(`Error: string not found in ${path}`);
-        if (count > 1)
+        }
+        if (count > 1) {
+          console.log(`[replaceInFile] FAILED — string appears ${count} times in ${path}`);
           return trackResult(
             `Error: string appears ${count} times in ${path} — make old_str more specific`
           );
+        }
         writeFileSync(fullPath, content.replace(searchStr, normalizedNewStr), "utf-8");
         resetFileReadCount(path);
         trackSuccess();
+        console.log(`[replaceInFile] ${path}`);
         return `Replaced 1 occurrence in ${path}`;
       } catch (e) {
         return trackResult(`Error: ${e}`);

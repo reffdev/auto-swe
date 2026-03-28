@@ -5,6 +5,9 @@
  * Initializes the database, runs crash recovery, and mounts routes.
  */
 
+import { installConsoleCapture } from "./console-log";
+installConsoleCapture(); // must be first — before any console.log calls
+
 import express from "express";
 import cors from "cors";
 import { resolve } from "path";

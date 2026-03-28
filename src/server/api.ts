@@ -9,6 +9,7 @@ import { existsSync, statSync, mkdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
+import { getRecentLogs, onLogEntry } from "./console-log";
 import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type PipelineContext } from "./pipeline/index";
 
 import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
@@ -698,6 +699,29 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       speed,
       machineSpeed: getAllMachineSpeeds(),
     });
+  });
+
+  // ─── Console log stream (SSE) ───────────────────────────────────────────
+
+  router.get("/console", (req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    // Send recent history
+    const recent = getRecentLogs(200);
+    for (const entry of recent) {
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    }
+
+    // Stream new entries
+    const unsub = onLogEntry((entry) => {
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    });
+
+    req.on("close", unsub);
   });
 
   // ─── Server info ────────────────────────────────────────────────────────

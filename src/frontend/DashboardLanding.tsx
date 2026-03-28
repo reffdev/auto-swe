@@ -1,13 +1,96 @@
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Plus, FolderGit2, Server, AlertCircle } from 'lucide-react'
+import { Plus, FolderGit2, Server, AlertCircle, Terminal } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import * as api from './api'
 
 interface SummaryCounts {
   projects: number
   machines: number
   issues: number
+}
+
+interface LogEntry {
+  timestamp: string;
+  level: "log" | "error" | "warn";
+  message: string;
+}
+
+const LEVEL_STYLES: Record<string, string> = {
+  log: "text-muted-foreground",
+  error: "text-destructive",
+  warn: "text-yellow-400",
+}
+
+function ConsoleLog() {
+  const [entries, setEntries] = useState<LogEntry[]>([])
+  const [collapsed, setCollapsed] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const autoScrollRef = useRef(true)
+
+  useEffect(() => {
+    const es = new EventSource('/api/console')
+    es.onmessage = (e) => {
+      try {
+        const entry = JSON.parse(e.data) as LogEntry
+        setEntries(prev => {
+          const next = [...prev, entry]
+          return next.length > 500 ? next.slice(-500) : next
+        })
+      } catch { /* ignore */ }
+    }
+    return () => es.close()
+  }, [])
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    if (autoScrollRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [entries])
+
+  const handleScroll = () => {
+    if (!scrollRef.current) return
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
+    autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 40
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Terminal className="size-4 text-muted-foreground" />
+          <span className="text-sm font-medium">Server Console</span>
+          <span className="text-xs text-muted-foreground">({entries.length})</span>
+        </div>
+        <span className="text-xs text-muted-foreground">{collapsed ? 'Show' : 'Hide'}</span>
+      </button>
+      {!collapsed && (
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="h-72 overflow-y-auto bg-black/30 border-t border-border font-mono text-[11px] leading-relaxed p-2"
+        >
+          {entries.length === 0 && (
+            <span className="text-muted-foreground/50">Waiting for log output...</span>
+          )}
+          {entries.map((entry, i) => (
+            <div key={i} className={cn("whitespace-pre-wrap break-all", LEVEL_STYLES[entry.level])}>
+              <span className="text-muted-foreground/40 mr-2 select-none">
+                {new Date(entry.timestamp).toLocaleTimeString()}
+              </span>
+              {entry.message}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
 }
 
 export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts; onRefresh: () => void }) {
@@ -94,6 +177,9 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
             </CardContent>
           </Card>
         </div>
+
+        {/* Live console */}
+        <ConsoleLog />
 
         {counts.issues === 0 && (
           <Card>

@@ -2,6 +2,13 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { DashboardLanding } from './DashboardLanding'
 
+// Mock EventSource (not available in jsdom)
+global.EventSource = jest.fn(() => ({
+  onmessage: null,
+  onerror: null,
+  close: jest.fn(),
+})) as any
+
 // Mock the api module - return promises so .then() works
 const mockCreateProject = jest.fn(() => Promise.resolve({}))
 const mockCreateMachine = jest.fn(() => Promise.resolve({}))
@@ -230,7 +237,8 @@ describe('DashboardLanding', () => {
       </MemoryRouter>
     )
 
-    const cards = document.querySelectorAll('.card')
+    const grid = document.querySelector('.grid')!
+    const cards = grid.querySelectorAll('.card')
     expect(cards).toHaveLength(3)
 
     // Check that each card has the expected structure
