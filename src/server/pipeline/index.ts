@@ -66,12 +66,28 @@ function createModelProvider(machine: Machine) {
       const callerSignal = (init as RequestInit)?.signal;
       if (callerSignal?.aborted) throw new Error("Aborted");
 
-      // Retry on server errors (502/503/504) — the LLM server may be temporarily overloaded
-      const MAX_SERVER_ERROR_RETRIES = 2;
+      const LLM_CONNECT_TIMEOUT_MS = 2 * 60 * 1000; // 2 min connect timeout per attempt
+
+      // Retry on server errors (502/503/504) and connection failures
+      const MAX_SERVER_ERROR_RETRIES = 5;
       let res: Response | undefined;
       for (let attempt = 0; attempt <= MAX_SERVER_ERROR_RETRIES; attempt++) {
         if (callerSignal?.aborted) throw new Error("Aborted");
-        res = await fetch(url as string, init as RequestInit);
+        try {
+          // Combine caller's abort signal with our connect timeout
+          const signals = [AbortSignal.timeout(LLM_CONNECT_TIMEOUT_MS)];
+          if (callerSignal) signals.push(callerSignal);
+          const combinedSignal = AbortSignal.any(signals);
+
+          res = await fetch(url as string, { ...init as RequestInit, signal: combinedSignal });
+        } catch (err) {
+          // Connection error (timeout, refused, etc.)
+          if (attempt >= MAX_SERVER_ERROR_RETRIES) throw err;
+          const retryDelay = (attempt + 1) * 10000; // 10s, 20s
+          console.log(`Pipeline: LLM connection failed — ${err instanceof Error ? err.message : err} — retrying in ${retryDelay / 1000}s (attempt ${attempt + 2}/${MAX_SERVER_ERROR_RETRIES + 1})`);
+          await new Promise(r => setTimeout(r, retryDelay));
+          continue;
+        }
         if (res.status < 500 || attempt >= MAX_SERVER_ERROR_RETRIES) break;
         const retryDelay = (attempt + 1) * 5000; // 5s, 10s
         console.log(`Pipeline: LLM server returned ${res.status} — retrying in ${retryDelay / 1000}s (attempt ${attempt + 2}/${MAX_SERVER_ERROR_RETRIES + 1})`);
