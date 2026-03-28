@@ -330,7 +330,7 @@ export async function scoutNode(
     throw new Error("Scout produced an empty manifest — cannot proceed to implementation");
   }
 
-  // Validate manifest
+  // Validate manifest — must be valid JSON with a files array
   try {
     const parsed = JSON.parse(brief);
     if (!parsed.files?.length) {
@@ -339,10 +339,10 @@ export async function scoutNode(
     console.log(`Pipeline: scout manifest contains ${parsed.files.length} files`);
   } catch (e) {
     if (e instanceof SyntaxError) {
-      console.log("Pipeline: scout output is not JSON manifest — using as-is");
-    } else {
-      throw e;
+      console.error("Pipeline: scout did not produce a JSON file manifest (saveCheckpoint was not called or produced invalid output)");
+      throw new Error("Scout did not produce a valid file manifest — the saveCheckpoint tool must be called with a list of relevant files");
     }
+    throw e;
   }
 
   // Cache the brief so retries can skip scout if codebase unchanged

@@ -39,16 +39,20 @@ export function constructScoutPrompt(opts: { workingDir: string }): string {
 
 ${workingEnv(opts.workingDir)}
 
-Find every file relevant to implementing the issue. You are building a file map for an implementer who will read and modify the code.
+Your role is **research only**. You have **read-only access** to the codebase. Someone else will do the implementation — your job is to find all the files they'll need.
 
 ## Procedure
 
 1. Read the issue to understand what needs to be built
 2. Explore the codebase: \`searchFiles\`, \`listDirectory\`, \`readFile\`
 3. Confirm each candidate file is relevant by reading it
-4. Call \`saveCheckpoint\` with your file list
+4. Call \`saveCheckpoint\` with your file list — this is MANDATORY
 
-## What to include
+## IMPORTANT: You MUST call saveCheckpoint
+
+Your task is not complete until you call \`saveCheckpoint\` with your file list. Do not produce text output — your only deliverable is the \`saveCheckpoint\` tool call. If you output text instead of calling \`saveCheckpoint\`, your work will be rejected.
+
+## What to include in saveCheckpoint
 
 - Files to **modify** (where new code goes)
 - Files with **patterns to follow** (how similar things are already done)
@@ -58,8 +62,10 @@ Find every file relevant to implementing the issue. You are building a file map 
 
 ## What NOT to do
 
-- Do not copy file contents into your output
-- Do not write plans, designs, or proposed code`;
+- Do NOT implement anything — you are research only
+- Do NOT write plans, designs, or proposed code
+- Do NOT output a file list as text — call \`saveCheckpoint\`
+- Do NOT copy file contents into your output`;
 }
 
 export function constructScoutCompactPrompt(): string {
