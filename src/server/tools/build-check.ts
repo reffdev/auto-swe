@@ -62,9 +62,14 @@ export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: str
   });
 
   const checkTests = tool({
-    description: `Run the test suite (${testCmd}). Returns "success" or only the failing test names and error messages.`,
-    parameters: z.object({}),
-    execute: async () => runAndExtractErrors(testCmd, workdir),
+    description: `Run the test suite. Returns "success" or only the failing test names and error messages. Optionally run a specific test file.`,
+    parameters: z.object({
+      testFile: z.string().optional().describe("Optional: specific test file to run, e.g. 'src/foo.test.ts'. Omit to run the full suite."),
+    }),
+    execute: async ({ testFile }) => {
+      const cmd = testFile ? `${testCmd} -- ${testFile}` : testCmd;
+      return runAndExtractErrors(cmd, workdir);
+    },
   });
 
   return { checkBuild, checkTests };

@@ -567,10 +567,6 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
-    if (!issue.git_branch) {
-      res.status(400).json({ error: "issue has no git branch" });
-      return;
-    }
 
     const project = db.getProject(issue.project_id);
     if (!project) {
@@ -578,13 +574,24 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       return;
     }
 
+    const baseBranch = project.git_default_branch ?? "main";
+
     try {
-      const files = await getBranchDiff(
-        project.workdir,
-        project.git_default_branch ?? "main",
-        issue.git_branch
-      );
-      res.json({ files, branch: issue.git_branch, base: project.git_default_branch ?? "main" });
+      // For running/failed issues with a worktree, diff the worktree (includes uncommitted changes)
+      if (issue.git_worktree && (issue.status === "running" || issue.status === "failed")) {
+        const { getWorktreeDiff } = await import("./git");
+        const files = await getWorktreeDiff(issue.git_worktree, baseBranch);
+        res.json({ files, branch: issue.git_branch ?? "(worktree)", base: baseBranch, live: true });
+        return;
+      }
+
+      // For completed issues, diff the pushed branches
+      if (!issue.git_branch) {
+        res.status(400).json({ error: "issue has no git branch" });
+        return;
+      }
+      const files = await getBranchDiff(project.workdir, baseBranch, issue.git_branch);
+      res.json({ files, branch: issue.git_branch, base: baseBranch });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: `Failed to get diff: ${msg}` });

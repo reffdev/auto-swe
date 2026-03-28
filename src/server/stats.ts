@@ -107,10 +107,13 @@ async function collect(db: Db): Promise<void> {
       const { promptTps, completionTps } = r.value;
       if (promptTps > 0 || completionTps > 0) {
         active.push(r.value);
-        cachedMachineSpeed.set(machines[i].id, {
-          prompt_tokens_per_sec: Math.round(promptTps * 10) / 10,
-          completion_tokens_per_sec: Math.round(completionTps * 10) / 10,
-        });
+        // Only cache per-machine speed for machines actively working
+        if (machines[i].status === "working") {
+          cachedMachineSpeed.set(machines[i].id, {
+            prompt_tokens_per_sec: Math.round(promptTps * 10) / 10,
+            completion_tokens_per_sec: Math.round(completionTps * 10) / 10,
+          });
+        }
       }
     }
   }

@@ -578,6 +578,75 @@ export interface DiffFile {
 }
 
 /**
+ * Get per-file diffs for a worktree (includes uncommitted changes).
+ * Diffs all changes from the merge-base with the given base branch.
+ */
+export async function getWorktreeDiff(
+  worktreePath: string,
+  baseBranch: string
+): Promise<DiffFile[]> {
+  // Find the merge-base between the worktree HEAD and origin/baseBranch
+  const mergeBase = (await gitSafe(
+    ["merge-base", `origin/${baseBranch}`, "HEAD"],
+    worktreePath
+  ).catch(() => "")).trim();
+
+  const diffRef = mergeBase || `origin/${baseBranch}`;
+
+  // Get numstat for all changes (committed + uncommitted)
+  const numstatRaw = await gitSafe(
+    ["diff", diffRef, "--numstat"],
+    worktreePath
+  ).catch(() => "");
+
+  const statsByFile = new Map<string, { additions: number; deletions: number }>();
+  for (const line of numstatRaw.trim().split("\n")) {
+    if (!line) continue;
+    const [add, del, file] = line.split("\t");
+    if (file) {
+      statsByFile.set(file, {
+        additions: add === "-" ? 0 : parseInt(add, 10) || 0,
+        deletions: del === "-" ? 0 : parseInt(del, 10) || 0,
+      });
+    }
+  }
+
+  // Get the full patch
+  const patchRaw = await gitSafe(
+    ["diff", diffRef, "--no-color"],
+    worktreePath
+  ).catch(() => "");
+
+  // Parse into per-file diffs
+  const files: DiffFile[] = [];
+  const fileDiffs = patchRaw.split(/^diff --git /m).slice(1);
+  for (const chunk of fileDiffs) {
+    const headerEnd = chunk.indexOf("\n@@");
+    if (headerEnd === -1) continue;
+    const header = chunk.slice(0, headerEnd);
+    const filenameMatch = header.match(/^a\/(.+?) b\/(.+)/);
+    if (!filenameMatch) continue;
+    const filename = filenameMatch[2];
+    const stats = statsByFile.get(filename) ?? { additions: 0, deletions: 0 };
+    // Determine status from the diff header
+    const isNew = header.includes("new file mode");
+    const isDeleted = header.includes("deleted file mode");
+    const isRenamed = header.includes("rename from");
+    const status = isNew ? "added" : isDeleted ? "deleted" : isRenamed ? "renamed" : "modified";
+
+    files.push({
+      filename,
+      status,
+      additions: stats.additions,
+      deletions: stats.deletions,
+      patch: "diff --git " + chunk,
+    });
+  }
+
+  return files;
+}
+
+/**
  * Get per-file diffs between two branches using local git.
  * Fetches origin first to ensure branches are up to date.
  */

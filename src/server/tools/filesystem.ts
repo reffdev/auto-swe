@@ -68,15 +68,25 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
       );
     const key = `${toolName}:${JSON.stringify(sorted)}`;
     recentCalls.push(key);
-    if (recentCalls.length > 20) recentCalls.shift();
-    let repeats = 0;
+    if (recentCalls.length > 30) recentCalls.shift();
+
+    // Consecutive repeats
+    let consecutive = 0;
     for (let i = recentCalls.length - 1; i >= 0; i--) {
-      if (recentCalls[i] === key) repeats++;
+      if (recentCalls[i] === key) consecutive++;
       else break;
     }
-    if (repeats >= 3) {
-      return `ERROR: You have called ${toolName} with the same arguments ${repeats} times. Try a completely different approach.`;
+    if (consecutive >= 3) {
+      return `ERROR: You have called ${toolName} with the same arguments ${consecutive} times in a row. Stop and try a completely different approach.`;
     }
+
+    // Cycling detection — same call appearing too often even when interleaved with others
+    const recent = recentCalls.slice(-15);
+    const freq = recent.filter(c => c === key).length;
+    if (freq >= 4) {
+      return `ERROR: You have called ${toolName} with these arguments ${freq} times in the last ${recent.length} calls. You appear to be stuck in a loop. Stop and try a fundamentally different approach — do not repeat these same calls.`;
+    }
+
     return null;
   }
 
@@ -733,10 +743,16 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
         let normalizedOldStr = normalizeEol(old_str);
         let normalizedNewStr = normalizeEol(new_str);
 
-        // Fix double-escaped newlines — some models send \\n instead of \n in tool args
-        if (normalizedOldStr.includes("\\n") && !content.includes("\\n")) {
-          normalizedOldStr = normalizedOldStr.replace(/\\n/g, "\n");
-          normalizedNewStr = normalizedNewStr.replace(/\\n/g, "\n");
+        // Fix double-escaped sequences — some models send \\n, \\t, \\" etc. in tool args
+        const hasDoubleEscapes = (s: string) => /\\[nrt"'\\]/.test(s);
+        if (hasDoubleEscapes(normalizedOldStr) && !hasDoubleEscapes(content)) {
+          const unescape = (s: string) =>
+            s.replace(/\\(["'\\/bfnrt])/g, (_, ch) => {
+              const map: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", "\\": "\\", "/": "/", '"': '"', "'": "'" };
+              return map[ch as string] ?? ch;
+            });
+          normalizedOldStr = unescape(normalizedOldStr);
+          normalizedNewStr = unescape(normalizedNewStr);
         }
 
         let count = content.split(normalizedOldStr).length - 1;
