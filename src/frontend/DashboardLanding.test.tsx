@@ -147,10 +147,10 @@ describe('DashboardLanding', () => {
     expect(mockCreateProject).toHaveBeenCalledWith({
       name: 'Test Project',
       workdir: '',
-      git_remote: null,
-      git_server_token: null,
+      git_remote: undefined,
+      git_server_token: undefined,
       git_default_branch: 'main',
-      model_id: null,
+      model_id: undefined,
     })
     expect(mockOnRefresh).toHaveBeenCalled()
 

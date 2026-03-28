@@ -500,12 +500,13 @@ export async function reviewNode(
     console.log("Pipeline: review output unparseable — treating as REJECT (safety: never auto-accept unparseable output)");
     const newRetryCount = state.retryCount + 1;
     if (newRetryCount >= MAX_RETRIES) {
-      console.log(`Pipeline: review lens "${lens.name}" exhausted retries on unparseable output — FAILING`);
+      console.error(`Pipeline: review lens "${lens.name}" exhausted retries on unparseable output — FAILING`);
       return {
         reviewOutput: output,
         reviewVerdict: "reject",
         reviewFeedback: "Review output was unparseable after all retries — review could not be completed.",
         retryCount: newRetryCount,
+        error: `Pipeline failed — review lens "${lens.name}" produced unparseable output after ${MAX_RETRIES} retries.`,
       };
     }
     return {
@@ -699,6 +700,8 @@ export async function routeAfterTestGate(state: PipelineStateType): Promise<stri
 export async function failPipelineNode(
   state: PipelineStateType,
 ): Promise<Partial<PipelineStateType>> {
+  // Preserve error if already set (e.g. by review exhaustion)
+  if (state.error) return {};
   const errors = [state.buildErrors, state.testErrors].filter(Boolean).join("\n\n");
   return {
     error: `Pipeline failed — retries exhausted.\n\n${errors}`,
@@ -708,6 +711,8 @@ export async function failPipelineNode(
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function routeAfterReview(state: PipelineStateType): Promise<string> {
+  // Error set by review node = exhausted retries, fail immediately
+  if (state.error) return "fail_pipeline";
   if (state.reviewVerdict === "accept") {
     // All lenses passed?
     if (state.currentLensIndex >= state.reviewLenses.length) return "git_ops";
