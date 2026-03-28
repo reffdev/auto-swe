@@ -79,10 +79,15 @@ export class LlamaCppStt implements SttAdapter {
     const modelField = Buffer.from(
       `\r\n--${boundary}\r\n` +
       `Content-Disposition: form-data; name="model"\r\n\r\n` +
-      `whisper`
+      `whisper-v3:turbo`
+    );
+    const langField = Buffer.from(
+      `\r\n--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="language"\r\n\r\n` +
+      `en`
     );
     const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const body = Buffer.concat([preamble, wav, modelField, epilogue]);
+    const body = Buffer.concat([preamble, wav, modelField, langField, epilogue]);
 
     const url = new URL("/v1/audio/transcriptions", this.baseUrl).href;
     const controller = new AbortController();
