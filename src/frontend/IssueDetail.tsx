@@ -563,7 +563,15 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
   const [activeTab, setActiveTab] = useState<'pipeline' | 'diff'>('pipeline')
   const [diffEverOpened, setDiffEverOpened] = useState(false)
   const [checkpointAvailable, setCheckpointAvailable] = useState(false)
+  const [isRestarting, setIsRestarting] = useState(false)
   const { allRuns, activeRun, activeRunOutput } = useLiveOutput(pollRuns)
+
+  // Clear the restarting state once new runs start appearing
+  useEffect(() => {
+    if (isRestarting && allRuns.some(r => r.status === 'running' || r.status === 'pending')) {
+      setIsRestarting(false)
+    }
+  }, [isRestarting, allRuns])
 
   // Check if a checkpoint exists for failed issues
   useEffect(() => {
@@ -607,11 +615,17 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
   const doAction = async (name: string, fn: () => Promise<unknown>) => {
     setActionLoading(name)
     setActionError(null)
+    // Optimistically clear the view for pipeline-restarting actions
+    if (name === 'retry' || name === 'approve' || name === 'retry-stage') {
+      setIsRestarting(true)
+      setViewingRunId(null)
+    }
     try {
       await fn()
       onDataChange()
     } catch (e: unknown) {
       setActionError(e instanceof Error ? e.message : String(e))
+      setIsRestarting(false)
     } finally {
       setActionLoading(null)
     }
@@ -801,8 +815,17 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
 
       {/* Pipeline view */}
       {activeTab === 'pipeline' && <>
+
+      {/* Restarting transition */}
+      {isRestarting && !allRuns.some(r => r.status === 'running' || r.status === 'pending') && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground animate-pulse">
+          <RotateCcw className="size-6 animate-spin" style={{ animationDuration: '2s' }} />
+          <span className="text-sm">Starting pipeline...</span>
+        </div>
+      )}
+
       {/* Stage stepper */}
-      {allRuns.some(r => r.stage) && (
+      {!isRestarting && allRuns.some(r => r.stage) && (
         <StageStepper
           runs={allRuns}
           activeRunId={displayRun?.id ?? null}
@@ -812,7 +835,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
       )}
 
       {/* Run metadata + live stats */}
-      {displayRun && (() => {
+      {!isRestarting && displayRun && (() => {
         const liveSteps = steps?.filter(s => s.durationMs > 0) ?? []
         const liveCompletion = liveSteps.reduce((sum, s) => sum + (s.tokens?.completion ?? 0), 0)
         const livePrompt = liveSteps.reduce((sum, s) => sum + (s.tokens?.prompt ?? 0), 0)
@@ -854,7 +877,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           No run data yet.
         </div>
       )}
-      {allRuns.length > 0 && (
+      {!isRestarting && allRuns.length > 0 && (
         <Conversation className="flex-1 px-4">
           <ConversationContent>
             {/* Structured steps */}
