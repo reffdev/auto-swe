@@ -286,6 +286,8 @@ export async function scoutNode(
       } as ToolSet,
       abortSignal: scoutAbort.signal,
       initialSteps: infoSteps,
+      contextLimit: machine.context_limit ?? undefined,
+      worktreePath: state.worktreePath,
     });
   } catch (err) {
     // saveCheckpoint aborts the stream — that's success, not an error
@@ -384,6 +386,8 @@ export async function implementNode(
     } as ToolSet,
     abortSignal,
     initialSteps: infoSteps,
+    contextLimit: machine.context_limit ?? undefined,
+    worktreePath: state.worktreePath,
   });
 
   // Clear gate errors after implement runs — they'll be re-checked by the gates
@@ -430,6 +434,8 @@ export async function testWriteNode(
       lookupDocs,
     } as ToolSet,
     abortSignal,
+    contextLimit: machine.context_limit ?? undefined,
+    worktreePath: state.worktreePath,
   });
 
   const testVerdict = parseTestVerdict(output);
@@ -485,6 +491,8 @@ export async function reviewNode(
     userPrompt: reviewPrompts.user,
     tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }) } as ToolSet,
     abortSignal,
+    contextLimit: machine.context_limit ?? undefined,
+    worktreePath: state.worktreePath,
   });
 
   let verdict = parseVerdict(output);

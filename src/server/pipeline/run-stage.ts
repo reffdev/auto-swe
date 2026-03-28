@@ -1,10 +1,16 @@
 /**
  * Shared agent executor — runs a single LLM stage with tools, streaming,
- * incremental DB updates, and timeout handling.
+ * incremental DB updates, timeout handling, and context compaction.
+ *
+ * When context_limit is set on the machine, the executor monitors prompt
+ * token usage. At 75% capacity it stops the agent, asks for a checkpoint
+ * report, and restarts with a fresh context containing the original prompt,
+ * the checkpoint, and a git diff. Up to 3 compactions per stage.
  */
 
-import { streamText, type StepResult, type ToolSet } from "ai";
+import { streamText, generateText, type StepResult, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { spawnSync } from "child_process";
 import type { Db } from "../db";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -41,6 +47,47 @@ export interface RunStageOpts {
   initialSteps?: StepData[];
   /** Files to inject as if readFile was already called — agent sees tool results in history */
   preloadedFiles?: PreloadedFile[];
+  /** Context limit in tokens — enables compaction when set */
+  contextLimit?: number;
+  /** Working directory for git diff during compaction */
+  worktreePath?: string;
+}
+
+const MAX_COMPACTIONS = 3;
+const COMPACTION_THRESHOLD = 0.75; // trigger at 75% of context limit
+
+const CHECKPOINT_PROMPT = `CONTEXT CHECKPOINT REQUIRED
+
+You are running low on context space. Stop what you are doing and produce a detailed progress report so your work can be resumed in a fresh context.
+
+\`\`\`checkpoint
+## Completed
+[what you've done so far — files created/modified and why]
+
+## Remaining
+[what still needs to be done to finish the task]
+
+## Decisions
+[any important decisions, discoveries, or constraints that inform the remaining work]
+
+## Current Approach
+[your strategy for the remaining work]
+\`\`\`
+
+This is mandatory. Produce the checkpoint now. Do not call any tools.`;
+
+// ─── Git context capture for compaction ──────────────────────────────────────
+
+function captureGitDiff(worktreePath: string): string {
+  try {
+    const status = spawnSync("git", ["status", "--short"], { cwd: worktreePath, encoding: "utf-8", shell: true });
+    const diff = spawnSync("git", ["diff"], { cwd: worktreePath, encoding: "utf-8", shell: true });
+    const statusOut = status.stdout?.trim() || "(no changes)";
+    const diffOut = (diff.stdout || "").trim();
+    return `## Current worktree state\n\n### Modified files:\n\`\`\`\n${statusOut}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${diffOut}\n\`\`\``;
+  } catch {
+    return "";
+  }
 }
 
 // ─── Executor ─────────────────────────────────────────────────────────────────
@@ -48,9 +95,16 @@ export interface RunStageOpts {
 /**
  * Execute a single LLM agent stage: streamText with tools, save incremental
  * output, log LLM requests. Returns the final text output.
+ *
+ * Supports context compaction: when prompt tokens approach the context limit,
+ * the agent is stopped, asked for a checkpoint, and restarted with fresh context.
  */
 export async function runStage(opts: RunStageOpts): Promise<string> {
-  const { db, runId, issueId, stageName, model, modelId, systemPrompt, userPrompt, tools, maxSteps, abortSignal, initialSteps } = opts;
+  const {
+    db, runId, issueId, stageName, model, modelId,
+    systemPrompt, userPrompt, tools, maxSteps,
+    abortSignal, initialSteps, contextLimit, worktreePath,
+  } = opts;
 
   db.updateRun(runId, { status: "running", started_at: new Date().toISOString() });
 
@@ -58,6 +112,12 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let stepStartTime = Date.now();
+  let compactionCount = 0;
+
+  // Token threshold for triggering compaction
+  const compactionTokenThreshold = contextLimit
+    ? Math.floor(contextLimit * COMPACTION_THRESHOLD)
+    : Infinity;
 
   // Pre-populate with prompts step + initial info steps
   const promptsStep: StepData = {
@@ -68,6 +128,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     prompts: { system: systemPrompt, user: userPrompt },
   };
   const liveSteps: StepData[] = [promptsStep, ...(initialSteps ?? [])];
+
+  // Track whether compaction was triggered mid-stream
+  let compactionNeeded = false;
+  let compactionAbort: AbortController | null = null;
 
   const onStep = (step: StepResult<ToolSet>) => {
     stepCount++;
@@ -127,13 +191,21 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       });
     } catch { /* non-critical */ }
 
-    console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepDuration}ms)`);
+    console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepDuration}ms, prompt=${promptTok})`);
+
+    // Check if compaction is needed
+    if (promptTok >= compactionTokenThreshold && compactionCount < MAX_COMPACTIONS) {
+      console.log(`Pipeline [${stageName}]: prompt tokens (${promptTok}) exceed ${Math.round(COMPACTION_THRESHOLD * 100)}% of context limit (${contextLimit}) — triggering compaction`);
+      compactionNeeded = true;
+      compactionAbort?.abort();
+    }
+
     stepStartTime = Date.now();
   };
 
   const startTime = Date.now();
 
-  // Cancel detection — rejects a promise to break out of Promise.race when the stream hangs
+  // Cancel detection
   let cancelReject: ((err: Error) => void) | null = null;
   const cancelPromise = new Promise<never>((_, reject) => { cancelReject = reject; });
 
@@ -145,52 +217,135 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     }, { once: true });
   }
 
+  // Current user prompt — updated on compaction
+  let currentUserPrompt = userPrompt;
+  let currentPreloads = opts.preloadedFiles;
 
   let fullText: string;
   try {
-    const agentPromise = (async () => {
-      // Build messages — optionally inject preloaded file reads as tool call history
-      const messages: Array<{ role: "user" | "assistant" | "tool"; content: any }> = [];
+    // Outer compaction loop
+    while (true) {
+      compactionNeeded = false;
+      compactionAbort = new AbortController();
 
-      // User message with the prompt
-      messages.push({ role: "user", content: userPrompt });
+      // Merge abort signals: external cancel + compaction
+      const combinedAbort = new AbortController();
+      const onExternalAbort = () => combinedAbort.abort();
+      const onCompactionAbort = () => { if (compactionNeeded) combinedAbort.abort(); };
+      abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
+      compactionAbort.signal.addEventListener("abort", onCompactionAbort, { once: true });
 
-      // Inject preloaded files as assistant tool calls + tool results
-      if (opts.preloadedFiles?.length) {
-        const toolCalls = opts.preloadedFiles.map((f, i) => ({
-          type: "tool-call" as const,
-          toolCallId: `preload-${i}`,
-          toolName: "readFile",
-          args: { path: f.path },
-        }));
-        messages.push({ role: "assistant", content: toolCalls });
+      const agentPromise = (async () => {
+        const messages: Array<{ role: "user" | "assistant" | "tool"; content: any }> = [];
+        messages.push({ role: "user", content: currentUserPrompt });
 
-        for (let i = 0; i < opts.preloadedFiles.length; i++) {
-          messages.push({
-            role: "tool",
-            content: [{
-              type: "tool-result" as const,
-              toolCallId: `preload-${i}`,
-              toolName: "readFile",
-              result: opts.preloadedFiles[i].content,
-            }],
-          });
+        if (currentPreloads?.length) {
+          const preloadCalls = currentPreloads.map((f, i) => ({
+            type: "tool-call" as const,
+            toolCallId: `preload-${i}`,
+            toolName: "readFile",
+            args: { path: f.path },
+          }));
+          messages.push({ role: "assistant", content: preloadCalls });
+
+          for (let i = 0; i < currentPreloads.length; i++) {
+            messages.push({
+              role: "tool",
+              content: [{
+                type: "tool-result" as const,
+                toolCallId: `preload-${i}`,
+                toolName: "readFile",
+                result: currentPreloads[i].content,
+              }],
+            });
+          }
         }
+
+        const result = streamText({
+          model, system: systemPrompt, messages,
+          tools, maxSteps: maxSteps ?? 100,
+          abortSignal: combinedAbort.signal,
+          onStepFinish: onStep,
+        });
+        let text = "";
+        for await (const chunk of result.textStream) { text += chunk; }
+        await result.steps;
+        return text || "(no output)";
+      })();
+
+      try {
+        fullText = await Promise.race([agentPromise, cancelPromise]);
+      } catch (err) {
+        // If this was a compaction abort (not a cancel), handle it
+        if (compactionNeeded && !abortSignal?.aborted) {
+          compactionCount++;
+          console.log(`Pipeline [${stageName}]: compaction ${compactionCount}/${MAX_COMPACTIONS} — requesting checkpoint`);
+
+          // Add compaction info step to UI
+          liveSteps.push({
+            step: stepCount + 1,
+            text: `**Context compaction ${compactionCount}/${MAX_COMPACTIONS}** — checkpoint requested, restarting with fresh context`,
+            tokens: { prompt: 0, completion: 0 },
+            durationMs: 0,
+          });
+          try { db.updateRun(runId, { output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
+
+          // Ask the LLM for a checkpoint report
+          const checkpointResult = await generateText({
+            model,
+            system: systemPrompt,
+            messages: [
+              { role: "user", content: currentUserPrompt },
+              { role: "assistant", content: "(work in progress)" },
+              { role: "user", content: CHECKPOINT_PROMPT },
+            ],
+            abortSignal,
+          });
+
+          const checkpoint = checkpointResult.text || "(no checkpoint produced)";
+          console.log(`Pipeline [${stageName}]: checkpoint produced (${checkpoint.length} chars)`);
+
+          // Capture git state
+          const gitDiff = worktreePath ? captureGitDiff(worktreePath) : "";
+
+          // Build fresh user prompt with checkpoint context
+          currentUserPrompt = `${userPrompt}
+
+---
+
+## Continuation from context compaction (${compactionCount}/${MAX_COMPACTIONS})
+
+Your previous context was compacted. All your file changes are preserved in the worktree. Here is your progress report from the previous context:
+
+${checkpoint}
+
+${gitDiff}
+
+Continue from where you left off. Do not redo completed work. Focus on the remaining items from your checkpoint report.`;
+
+          // No preloads on continuation — the agent can re-read files if needed
+          currentPreloads = undefined;
+
+          // Add the new prompt to UI
+          liveSteps.push({
+            step: stepCount + 2,
+            text: `**Resuming after compaction** — fresh context with checkpoint`,
+            tokens: { prompt: 0, completion: 0 },
+            durationMs: 0,
+            prompts: { system: systemPrompt, user: currentUserPrompt },
+          });
+          stepCount += 2;
+
+          continue; // restart the while loop with fresh context
+        }
+        // Not a compaction — rethrow
+        throw err;
+      } finally {
+        abortSignal?.removeEventListener("abort", onExternalAbort);
       }
 
-      const result = streamText({
-        model, system: systemPrompt, messages,
-        tools, maxSteps: maxSteps ?? 100,
-        abortSignal,
-        onStepFinish: onStep,
-      });
-      let text = "";
-      for await (const chunk of result.textStream) { text += chunk; }
-      await result.steps;
-      return text || "(no output)";
-    })();
-
-    fullText = await Promise.race([agentPromise, cancelPromise]);
+      break; // completed without needing compaction
+    }
   } catch (err) {
     const durationMs = Date.now() - startTime;
     db.updateRun(runId, {

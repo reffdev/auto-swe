@@ -82,21 +82,26 @@ function createModelProvider(machine: Machine) {
 
       if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {
         const reader = res.body.getReader();
+        let lastChunkTime = Date.now();
         const watchedStream = new ReadableStream({
           async pull(controller) {
             const timeoutId = setTimeout(() => {
-              console.log(`Pipeline: LLM stream inactive for ${LLM_REQUEST_TIMEOUT_MS / 1000}s — aborting stream`);
+              const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
+              console.log(`Pipeline: LLM stream inactive for ${elapsed}s (limit: ${LLM_REQUEST_TIMEOUT_MS / 1000}s) — aborting stream`);
               reader.cancel("LLM stream inactivity timeout");
-              controller.error(new Error("LLM stream timed out — no data received"));
+              controller.error(new Error(`LLM stream timed out — no data for ${elapsed}s`));
             }, LLM_REQUEST_TIMEOUT_MS);
 
             try {
               const { done, value } = await reader.read();
               clearTimeout(timeoutId);
+              lastChunkTime = Date.now();
               if (done) { controller.close(); return; }
               controller.enqueue(value);
             } catch (err) {
               clearTimeout(timeoutId);
+              const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
+              console.log(`Pipeline: LLM stream error after ${elapsed}s of inactivity: ${err instanceof Error ? err.message : err}`);
               controller.error(err);
             }
           },
