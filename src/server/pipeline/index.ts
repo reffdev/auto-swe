@@ -45,7 +45,7 @@ export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
 // ─── LLM provider with per-request timeout + retry ────────────────────────────
 
-const LLM_REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min per-chunk inactivity timeout on streaming responses
+const LLM_REQUEST_TIMEOUT_MS = 10 * 60 * 1000; // 10 min per-chunk inactivity timeout on streaming responses
 
 function createModelProvider(machine: Machine) {
   const provider = createOpenAICompatible({
