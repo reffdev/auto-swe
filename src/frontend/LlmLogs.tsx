@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { 
@@ -12,13 +12,302 @@ import {
   CheckCircle, 
   Loader2,
   MessageSquare,
-  X
+  X,
+  Search,
+  Filter,
+  Calendar
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { 
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuCheckboxItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from '@/components/ui/dropdown-menu'
 import * as api from './api'
 import type { GroupedLlmLogCall, GroupedLlmLog } from './api'
+
+// ─── Debounce utility ───────────────────────────────────────────────────────
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+
+  return debouncedValue
+}
+
+// ─── Filter state types ──────────────────────────────────────────────────────
+
+interface FilterState {
+  search: string
+  status: Set<'success' | 'error'>
+  models: Set<string>
+  startDate: string
+  endDate: string
+}
+
+const DEFAULT_FILTER_STATE: FilterState = {
+  search: '',
+  status: new Set(),
+  models: new Set(),
+  startDate: '',
+  endDate: '',
+}
+
+// ─── Extract distinct models from data ───────────────────────────────────────
+
+function extractDistinctModels(groups: GroupedLlmLog[]): string[] {
+  const models = new Set<string>()
+  for (const group of groups) {
+    for (const call of group.calls) {
+      if (call.model) {
+        models.add(call.model)
+      }
+    }
+  }
+  return Array.from(models).sort()
+}
+
+// ─── Client-side filtering logic ─────────────────────────────────────────────
+
+function filterGroups(
+  groups: GroupedLlmLog[],
+  filters: FilterState
+): GroupedLlmLog[] {
+  const { search, status, models, startDate, endDate } = filters
+  
+  return groups.filter((group) => {
+    // Filter by status (if any status filters selected)
+    if (status.size > 0) {
+      const hasMatchingCall = group.calls.some((call) => status.has(call.status))
+      if (!hasMatchingCall) return false
+    }
+    
+    // Filter by model (if any model filters selected)
+    if (models.size > 0) {
+      const hasMatchingCall = group.calls.some((call) => models.has(call.model))
+      if (!hasMatchingCall) return false
+    }
+    
+    // Filter by date range
+    if (startDate || endDate) {
+      const groupDate = new Date(group.last_request_at)
+      if (startDate) {
+        const start = new Date(startDate)
+        start.setHours(0, 0, 0, 0)
+        if (groupDate < start) return false
+      }
+      if (endDate) {
+        const end = new Date(endDate)
+        end.setHours(23, 59, 59, 999)
+        if (groupDate > end) return false
+      }
+    }
+    
+    // Filter by search text
+    if (search.trim()) {
+      const searchLower = search.toLowerCase().trim()
+      const searchableText = [
+        group.issue_title ?? '',
+        ...group.calls.map((c) => c.model),
+        ...group.calls.map((c) => c.prompt_preview),
+        ...group.calls.map((c) => c.response_preview),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      
+      if (!searchableText.includes(searchLower)) {
+        return false
+      }
+    }
+    
+    return true
+  })
+}
+
+// ─── Filter Bar Component ────────────────────────────────────────────────────
+
+function FilterBar({
+  filters,
+  onFiltersChange,
+  models,
+  onClear,
+  hasActiveFilters,
+}: {
+  filters: FilterState
+  onFiltersChange: (filters: FilterState) => void
+  models: string[]
+  onClear: () => void
+  hasActiveFilters: boolean
+}) {
+  const [searchInput, setSearchInput] = useState(filters.search)
+  const debouncedSearch = useDebounce(searchInput, 300)
+
+  // Update parent when debounced search changes
+  useEffect(() => {
+    if (debouncedSearch !== filters.search) {
+      onFiltersChange({ ...filters, search: debouncedSearch })
+    }
+  }, [debouncedSearch])
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value)
+  }
+
+  const handleStatusToggle = (status: 'success' | 'error') => {
+    const newStatus = new Set(filters.status)
+    if (newStatus.has(status)) {
+      newStatus.delete(status)
+    } else {
+      newStatus.add(status)
+    }
+    onFiltersChange({ ...filters, status: newStatus })
+  }
+
+  const handleModelToggle = (model: string) => {
+    const newModels = new Set(filters.models)
+    if (newModels.has(model)) {
+      newModels.delete(model)
+    } else {
+      newModels.add(model)
+    }
+    onFiltersChange({ ...filters, models: newModels })
+  }
+
+  const handleStartDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onFiltersChange({ ...filters, startDate: e.target.value })
+  }
+
+  const handleEndDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onFiltersChange({ ...filters, endDate: e.target.value })
+  }
+
+  return (
+    <div className="px-6 py-3 border-b border-border bg-muted/20">
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Search input */}
+        <div className="relative flex-1 min-w-[200px] max-w-md">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+          <Input
+            type="search"
+            placeholder="Search logs..."
+            value={searchInput}
+            onChange={handleSearchChange}
+            className="pl-9 h-8"
+          />
+        </div>
+
+        {/* Status filter dropdown */}
+        <DropdownMenu>
+          <DropdownMenuTrigger>
+            <Button variant="outline" size="sm" className="h-8 gap-1.5">
+              <Filter className="size-3.5" />
+              Status
+              {filters.status.size > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.5 text-xs bg-primary text-primary-foreground rounded-full">
+                  {filters.status.size}
+                </span>
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-40">
+            <DropdownMenuLabel className="text-xs">Status</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={filters.status.has('success')}
+              onCheckedChange={() => handleStatusToggle('success')}
+            >
+              <CheckCircle className="size-3.5 mr-1.5 text-emerald-500" />
+              Success
+            </DropdownMenuCheckboxItem>
+            <DropdownMenuCheckboxItem
+              checked={filters.status.has('error')}
+              onCheckedChange={() => handleStatusToggle('error')}
+            >
+              <AlertCircle className="size-3.5 mr-1.5 text-destructive" />
+              Error
+            </DropdownMenuCheckboxItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* Model filter dropdown */}
+        {models.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger>
+              <Button variant="outline" size="sm" className="h-8 gap-1.5">
+                <Cpu className="size-3.5" />
+                Model
+                {filters.models.size > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.5 text-xs bg-primary text-primary-foreground rounded-full">
+                    {filters.models.size}
+                  </span>
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48 max-h-64 overflow-y-auto">
+              <DropdownMenuLabel className="text-xs">Model</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {models.map((model) => (
+                <DropdownMenuCheckboxItem
+                  key={model}
+                  checked={filters.models.has(model)}
+                  onCheckedChange={() => handleModelToggle(model)}
+                >
+                  {model}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+
+        {/* Date range */}
+        <div className="flex items-center gap-2">
+          <Calendar className="size-4 text-muted-foreground" />
+          <Input
+            type="date"
+            aria-label="Start date"
+            value={filters.startDate}
+            onChange={handleStartDateChange}
+            className="h-8 w-32 text-xs"
+            placeholder="Start"
+          />
+          <span className="text-muted-foreground text-xs">to</span>
+          <Input
+            type="date"
+            value={filters.endDate}
+            aria-label="End date"
+            onChange={handleEndDateChange}
+            className="h-8 w-32 text-xs"
+            placeholder="End"
+          />
+        </div>
+
+        {/* Clear filters button */}
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClear}
+            className="h-8 text-muted-foreground hover:text-foreground"
+          >
+            <X className="size-3.5 mr-1" />
+            Clear filters
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ─── Status badge ────────────────────────────────────────────────────────────
 
@@ -329,6 +618,26 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTER_STATE)
+
+  // Extract distinct models from fetched data
+  const availableModels = useMemo(() => extractDistinctModels(groups), [groups])
+
+  // Check if any filters are active
+  const hasActiveFilters = useMemo(() => {
+    return (
+      filters.search.trim() !== '' ||
+      filters.status.size > 0 ||
+      filters.models.size > 0 ||
+      filters.startDate !== '' ||
+      filters.endDate !== ''
+    )
+  }, [filters])
+
+  // Apply client-side filtering
+  const filteredGroups = useMemo(() => {
+    return filterGroups(groups, filters)
+  }, [groups, filters])
 
   useEffect(() => {
     const fetchLogs = async () => {
@@ -360,8 +669,12 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
     })
   }
 
-  const totalGroups = groups.length
-  const totalCalls = groups.reduce((sum, g) => sum + g.call_count, 0)
+  const clearFilters = useCallback(() => {
+    setFilters(DEFAULT_FILTER_STATE)
+  }, [])
+
+  const totalGroups = filteredGroups.length
+  const totalCalls = filteredGroups.reduce((sum, g) => sum + g.call_count, 0)
 
   return (
     <div className="flex flex-col h-full">
@@ -377,6 +690,15 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
           Back to Project
         </Button>
       </div>
+
+      {/* Filter Bar */}
+      <FilterBar
+        filters={filters}
+        onFiltersChange={setFilters}
+        models={availableModels}
+        onClear={clearFilters}
+        hasActiveFilters={hasActiveFilters}
+      />
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
@@ -397,8 +719,12 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
               <div className="px-6 py-12 text-center text-muted-foreground">
                 No LLM logs found
               </div>
+            ) : filteredGroups.length === 0 ? (
+              <div className="px-6 py-12 text-center text-muted-foreground">
+                No logs found matching your filters
+              </div>
             ) : (
-              groups.map((group) => (
+              filteredGroups.map((group) => (
                 <IssueGroupRow
                   key={group.issue_id ?? 'unassigned'}
                   group={group}
