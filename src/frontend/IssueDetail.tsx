@@ -209,6 +209,12 @@ function toolPreview(tool: string, args: string, result?: string): string {
       case 'runCommand':
         return parsed.command ? parsed.command.slice(0, 80) : ''
       case 'readRelevantFiles':
+        if (result?.startsWith('__EXPAND_FILES__')) {
+          try {
+            const files = JSON.parse(result.slice('__EXPAND_FILES__'.length)) as Array<{ path: string }>
+            return `${files.length} files`
+          } catch { /* fall through */ }
+        }
         if (result) {
           const count = (result.match(/^### /gm) ?? []).length
           return count > 0 ? `${count} files` : ''
@@ -232,8 +238,18 @@ function toolPreview(tool: string, args: string, result?: string): string {
 function resultPreview(tool: string, result?: string): string | null {
   if (!result) return null
   switch (tool) {
-    case 'readFile':
+    case 'readFile': {
+      const lines = result.split('\n').length
+      return `${lines} lines`
+    }
     case 'readRelevantFiles': {
+      if (result.startsWith('__EXPAND_FILES__')) {
+        try {
+          const files = JSON.parse(result.slice('__EXPAND_FILES__'.length)) as Array<{ path: string; content: string }>
+          const totalLines = files.reduce((sum, f) => sum + f.content.split('\n').length, 0)
+          return `${files.length} files, ${totalLines} lines → expanded into individual reads`
+        } catch { /* fall through */ }
+      }
       const lines = result.split('\n').length
       return `${lines} lines`
     }

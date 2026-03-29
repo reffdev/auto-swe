@@ -136,6 +136,11 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   let pendingExpandFiles: PreloadedFile[] = [];
   let compactionAbort: AbortController | null = null;
 
+  // Detect text-only reasoning loops (no tool calls, repetitive output)
+  let textOnlySteps = 0;
+  let reasoningLoopDetected = false;
+  const MAX_TEXT_ONLY_STEPS = 3; // abort after 3 consecutive steps with no tool calls
+
   const onStep = (step: StepResult<ToolSet>) => {
     stepCount++;
     const stepDuration = Date.now() - stepStartTime;
@@ -196,6 +201,18 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
     console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepDuration}ms, prompt=${promptTok})`);
 
+    // Detect reasoning loops — consecutive steps with text but no tool calls
+    if (!toolCalls?.length && step.text && step.text.length > 50) {
+      textOnlySteps++;
+      if (textOnlySteps >= MAX_TEXT_ONLY_STEPS) {
+        console.error(`Pipeline [${stageName}]: detected reasoning loop — ${textOnlySteps} consecutive text-only steps with no tool calls, aborting`);
+        reasoningLoopDetected = true;
+        compactionAbort?.abort();
+      }
+    } else {
+      textOnlySteps = 0;
+    }
+
     // Check if readRelevantFiles needs expansion into individual readFile results
     if (!expandFilesNeeded && toolResults?.length) {
       for (const tr of toolResults) {
@@ -248,6 +265,8 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     while (true) {
       compactionNeeded = false;
       expandFilesNeeded = false;
+      reasoningLoopDetected = false;
+      textOnlySteps = 0;
       compactionAbort = new AbortController();
 
       // Merge abort signals: external cancel + compaction
@@ -306,6 +325,19 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       try {
         fullText = await Promise.race([agentPromise, cancelPromise]);
       } catch (err) {
+        // Reasoning loop detected — force a compaction to break out of the loop
+        let loopTriggeredCompaction = false;
+        if (reasoningLoopDetected && !abortSignal?.aborted) {
+          if (compactionCount < MAX_COMPACTIONS) {
+            reasoningLoopDetected = false;
+            compactionNeeded = true;
+            loopTriggeredCompaction = true;
+            console.log(`Pipeline [${stageName}]: reasoning loop detected — forcing compaction to break out`);
+          } else {
+            throw new Error(`Agent stuck in reasoning loop after all compactions exhausted — ${MAX_TEXT_ONLY_STEPS} consecutive steps with no tool calls`);
+          }
+        }
+
         // If this was a file expansion abort, restart with injected readFile results
         if (expandFilesNeeded && !abortSignal?.aborted) {
           expandFilesNeeded = false;
@@ -371,12 +403,15 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           const gitDiff = worktreePath ? captureGitDiff(worktreePath) : "";
 
           // Build fresh user prompt with checkpoint context
+          const loopWarning = loopTriggeredCompaction
+            ? `\n\n**WARNING: You were stuck in a reasoning loop** — you produced ${MAX_TEXT_ONLY_STEPS} consecutive responses without calling any tools. You MUST take concrete action using your tools. Do not analyze or explain — call a tool immediately.\n`
+            : "";
           currentUserPrompt = `${userPrompt}
 
 ---
 
 ## Continuation from context compaction (${compactionCount}/${MAX_COMPACTIONS})
-
+${loopWarning}
 Your previous context was compacted. All your file changes are preserved in the worktree. Here is your progress report from the previous context:
 
 ${checkpoint}
