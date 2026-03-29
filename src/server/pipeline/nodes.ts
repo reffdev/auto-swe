@@ -16,8 +16,7 @@ import { runStage, type StepData } from "./run-stage";
 import {
   createSubmitScoutReportTool,
   extractScoutBrief,
-  getAndClearSubmittedBrief,
-  hasSubmittedBrief,
+  type ScoutBriefHolder,
   parseVerdict,
   parseTestVerdict,
 } from "./parsers";
@@ -286,6 +285,9 @@ export async function scoutNode(
     durationMs: 0,
   }];
 
+  // Per-invocation holder for the scout brief — avoids module-level race conditions
+  const briefHolder: ScoutBriefHolder = { brief: null };
+
   // Abort controller that saveCheckpoint can trigger to end the scout immediately
   const scoutAbort = new AbortController();
   if (abortSignal) {
@@ -302,7 +304,7 @@ export async function scoutNode(
       tools: {
         ...makeReadOnlyTools(state.worktreePath),
         ...makeStoryContextTool(ctx.db, state.issueId),
-        saveCheckpoint: createSubmitScoutReportTool(scoutAbort),
+        saveCheckpoint: createSubmitScoutReportTool(scoutAbort, briefHolder),
       } as ToolSet,
       abortSignal: scoutAbort.signal,
       initialSteps: infoSteps,
@@ -311,7 +313,7 @@ export async function scoutNode(
     });
   } catch (err) {
     // saveCheckpoint aborts the stream — that's success, not an error
-    if (hasSubmittedBrief() && scoutAbort.signal.aborted) {
+    if (briefHolder.brief && scoutAbort.signal.aborted) {
       console.log("Pipeline: scout ended via saveCheckpoint");
       scoutOutput = "";
       ctx.db.updateRun(run.id, { status: "pass", completed_at: new Date().toISOString() });
@@ -320,8 +322,7 @@ export async function scoutNode(
     }
   }
 
-  let brief = extractScoutBrief(scoutOutput);
-  getAndClearSubmittedBrief();
+  let brief = extractScoutBrief(scoutOutput, briefHolder);
   console.log(`Pipeline: scout brief: ${brief.length} chars`);
 
   // Validate manifest — must be valid JSON with a files array. Retry if not.
@@ -342,6 +343,7 @@ export async function scoutNode(
 
     console.log(`Pipeline: scout manifest invalid — asking for correction (attempt ${attempt + 2})`);
     try {
+      const retryHolder: ScoutBriefHolder = { brief: null };
       const followUp = await generateText({
         model,
         system: constructScoutPrompt({ workingDir: state.worktreePath }),
@@ -352,15 +354,14 @@ export async function scoutNode(
         ],
         tools: {
           ...makeReadOnlyTools(state.worktreePath),
-          saveCheckpoint: createSubmitScoutReportTool(new AbortController()),
+          saveCheckpoint: createSubmitScoutReportTool(new AbortController(), retryHolder),
         } as ToolSet,
         maxSteps: 5,
         abortSignal,
       });
 
       // Check if the tool was called during the follow-up
-      brief = extractScoutBrief(followUp.text || "");
-      getAndClearSubmittedBrief();
+      brief = extractScoutBrief(followUp.text || "", retryHolder);
       console.log(`Pipeline: scout retry brief: ${brief.length} chars`);
     } catch (retryErr) {
       console.error(`Pipeline: scout retry attempt ${attempt + 2} failed:`, retryErr instanceof Error ? retryErr.message : retryErr);

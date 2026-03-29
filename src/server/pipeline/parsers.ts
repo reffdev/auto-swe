@@ -7,15 +7,17 @@ import { tool as aiTool } from "ai";
 
 // ─── Scout brief submission tool ──────────────────────────────────────────────
 
-let _lastSubmittedBrief: string | null = null;
+/** Per-invocation container for submitted briefs — avoids module-level shared state */
+export interface ScoutBriefHolder {
+  brief: string | null;
+}
 
 /**
- * Creates the saveCheckpoint tool with an AbortController.
- * When the tool is called, it stores the checkpoint and aborts the stream
- * so the research phase ends immediately.
+ * Creates the saveCheckpoint tool with an AbortController and a per-invocation holder.
+ * When the tool is called, it stores the checkpoint in the holder and aborts the stream.
  */
-export function createSubmitScoutReportTool(stageAbort: AbortController) {
-  _lastSubmittedBrief = null;
+export function createSubmitScoutReportTool(stageAbort: AbortController, holder: ScoutBriefHolder) {
+  holder.brief = null;
   return aiTool({
     description: "Submit your file list. Call this when you've identified all relevant files for the issue.",
     parameters: z.object({
@@ -26,32 +28,20 @@ export function createSubmitScoutReportTool(stageAbort: AbortController) {
       notes: z.string().optional().describe("Brief notes only if something non-obvious needs calling out"),
     }),
     execute: async ({ files, notes }) => {
-      _lastSubmittedBrief = JSON.stringify({ files, notes: notes ?? "" });
+      holder.brief = JSON.stringify({ files, notes: notes ?? "" });
       stageAbort.abort();
       return `File list submitted: ${files.length} files.`;
     },
   });
 }
 
-/** Read and clear the last submitted brief (used by extractScoutBrief) */
-export function getAndClearSubmittedBrief(): string | null {
-  const brief = _lastSubmittedBrief;
-  _lastSubmittedBrief = null;
-  return brief;
-}
-
-/** Check if a brief was submitted via tool (without clearing) */
-export function hasSubmittedBrief(): boolean {
-  return _lastSubmittedBrief !== null;
-}
-
 // ─── Parsing helpers ──────────────────────────────────────────────────────────
 
 /** Extract checkpoint — checks tool submission first, then fenced block, then full output */
-export function extractScoutBrief(output: string): string {
+export function extractScoutBrief(output: string, holder?: ScoutBriefHolder): string {
   // 1. Check if the saveCheckpoint tool was used
-  if (_lastSubmittedBrief) {
-    return _lastSubmittedBrief.trim();
+  if (holder?.brief) {
+    return holder.brief.trim();
   }
   // 2. Check for fenced block (accept both "checkpoint" and legacy "scout_brief")
   const match = output.match(/```(?:checkpoint|scout_brief)\s*\n([\s\S]*?)```/);

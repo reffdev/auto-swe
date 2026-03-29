@@ -187,17 +187,21 @@ export class Db {
 
   /** Find a machine with capacity for another concurrent job */
   getAvailableMachine(): Machine | null {
-    // Count active runs per machine, find one under its max_concurrent
+    // Count active issues per machine (running + approved = pending pipeline start)
+    // Uses runs for running issues, and counts approved issues separately
     const row = this.sqlite.prepare(`
       SELECT m.*
       FROM machines m
       WHERE m.enabled = 1
         AND (
-          SELECT COUNT(*) FROM runs r
-          JOIN issues i ON r.issue_id = i.id
-          WHERE r.machine_id = m.id
-            AND i.status = 'running'
-            AND r.status = 'running'
+          (SELECT COUNT(*) FROM runs r
+           JOIN issues i ON r.issue_id = i.id
+           WHERE r.machine_id = m.id
+             AND i.status = 'running'
+             AND r.status = 'running')
+          +
+          (SELECT COUNT(*) FROM issues i2
+           WHERE i2.status = 'approved')
         ) < m.max_concurrent
       ORDER BY m.created_at
       LIMIT 1

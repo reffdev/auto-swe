@@ -232,6 +232,16 @@ ${CODING_STANDARDS}
 - Do NOT rewrite your tests to work around implementation bugs
 - If tests fail because the implementation is wrong, report \`status: needs_fix\` — the failures will be sent back to the implementer
 
+## Test quality rules
+
+- Keep test files CONCISE. Aim for roughly 1:1 ratio of test code to implementation code. Exceeding 2:1 is a sign of bloat.
+- Test BEHAVIOR, not implementation details. If a refactor (renaming internals, changing state shape) would break your tests while the feature still works, you're testing the wrong thing.
+- NEVER duplicate mock setup across test cases. Use shared fixtures, beforeEach, or factory functions.
+- NEVER mock UI primitives (Button, Input, Dialog) individually — render the real components or use a single shared mock module. Mocking every leaf component makes tests fragile and verbose.
+- Import constants, routes, types, and schemas from the source of truth — never duplicate them as inline literals in test files.
+- Each test should assert ONE behavior. If a test name has "and" in it, split it.
+- Prefer fewer, meaningful tests over exhaustive permutations. Cover: happy path, one key edge case, one error path. That's usually enough.
+
 ## Output
 
 If tests pass:
@@ -359,12 +369,18 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
   },
   testing: {
     name: "Testing Review",
-    focus: `Focus exclusively on test quality and coverage:
-   - Do the tests verify actual behavior, or just implementation details that break on refactor?
-   - Are edge cases covered (empty input, null, boundary values, error paths)?
-   - Could these tests pass while the feature is actually broken?
-   - Are there missing test cases for the requirements described in the issue?
-   - Are tests isolated — no hidden dependencies on execution order or external state?
+    focus: `Focus exclusively on test quality, coverage, and conciseness:
+
+   Behavior over implementation — REJECT if:
+   - Tests assert on implementation details (internal state, private method calls, CSS class names) rather than observable behavior
+   - A simple refactor (rename, extract function, change state shape) would break tests while the feature still works
+   - Tests repeat the implementation logic in assertions instead of checking inputs/outputs
+
+   Bloat and redundancy — REJECT if:
+   - Test file is more than 2x the size of the code it tests (count lines — padding tests is not coverage)
+   - Mock setup is duplicated across test cases instead of using shared fixtures, beforeEach, or factories
+   - UI primitives (Button, Input, Dialog, etc.) are individually mocked instead of rendered or shared
+   - Tests cover trivial permutations that don't exercise distinct code paths
 
    Mock fidelity — REJECT if:
    - Tests mock a different module than the code under test actually imports
@@ -372,7 +388,12 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
    - Mock return values are shaped differently from the real implementation (missing fields, wrong types, impossible states)
    - Test data represents scenarios the real code path cannot produce
 
-   Only reject for genuine testing gaps, not style or code correctness.`,
+   Coverage gaps — REJECT if:
+   - Happy path is untested
+   - Error/failure paths that exist in the implementation have no corresponding tests
+   - Missing test cases for requirements explicitly described in the issue
+
+   Only reject for genuine testing issues, not style or code correctness.`,
   },
   error_handling: {
     name: "Error Handling Review",

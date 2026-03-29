@@ -62,14 +62,35 @@ function createModelProvider(machine: Machine) {
         init = { ...init, headers };
       }
 
-      // Inject stream_options.include_usage for token counting
+      // Inject stream_options and cache_control hints
       if (init?.body && typeof init.body === "string") {
         try {
           const body = JSON.parse(init.body);
           if (body.stream) {
             body.stream_options = { include_usage: true };
-            init = { ...init, body: JSON.stringify(body) };
           }
+
+          // Add cache_control to system message and tools for Anthropic prompt caching.
+          // OpenRouter passes these through to Anthropic. Non-Anthropic providers ignore them.
+          if (body.messages?.length) {
+            for (const msg of body.messages) {
+              if (msg.role === "system") {
+                // Mark system prompt as cacheable
+                if (typeof msg.content === "string") {
+                  msg.content = [{ type: "text", text: msg.content, cache_control: { type: "ephemeral" } }];
+                }
+              }
+            }
+          }
+          if (body.tools?.length) {
+            // Mark the last tool definition as cacheable (caches all tools up to this point)
+            const lastTool = body.tools[body.tools.length - 1];
+            if (lastTool) {
+              lastTool.cache_control = { type: "ephemeral" };
+            }
+          }
+
+          init = { ...init, body: JSON.stringify(body) };
         } catch { /* not JSON — pass through */ }
       }
 
@@ -251,6 +272,29 @@ export function hasCheckpoint(issueId: string): boolean {
   return lastThreadIds.has(issueId);
 }
 
+// ─── Per-project git lock (prevents concurrent resetToOrigin/setupWorktree) ───
+
+const projectGitLocks = new Map<string, Promise<void>>();
+
+async function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  // Wait for any existing operation on this project to finish
+  const existing = projectGitLocks.get(projectId);
+  if (existing) await existing.catch(() => {});
+
+  let resolve: () => void;
+  const lock = new Promise<void>(r => { resolve = r; });
+  projectGitLocks.set(projectId, lock);
+
+  try {
+    return await fn();
+  } finally {
+    resolve!();
+    if (projectGitLocks.get(projectId) === lock) {
+      projectGitLocks.delete(projectId);
+    }
+  }
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
 export interface PipelineContext {
@@ -280,12 +324,15 @@ export async function executePipeline(
 
   try {
     // Setup: ensure workdir exists, reset to latest origin, create fresh worktree
-    await ensureWorkdir(project);
-    await resetToOrigin(project);
-    const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
-    if (!worktreeResult.ok) {
-      throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
-    }
+    // Locked per-project to prevent concurrent git operations on the same workdir
+    await withProjectLock(project.id, async () => {
+      await ensureWorkdir(project);
+      await resetToOrigin(project);
+      const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
+      if (!worktreeResult.ok) {
+        throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
+      }
+    });
 
     console.log(`Pipeline: starting for "${issue.title}"`);
 
@@ -391,12 +438,14 @@ export async function executeStageRetry(
   ctx.db.updateIssue(issue.id, { status: "running" });
 
   try {
-    await ensureWorkdir(project);
-    await resetToOrigin(project);
-    const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
-    if (!worktreeResult.ok) {
-      throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
-    }
+    await withProjectLock(project.id, async () => {
+      await ensureWorkdir(project);
+      await resetToOrigin(project);
+      const worktreeResult = await setupWorktree(project.workdir, worktreePath, branch);
+      if (!worktreeResult.ok) {
+        throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
+      }
+    });
 
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
