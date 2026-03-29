@@ -74,3 +74,24 @@ export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: str
 
   return { checkBuild, checkTests };
 }
+
+// ─── Review verdict tool ─────────────────────────────────────────────────────
+
+export function makeReviewVerdictTool() {
+  const submitVerdict = tool({
+    description: `Submit your final review verdict. Call this exactly once when you are done reviewing. Status must be "accept" or "reject".`,
+    parameters: z.object({
+      status: z.enum(["accept", "reject"]).describe("accept if the implementation is correct, reject if it needs changes"),
+      summary: z.string().optional().describe("Why this passes (required when accepting)"),
+      feedback: z.string().optional().describe("Specific, actionable feedback with file names and what's wrong (required when rejecting)"),
+    }),
+    execute: async ({ status, summary, feedback }) => {
+      if (status === "accept") {
+        return `\`\`\`verdict\nstatus: accept\nsummary: ${summary || "Implementation looks correct"}\n\`\`\``;
+      }
+      return `\`\`\`verdict\nstatus: reject\nfeedback: ${feedback || "Changes needed"}\n\`\`\``;
+    },
+  });
+
+  return { submitVerdict };
+}

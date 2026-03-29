@@ -10,11 +10,14 @@ export interface Machine {
   id: string;
   name: string;
   base_url: string;
-  model_id: string;
+  model_id: string | null;
   enabled: number;
   status: "idle" | "working";
   current_run_id: string | null;
+  max_concurrent: number;
   context_limit: number | null;
+  api_key: string | null;
+  active_issue_ids: string[];
   created_at: string;
 }
 
@@ -162,7 +165,9 @@ export function deleteProject(id: string): Promise<void> {
 export function createMachine(data: {
   name?: string;
   base_url: string;
-  model_id: string;
+  model_id?: string;
+  max_concurrent?: number;
+  api_key?: string;
 }): Promise<Machine> {
   return json("/api/machines", { method: "POST", body: JSON.stringify(data) });
 }

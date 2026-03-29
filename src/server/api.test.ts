@@ -207,11 +207,12 @@ describe("machines", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/machines validates model_id", async () => {
+  it("POST /api/machines allows optional model_id", async () => {
     const res = await request(app)
       .post("/api/machines")
       .send({ base_url: "http://a/v1" });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(201);
+    expect(res.body.model_id).toBeNull();
   });
 
   it("GET /api/machines lists machines", async () => {
@@ -364,15 +365,18 @@ describe("issue actions", () => {
     expect(res.status).toBe(409);
   });
 
-  it("POST /api/issues/:id/approve requires idle machine", async () => {
-    // Mark the only machine as working
+  it("POST /api/issues/:id/approve requires available machine", async () => {
+    // Fill the machine to capacity with a running issue+run
     const machines = db.getMachines();
-    db.updateMachine(machines[0].id, { status: "working" });
+    const runningIssue = db.createIssue({ project_id: projectId, title: "Running" });
+    db.updateIssue(runningIssue.id, { status: "running" });
+    const run = db.createRun({ issue_id: runningIssue.id, stage: "implement" });
+    db.updateRun(run.id, { machine_id: machines[0].id, status: "running" });
 
     const issue = db.createIssue({ project_id: projectId, title: "Fix bug" });
     const res = await request(app).post(`/api/issues/${issue.id}/approve`);
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/no idle machine/);
+    expect(res.body.error).toMatch(/no machine available/);
   });
 
   it("POST /api/issues/:id/retry resets failed issue", async () => {

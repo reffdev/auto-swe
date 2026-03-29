@@ -11,11 +11,13 @@ export const machines = sqliteTable("machines", {
   id: text("id").primaryKey(),
   name: text("name").notNull().default(""),
   base_url: text("base_url").notNull(),
-  model_id: text("model_id").notNull(),
+  model_id: text("model_id"),  // optional — fallback if project doesn't specify
   enabled: integer("enabled").notNull().default(1),
-  status: text("status").notNull().default("idle"),
-  current_run_id: text("current_run_id"),
+  status: text("status").notNull().default("idle"),  // derived from active run count
+  current_run_id: text("current_run_id"),  // legacy — kept for migration, not used
+  max_concurrent: integer("max_concurrent").notNull().default(1),
   context_limit: integer("context_limit"),
+  api_key: text("api_key"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 

@@ -6,7 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import * as api from './api'
 import type { Project, Machine, Issue } from './api'
 
@@ -317,6 +317,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
 
 export function Sidebar({ projects, machines, issues, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -402,11 +403,26 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           <p className="px-3 py-2 text-xs text-muted-foreground">No machines yet</p>
         )}
         {machines.map((m) => {
-          const activeIssue = m.status === 'working' && m.current_run_id
-            ? issues.find(i => i.id === m.current_run_id)
-            : null
+          const activeIds = m.active_issue_ids ?? []
+          const activeIssues = activeIds.map(id => issues.find(i => i.id === id)).filter(Boolean) as Issue[]
           const machineSpd = stats?.machineSpeed?.[m.id]
           const outTps = machineSpd?.completion_tokens_per_sec
+
+          // Cycling arrow: find which active issue to link to
+          const currentPath = location.pathname
+          const currentIssueId = currentPath.match(/\/issue\/([^/]+)/)?.[1]
+          let nextIssue: typeof activeIssues[0] | null = null
+          if (activeIssues.length > 0) {
+            const currentIdx = activeIssues.findIndex(i => i.id === currentIssueId)
+            if (currentIdx >= 0) {
+              // Currently viewing one — cycle to next
+              nextIssue = activeIssues[(currentIdx + 1) % activeIssues.length]
+            } else {
+              // Not viewing any — go to first
+              nextIssue = activeIssues[0]
+            }
+          }
+
           return (
             <div key={m.id}>
               <div className="flex items-center">
@@ -419,8 +435,8 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                   )}
                 >
                   <Server className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="truncate flex-1">{m.name || m.model_id}</span>
-                  {m.status === 'working' && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
+                  <span className="truncate flex-1">{m.name || m.model_id || 'Unnamed'}</span>
+                  {activeIds.length > 0 && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
                     <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0 flex items-center gap-0.5">
                       <Zap className="size-2.5 text-yellow-500/70" />
                       {machineSpd.prompt_tokens_per_sec ? Math.round(machineSpd.prompt_tokens_per_sec) : '—'}
@@ -428,15 +444,19 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                       {outTps ? Math.round(outTps) : '—'}
                     </span>
                   ) : null}
-                  <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
+                  {activeIds.length > 0 ? (
+                    <span className="text-[10px] font-mono text-emerald-400 shrink-0">{activeIds.length}/{m.max_concurrent}</span>
+                  ) : (
+                    <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
+                  )}
                 </button>
-              {activeIssue && (
+              {nextIssue && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    navigate(`/project/${activeIssue.project_id}/issue/${activeIssue.id}`)
+                    navigate(`/project/${nextIssue!.project_id}/issue/${nextIssue!.id}`)
                   }}
-                  title={activeIssue.title}
+                  title={nextIssue.title}
                   className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
                 >
                   <ArrowRight className="size-3.5" />

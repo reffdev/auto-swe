@@ -51,7 +51,17 @@ function createModelProvider(machine: Machine) {
   const provider = createOpenAICompatible({
     name: `machine-${machine.id}`,
     baseURL: machine.base_url,
+    apiKey: machine.api_key || undefined,
     fetch: async (url, init) => {
+      // Inject API key as Bearer token if configured
+      if (machine.api_key) {
+        const headers = new Headers((init as RequestInit)?.headers);
+        if (!headers.has("Authorization")) {
+          headers.set("Authorization", `Bearer ${machine.api_key}`);
+        }
+        init = { ...init, headers };
+      }
+
       // Inject stream_options.include_usage for token counting
       if (init?.body && typeof init.body === "string") {
         try {
@@ -261,7 +271,7 @@ export async function executePipeline(
   activePipelines.set(issue.id, abortController);
 
   // Mark machine working, issue running
-  ctx.db.updateMachine(machine.id, { status: "working", current_run_id: issue.id });
+  ctx.db.updateMachine(machine.id, { status: "working" });
   ctx.db.updateIssue(issue.id, {
     status: "running",
     git_branch: branch,
@@ -281,6 +291,7 @@ export async function executePipeline(
 
     // Create model once — shared across all pipeline nodes
     const modelId = project.model_id ?? machine.model_id;
+    if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
     const provider = createModelProvider(machine);
     const model = provider(modelId);
 
@@ -352,7 +363,11 @@ export async function executePipeline(
     } else {
       console.log(`Pipeline: keeping worktree for retry — ${worktreePath}`);
     }
-    ctx.db.updateMachine(machine.id, { status: "idle", current_run_id: null });
+    // Only set idle if no more active runs on this machine
+    const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
+    if (activeCount === 0) {
+      ctx.db.updateMachine(machine.id, { status: "idle" });
+    }
   }
 }
 
@@ -372,7 +387,7 @@ export async function executeStageRetry(
   const abortController = new AbortController();
   activePipelines.set(issue.id, abortController);
 
-  ctx.db.updateMachine(machine.id, { status: "working", current_run_id: issue.id });
+  ctx.db.updateMachine(machine.id, { status: "working" });
   ctx.db.updateIssue(issue.id, { status: "running" });
 
   try {
@@ -384,6 +399,7 @@ export async function executeStageRetry(
     }
 
     const modelId = project.model_id ?? machine.model_id;
+    if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
     const provider = createModelProvider(machine);
     const model = provider(modelId);
 
@@ -441,6 +457,10 @@ export async function executeStageRetry(
     } else {
       console.log(`Pipeline: keeping worktree for retry — ${worktreePath}`);
     }
-    ctx.db.updateMachine(machine.id, { status: "idle", current_run_id: null });
+    // Only set idle if no more active runs on this machine
+    const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
+    if (activeCount === 0) {
+      ctx.db.updateMachine(machine.id, { status: "idle" });
+    }
   }
 }

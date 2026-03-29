@@ -94,29 +94,45 @@ describe("machines", () => {
     expect(db.deleteMachine("nope")).toBe(false);
   });
 
-  it("getIdleMachine returns first enabled idle machine", () => {
+  it("getAvailableMachine returns first enabled machine", () => {
     const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
     db.createMachine({ base_url: "http://b/v1", model_id: "m2" });
-    const idle = db.getIdleMachine();
-    expect(idle?.id).toBe(m1.id);
+    const avail = db.getAvailableMachine();
+    expect(avail?.id).toBe(m1.id);
   });
 
-  it("getIdleMachine skips disabled machines", () => {
+  it("getAvailableMachine skips disabled machines", () => {
     const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
     db.updateMachine(m1.id, { enabled: 0 });
     const m2 = db.createMachine({ base_url: "http://b/v1", model_id: "m2" });
-    const idle = db.getIdleMachine();
-    expect(idle?.id).toBe(m2.id);
+    const avail = db.getAvailableMachine();
+    expect(avail?.id).toBe(m2.id);
   });
 
-  it("getIdleMachine skips working machines", () => {
-    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
-    db.updateMachine(m1.id, { status: "working" });
-    expect(db.getIdleMachine()).toBeNull();
+  it("getAvailableMachine skips machines at capacity", () => {
+    const p = db.createProject({ name: "test", workdir: "/tmp" });
+    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" }); // max_concurrent defaults to 1
+    const issue = db.createIssue({ project_id: p.id, title: "test" });
+    db.updateIssue(issue.id, { status: "running" });
+    const run = db.createRun({ issue_id: issue.id, stage: "implement" });
+    db.updateRun(run.id, { machine_id: m1.id, status: "running" });
+    expect(db.getAvailableMachine()).toBeNull();
   });
 
-  it("getIdleMachine returns null when none available", () => {
-    expect(db.getIdleMachine()).toBeNull();
+  it("getAvailableMachine respects max_concurrent", () => {
+    const p = db.createProject({ name: "test", workdir: "/tmp" });
+    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1", max_concurrent: 2 });
+    const issue = db.createIssue({ project_id: p.id, title: "test" });
+    db.updateIssue(issue.id, { status: "running" });
+    const run = db.createRun({ issue_id: issue.id, stage: "implement" });
+    db.updateRun(run.id, { machine_id: m1.id, status: "running" });
+    // 1 active run, max 2 — still available
+    const avail = db.getAvailableMachine();
+    expect(avail?.id).toBe(m1.id);
+  });
+
+  it("getAvailableMachine returns null when none available", () => {
+    expect(db.getAvailableMachine()).toBeNull();
   });
 });
 

@@ -166,10 +166,10 @@ describe('DashboardLanding', () => {
 
   it('calls createMachine when New Machine button is clicked', async () => {
     const mockPrompt = jest.spyOn(window, 'prompt')
-    mockPrompt.mockImplementation((prompt) => {
+    mockPrompt.mockImplementation((prompt: string) => {
       if (prompt === 'Machine name (optional):') return ''
-      if (prompt === 'Base URL:') return 'http://localhost:11434'
-      if (prompt === 'Model ID:') return 'llama3'
+      if (prompt.startsWith('Base URL:')) return 'http://localhost:11434'
+      if (prompt.startsWith('Default Model ID')) return 'llama3'
       return null
     })
 

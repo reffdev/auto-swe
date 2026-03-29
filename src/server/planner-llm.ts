@@ -34,15 +34,20 @@ export function selectPlannerMachine(db: Db, project: Project): { machine: Machi
   const machines = db.getMachines().filter((m: Machine) => m.enabled === 1);
   if (machines.length === 0) return null;
 
-  // If the project specifies a model, find a machine that serves it
+  // Resolve model: project model_id takes priority, then machine default
+  // For planner, prefer a machine that matches the project's model
   if (project.model_id) {
     const match = machines.find((m: Machine) => m.model_id === project.model_id);
     if (match) return { machine: match, modelId: project.model_id };
+    // No exact match — use any machine with this model via the project override
+    return { machine: machines[0], modelId: project.model_id };
   }
 
   // Fallback: use the first enabled machine with its own model
   const machine = machines[0];
-  return { machine, modelId: machine.model_id };
+  const modelId = machine.model_id;
+  if (!modelId) return null; // no model available
+  return { machine, modelId };
 }
 
 // ─── Response generation ─────────────────────────────────────────────────────

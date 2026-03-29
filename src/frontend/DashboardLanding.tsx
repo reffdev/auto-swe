@@ -106,13 +106,13 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
 
   const handleNewMachine = () => {
     const name = prompt('Machine name (optional):')
-    const baseUrl = prompt('Base URL:', 'http://localhost:11434')
-    const modelId = prompt('Model ID:', 'llama3')
-    if (baseUrl && modelId) {
+    const baseUrl = prompt('Base URL:', 'https://openrouter.ai/api/v1')
+    const modelId = prompt('Default Model ID (optional):')
+    if (baseUrl) {
       api.createMachine({
         name: name || '',
         base_url: baseUrl,
-        model_id: modelId,
+        model_id: modelId || undefined,
       }).then(() => onRefresh())
     }
   }

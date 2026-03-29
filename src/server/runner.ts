@@ -73,6 +73,7 @@ export async function executeIssue(
 
     // 2. Resolve model
     const modelId = project.model_id ?? machine.model_id;
+    if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
     const provider = createOpenAICompatible({
       name: `machine-${machine.id}`,
       baseURL: machine.base_url,

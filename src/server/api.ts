@@ -50,7 +50,11 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   router.get("/poll", (req, res) => {
     const projectId = req.query.project as string | undefined;
     const projects = db.getProjects();
-    const machines = db.getMachines();
+    const machines = db.getMachines().map(m => ({
+      ...m,
+      api_key: m.api_key ? "••••••••" : null,
+      active_issue_ids: db.getActiveIssuesForMachine(m.id),
+    }));
     const issues = db.getIssues(projectId);
     const issueIds = issues.map((i) => i.id);
     const runs = db.getRunsForIssues(issueIds);
@@ -175,16 +179,12 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   });
 
   router.post("/machines", (req, res) => {
-    const { base_url, model_id, name } = req.body;
+    const { base_url, model_id, name, max_concurrent, api_key } = req.body;
     if (!base_url || typeof base_url !== "string") {
       res.status(400).json({ error: "base_url is required" });
       return;
     }
-    if (!model_id || typeof model_id !== "string") {
-      res.status(400).json({ error: "model_id is required" });
-      return;
-    }
-    const machine = db.createMachine({ name, base_url, model_id });
+    const machine = db.createMachine({ name, base_url, model_id: model_id || null, max_concurrent, api_key });
     res.status(201).json(machine);
   });
 
@@ -194,8 +194,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "machine not found" });
       return;
     }
-    const { base_url, model_id, name, enabled, context_limit } = req.body;
-    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit });
+    const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent } = req.body;
+    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent });
     res.json(db.getMachine(req.params.id));
   });
 
@@ -292,13 +292,18 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot approve issue in status '${issue.status}'` });
       return;
     }
-    const machine = db.getIdleMachine();
+    const machine = db.getAvailableMachine();
     if (!machine) {
-      res.status(409).json({ error: "no idle machine available" });
+      res.status(409).json({ error: "no machine available — all at capacity" });
+      return;
+    }
+    const project = db.getProject(issue.project_id)!;
+    const modelId = project.model_id ?? machine.model_id;
+    if (!modelId) {
+      res.status(409).json({ error: "no model specified — set model_id on the project or machine" });
       return;
     }
     db.updateIssue(issue.id, { status: "approved" });
-    const project = db.getProject(issue.project_id)!;
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
 
@@ -434,9 +439,9 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry issue in status '${issue.status}'` });
       return;
     }
-    const machine = db.getIdleMachine();
+    const machine = db.getAvailableMachine();
     if (!machine) {
-      res.status(409).json({ error: "no idle machine available" });
+      res.status(409).json({ error: "no machine available — all at capacity" });
       return;
     }
     db.updateIssue(issue.id, {
@@ -504,9 +509,9 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry stage for issue in status '${issue.status}'` });
       return;
     }
-    const machine = db.getIdleMachine();
+    const machine = db.getAvailableMachine();
     if (!machine) {
-      res.status(409).json({ error: "no idle machine available" });
+      res.status(409).json({ error: "no machine available — all at capacity" });
       return;
     }
     const project = db.getProject(issue.project_id)!;

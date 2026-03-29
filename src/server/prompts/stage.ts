@@ -419,21 +419,9 @@ ${lens.focus}
 1. Read the changed files
 2. Call \`checkTests\` to verify tests pass
 3. Call \`checkBuild\` to verify the build compiles
-4. Produce your verdict
+4. Call \`submitVerdict\` with your verdict — this is MANDATORY and must be the LAST thing you do
 
-## Verdict
-
-\`\`\`verdict
-status: accept
-summary: [why this passes]
-\`\`\`
-
-or
-
-\`\`\`verdict
-status: reject
-feedback: [specific, actionable feedback. Include file names, function names, and what's wrong.]
-\`\`\``;
+Do NOT keep calling gitDiff, gitStatus, checkTests, or checkBuild after you have already gathered the information you need. Once you have read the files, checked tests, and checked the build, call \`submitVerdict\` immediately.`;
 
   const brief = opts.scoutBrief;
   const impl = opts.implementOutput;

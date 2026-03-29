@@ -152,10 +152,9 @@ describe("constructReviewPrompts", () => {
     expect(system).toContain("Input validation");
   });
 
-  it("includes verdict format", () => {
+  it("includes submitVerdict instruction", () => {
     const { system } = constructReviewPrompts(baseOpts);
-    expect(system).toContain("status: accept");
-    expect(system).toContain("status: reject");
+    expect(system).toContain("submitVerdict");
   });
 
   it("includes checkBuild and checkTests in instructions", () => {

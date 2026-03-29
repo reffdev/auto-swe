@@ -132,10 +132,9 @@ describe("constructReviewPrompts with lens", () => {
     expect(system).toContain("UI Review");
   });
 
-  it("includes verdict format with accept and reject", () => {
+  it("includes submitVerdict and safety instructions", () => {
     const { system } = constructReviewPrompts(baseOpts);
-    expect(system).toContain("status: accept");
-    expect(system).toContain("status: reject");
+    expect(system).toContain("submitVerdict");
     expect(system).toContain("Do NOT run servers");
   });
 });

@@ -15,9 +15,11 @@ interface MachineDetailProps {
 export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailProps) {
   const [name, setName] = useState(machine.name)
   const [baseUrl, setBaseUrl] = useState(machine.base_url)
-  const [modelId, setModelId] = useState(machine.model_id)
+  const [modelId, setModelId] = useState(machine.model_id ?? '')
   const [enabled, setEnabled] = useState(!!machine.enabled)
   const [contextLimit, setContextLimit] = useState(machine.context_limit?.toString() ?? '')
+  const [maxConcurrent, setMaxConcurrent] = useState(machine.max_concurrent?.toString() ?? '1')
+  const [apiKey, setApiKey] = useState(machine.api_key ?? '')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -27,17 +29,22 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   useEffect(() => {
     setName(machine.name)
     setBaseUrl(machine.base_url)
-    setModelId(machine.model_id)
+    setModelId(machine.model_id ?? '')
     setEnabled(!!machine.enabled)
     setContextLimit(machine.context_limit?.toString() ?? '')
-  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.enabled, machine.context_limit])
+    setMaxConcurrent(machine.max_concurrent?.toString() ?? '1')
+    setApiKey(machine.api_key ?? '')
+  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key])
 
   const parsedContextLimit = contextLimit ? parseInt(contextLimit, 10) || null : null
+  const parsedMaxConcurrent = parseInt(maxConcurrent, 10) || 1
   const hasChanges =
     name !== machine.name ||
     baseUrl !== machine.base_url ||
-    modelId !== machine.model_id ||
+    (modelId || null) !== (machine.model_id ?? null) ||
     parsedContextLimit !== (machine.context_limit ?? null) ||
+    parsedMaxConcurrent !== (machine.max_concurrent ?? 1) ||
+    (apiKey || null) !== (machine.api_key ?? null) ||
     enabled !== !!machine.enabled
 
   const handleSave = async () => {
@@ -45,13 +52,19 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     setSuccess(false)
     setSaving(true)
     try {
-      await api.updateMachine(machine.id, {
+      const update: Record<string, unknown> = {
         name,
         base_url: baseUrl,
-        model_id: modelId,
+        model_id: modelId || null,
         enabled: enabled ? 1 : 0,
         context_limit: parsedContextLimit,
-      })
+        max_concurrent: parsedMaxConcurrent,
+      }
+      // Only send api_key if user changed it from the masked value
+      if (apiKey !== (machine.api_key ?? '') && apiKey !== '••••••••') {
+        update.api_key = apiKey || null
+      }
+      await api.updateMachine(machine.id, update as Partial<Machine>)
       setSuccess(true)
       onDataChange()
       setTimeout(() => setSuccess(false), 2000)
@@ -106,20 +119,32 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
 
           <div>
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Base URL</label>
-            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://192.168.1.50:8080/v1" />
-            <p className="text-xs text-muted-foreground mt-1">OpenAI-compatible API endpoint</p>
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" />
+            <p className="text-xs text-muted-foreground mt-1">OpenAI-compatible API endpoint (OpenRouter, LiteLLM, local llama.cpp, etc.)</p>
           </div>
 
           <div>
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Model ID</label>
-            <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="e.g. qwen2.5-coder-32b" />
-            <p className="text-xs text-muted-foreground mt-1">Model name the server expects</p>
+            <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="e.g. anthropic/claude-sonnet-4-20250514" />
+            <p className="text-xs text-muted-foreground mt-1">Default model name. Optional if projects specify their own model.</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Max Concurrent Jobs</label>
+            <Input value={maxConcurrent} onChange={(e) => setMaxConcurrent(e.target.value)} placeholder="1" type="number" min="1" className="max-w-[100px]" />
+            <p className="text-xs text-muted-foreground mt-1">How many issues this machine can process simultaneously. Cloud APIs support many; local servers typically 1.</p>
           </div>
 
           <div>
             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Context Limit (tokens)</label>
             <Input value={contextLimit} onChange={(e) => setContextLimit(e.target.value)} placeholder="128000" type="number" />
             <p className="text-xs text-muted-foreground mt-1">Model's context window size. Leave empty for default (128k). Tool output truncation scales to this.</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">API Key</label>
+            <Input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." type="password" />
+            <p className="text-xs text-muted-foreground mt-1">Bearer token for cloud providers (OpenRouter, LiteLLM, etc.). Leave empty for local servers.</p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -138,10 +163,14 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
             <label className="text-sm">Enabled</label>
           </div>
 
-          {machine.current_run_id && (
+          {machine.active_issue_ids?.length > 0 && (
             <div>
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Current Run</label>
-              <code className="text-sm">{machine.current_run_id}</code>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Active Jobs ({machine.active_issue_ids.length}/{machine.max_concurrent})</label>
+              <div className="space-y-1">
+                {machine.active_issue_ids.map(id => (
+                  <code key={id} className="text-xs text-muted-foreground block">{id}</code>
+                ))}
+              </div>
             </div>
           )}
 
