@@ -12,6 +12,7 @@ import { streamText, generateText, type StepResult, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { spawnSync } from "child_process";
 import type { Db } from "../db";
+import { EXPAND_FILES_MARKER } from "./nodes";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,8 +130,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   };
   const liveSteps: StepData[] = [promptsStep, ...(initialSteps ?? [])];
 
-  // Track whether compaction was triggered mid-stream
+  // Track whether compaction or file expansion was triggered mid-stream
   let compactionNeeded = false;
+  let expandFilesNeeded = false;
+  let pendingExpandFiles: PreloadedFile[] = [];
   let compactionAbort: AbortController | null = null;
 
   const onStep = (step: StepResult<ToolSet>) => {
@@ -193,8 +196,26 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
     console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepDuration}ms, prompt=${promptTok})`);
 
+    // Check if readRelevantFiles needs expansion into individual readFile results
+    if (!expandFilesNeeded && toolResults?.length) {
+      for (const tr of toolResults) {
+        const resultStr = String(tr.result ?? "");
+        if (resultStr.startsWith(EXPAND_FILES_MARKER)) {
+          try {
+            const filesJson = resultStr.slice(EXPAND_FILES_MARKER.length);
+            const files = JSON.parse(filesJson) as Array<{ path: string; content: string }>;
+            pendingExpandFiles = files.map(f => ({ path: f.path, content: f.content }));
+            expandFilesNeeded = true;
+            console.log(`Pipeline [${stageName}]: readRelevantFiles expanding into ${files.length} individual file reads`);
+            compactionAbort?.abort();
+          } catch { /* not valid — treat as normal result */ }
+          break;
+        }
+      }
+    }
+
     // Check if compaction is needed
-    if (promptTok >= compactionTokenThreshold && compactionCount < MAX_COMPACTIONS) {
+    if (!expandFilesNeeded && promptTok >= compactionTokenThreshold && compactionCount < MAX_COMPACTIONS) {
       console.log(`Pipeline [${stageName}]: prompt tokens (${promptTok}) exceed ${Math.round(COMPACTION_THRESHOLD * 100)}% of context limit (${contextLimit}) — triggering compaction`);
       compactionNeeded = true;
       compactionAbort?.abort();
@@ -226,6 +247,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     // Outer compaction loop
     while (true) {
       compactionNeeded = false;
+      expandFilesNeeded = false;
       compactionAbort = new AbortController();
 
       // Merge abort signals: external cancel + compaction
@@ -284,6 +306,27 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       try {
         fullText = await Promise.race([agentPromise, cancelPromise]);
       } catch (err) {
+        // If this was a file expansion abort, restart with injected readFile results
+        if (expandFilesNeeded && !abortSignal?.aborted) {
+          expandFilesNeeded = false;
+          console.log(`Pipeline [${stageName}]: expanding readRelevantFiles into ${pendingExpandFiles.length} individual reads`);
+
+          // Add info step to UI
+          liveSteps.push({
+            step: stepCount + 1,
+            text: `**readRelevantFiles** → expanded into ${pendingExpandFiles.length} individual file reads`,
+            tokens: { prompt: 0, completion: 0 },
+            durationMs: 0,
+          });
+          stepCount += 1;
+          try { db.updateRun(runId, { output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
+
+          // Inject files as preloads for the next streamText restart
+          currentPreloads = pendingExpandFiles;
+          pendingExpandFiles = [];
+          continue; // restart the while loop
+        }
+
         // If this was a compaction abort (not a cancel), handle it
         if (compactionNeeded && !abortSignal?.aborted) {
           compactionCount++;

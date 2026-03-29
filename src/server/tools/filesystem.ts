@@ -883,7 +883,10 @@ export function makeTestWriteTools(workdir: string, budget?: ContextBudget) {
     searchFiles,
     writeFile: wf,
     appendToFile: af,
+    replaceInFile,
     runCommand,
+    gitStatus,
+    gitDiff,
     getFileInfo,
   } = makeFilesystemTools(workdir, budget);
   return {
@@ -892,7 +895,10 @@ export function makeTestWriteTools(workdir: string, budget?: ContextBudget) {
     searchFiles,
     writeFile: wf,
     appendToFile: af,
+    replaceInFile,
     runCommand,
+    gitStatus,
+    gitDiff,
     getFileInfo,
   };
 }

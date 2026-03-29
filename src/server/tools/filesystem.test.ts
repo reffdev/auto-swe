@@ -433,13 +433,14 @@ describe("tool set factories", () => {
     expect((tools as Record<string, unknown>).deleteFile).toBeUndefined();
   });
 
-  it("makeTestWriteTools includes write and run but not git", () => {
+  it("makeTestWriteTools includes write, run, replace, and git read tools", () => {
     const tools = makeTestWriteTools(workdir);
     expect(tools.readFile).toBeDefined();
     expect(tools.writeFile).toBeDefined();
+    expect(tools.replaceInFile).toBeDefined();
     expect(tools.runCommand).toBeDefined();
-    expect((tools as Record<string, unknown>).gitStatus).toBeUndefined();
-    expect((tools as Record<string, unknown>).gitDiff).toBeUndefined();
+    expect(tools.gitStatus).toBeDefined();
+    expect(tools.gitDiff).toBeDefined();
   });
 
   it("makeVerifyTools includes run and git but not write", () => {

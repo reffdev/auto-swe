@@ -184,6 +184,9 @@ export function resolveScoutManifest(worktreePath: string, scoutBrief: string): 
 }
 
 /** Create a tool that reads all files from the scout manifest in one call */
+/** Marker prefix for readRelevantFiles auto-expansion */
+export const EXPAND_FILES_MARKER = "__EXPAND_FILES__";
+
 function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
   // Parse file paths from manifest
   let filePaths: string[] = [];
@@ -202,26 +205,20 @@ function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
     execute: async () => {
       if (filePaths.length === 0) return "No relevant files identified.";
 
-      const results: string[] = [];
-      let totalLines = 0;
-      let totalChars = 0;
+      // Read all files and return as a marker — runStage will intercept this
+      // and restart the stream with individual readFile results per file.
+      const files: Array<{ path: string; content: string }> = [];
       for (const filePath of filePaths) {
         const fullPath = resolve(worktreePath, filePath);
-        if (!fullPath.startsWith(resolve(worktreePath))) {
-          results.push(`### ${filePath}\n*Path rejected — outside project*`);
-          continue;
-        }
+        if (!fullPath.startsWith(resolve(worktreePath))) continue;
         try {
           const content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
-          const lines = content.split("\n").length;
-          totalLines += lines;
-          totalChars += content.length;
-          results.push(`### ${filePath} (${lines} lines)\n${content}\n### END ${filePath}`);
+          files.push({ path: filePath, content });
         } catch {
-          results.push(`### ${filePath}\n*File not found*`);
+          files.push({ path: filePath, content: "(file not found)" });
         }
       }
-      return `${results.join("\n\n")}\n\n---\nLoaded ${filePaths.length} files, ${totalLines} total lines, ${totalChars} chars. All files shown in full.`;
+      return `${EXPAND_FILES_MARKER}${JSON.stringify(files)}`;
     },
   });
 }
