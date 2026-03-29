@@ -341,25 +341,31 @@ export async function scoutNode(
     if (isValid) break;
 
     console.log(`Pipeline: scout manifest invalid — asking for correction (attempt ${attempt + 2})`);
-    const followUp = await generateText({
-      model,
-      system: constructScoutPrompt({ workingDir: state.worktreePath }),
-      messages: [
-        { role: "user", content: userIssue + contextSection },
-        { role: "assistant", content: scoutOutput || "(no output)" },
-        { role: "user", content: "You did not call saveCheckpoint with a valid file list. You MUST call saveCheckpoint now with your findings. The parameter is an object with a `files` array where each entry has `path` (string) and `reason` (string). Call it now." },
-      ],
-      tools: {
-        saveCheckpoint: createSubmitScoutReportTool(new AbortController()),
-      } as ToolSet,
-      maxSteps: 2,
-      abortSignal,
-    });
+    try {
+      const followUp = await generateText({
+        model,
+        system: constructScoutPrompt({ workingDir: state.worktreePath }),
+        messages: [
+          { role: "user", content: userIssue + contextSection },
+          { role: "assistant", content: scoutOutput || "(no output)" },
+          { role: "user", content: "You did not call saveCheckpoint with a valid file list. You MUST call saveCheckpoint now with your findings. The parameter is an object with a `files` array where each entry has `path` (string) and `reason` (string). Call it now. Do NOT call any other tools — only saveCheckpoint." },
+        ],
+        tools: {
+          ...makeReadOnlyTools(state.worktreePath),
+          saveCheckpoint: createSubmitScoutReportTool(new AbortController()),
+        } as ToolSet,
+        maxSteps: 5,
+        abortSignal,
+      });
 
-    // Check if the tool was called during the follow-up
-    brief = extractScoutBrief(followUp.text || "");
-    getAndClearSubmittedBrief();
-    console.log(`Pipeline: scout retry brief: ${brief.length} chars`);
+      // Check if the tool was called during the follow-up
+      brief = extractScoutBrief(followUp.text || "");
+      getAndClearSubmittedBrief();
+      console.log(`Pipeline: scout retry brief: ${brief.length} chars`);
+    } catch (retryErr) {
+      console.error(`Pipeline: scout retry attempt ${attempt + 2} failed:`, retryErr instanceof Error ? retryErr.message : retryErr);
+      // Continue to next retry attempt
+    }
   }
 
   // Final validation
