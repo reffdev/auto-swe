@@ -133,6 +133,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   // Track whether compaction or file expansion was triggered mid-stream
   let compactionNeeded = false;
   let expandFilesNeeded = false;
+  let expandFilesUsed = false; // only expand once per stage
   let pendingExpandFiles: PreloadedFile[] = [];
   let compactionAbort: AbortController | null = null;
 
@@ -213,8 +214,8 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       textOnlySteps = 0;
     }
 
-    // Check if readRelevantFiles needs expansion into individual readFile results
-    if (!expandFilesNeeded && toolResults?.length) {
+    // Check if readRelevantFiles needs expansion into individual readFile results (once per stage)
+    if (!expandFilesNeeded && !expandFilesUsed && toolResults?.length) {
       for (const tr of toolResults) {
         const resultStr = String(tr.result ?? "");
         if (resultStr.startsWith(EXPAND_FILES_MARKER)) {
@@ -272,7 +273,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       // Merge abort signals: external cancel + compaction
       const combinedAbort = new AbortController();
       const onExternalAbort = () => combinedAbort.abort();
-      const onCompactionAbort = () => { if (compactionNeeded) combinedAbort.abort(); };
+      const onCompactionAbort = () => { if (compactionNeeded || expandFilesNeeded || reasoningLoopDetected) combinedAbort.abort(); };
       abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
       compactionAbort.signal.addEventListener("abort", onCompactionAbort, { once: true });
 
@@ -338,9 +339,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           }
         }
 
-        // If this was a file expansion abort, restart with injected readFile results
-        if (expandFilesNeeded && !abortSignal?.aborted) {
+        // If this was a file expansion abort (and not a reasoning loop), restart with injected readFile results
+        if (expandFilesNeeded && !compactionNeeded && !abortSignal?.aborted) {
           expandFilesNeeded = false;
+          expandFilesUsed = true; // prevent re-expansion if agent calls readRelevantFiles again
           console.log(`Pipeline [${stageName}]: expanding readRelevantFiles into ${pendingExpandFiles.length} individual reads`);
 
           // Add info step to UI
