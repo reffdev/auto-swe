@@ -33,6 +33,7 @@ export const projects = sqliteTable("projects", {
   model_id: text("model_id"),
   build_command: text("build_command"),
   test_command: text("test_command"),
+  lint_command: text("lint_command"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
@@ -76,6 +77,36 @@ export const runs = sqliteTable("runs", {
   prompt_tokens: integer("prompt_tokens"),
   completion_tokens: integer("completion_tokens"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ─── Analysis ─────────────────────────────────────────────────────────────────
+
+export const analysisConfigs = sqliteTable("analysis_configs", {
+  id: text("id").primaryKey(),
+  project_id: text("project_id").notNull().references(() => projects.id),
+  lens_key: text("lens_key").notNull(),  // e.g. "security", "performance"
+  enabled: integer("enabled").notNull().default(1),
+  frequency: text("frequency").notNull().default("weekly"),  // "daily" | "weekly" | "monthly"
+  last_run_at: text("last_run_at"),
+  next_run_at: text("next_run_at"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+export const analysisRuns = sqliteTable("analysis_runs", {
+  id: text("id").primaryKey(),
+  project_id: text("project_id").notNull().references(() => projects.id),
+  config_id: text("config_id").notNull().references(() => analysisConfigs.id),
+  lens_key: text("lens_key").notNull(),
+  machine_id: text("machine_id"),
+  status: text("status").notNull().default("pending"),  // pending | running | pass | fail
+  findings: text("findings"),  // JSON array of findings
+  summary: text("summary"),    // JSON: { critical, high, medium, low, total }
+  output: text("output"),      // raw step output for UI (same format as pipeline runs)
+  started_at: text("started_at"),
+  completed_at: text("completed_at"),
+  duration_ms: integer("duration_ms"),
+  prompt_tokens: integer("prompt_tokens"),
+  completion_tokens: integer("completion_tokens"),
 });
 
 // ─── Planner Conversations ────────────────────────────────────────────────

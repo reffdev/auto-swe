@@ -11,7 +11,7 @@ jest.mock('./api', () => ({
 
 // Mock the UI components at the module level
 jest.mock('@/components/ui/dialog', () => ({
-  Dialog: ({ children, open, onOpenChange }: any) => (
+  Dialog: ({ children, open, onOpenChange: _onOpenChange }: any) => (
     <div data-testid="mock-dialog" className={open ? 'open' : 'closed'}>
       {open ? children : null}
     </div>

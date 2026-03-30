@@ -51,7 +51,7 @@ export function runAndExtractErrors(command: string, workdir: string): string {
   return errorLines.join("\n");
 }
 
-export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: string | null; testCommand?: string | null }) {
+export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: string | null; testCommand?: string | null; lintCommand?: string | null }) {
   const buildCmd = opts?.buildCommand || DEFAULT_BUILD_COMMAND;
   const testCmd = opts?.testCommand || DEFAULT_TEST_COMMAND;
 
@@ -72,7 +72,19 @@ export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: str
     },
   });
 
-  return { checkBuild, checkTests };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = { checkBuild, checkTests };
+
+  if (opts?.lintCommand) {
+    const lintCmd = opts.lintCommand;
+    tools.checkLint = tool({
+      description: `Run the linter (${lintCmd}). Returns "success" or only the error messages.`,
+      parameters: z.object({}),
+      execute: async () => runAndExtractErrors(lintCmd, workdir),
+    });
+  }
+
+  return tools;
 }
 
 // ─── Review verdict tool ─────────────────────────────────────────────────────

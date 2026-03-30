@@ -41,7 +41,7 @@ function FileDiff({ file, defaultOpen }: { file: DiffFile; defaultOpen?: boolean
   return (
     <div className="border border-border rounded-md overflow-hidden">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-2 bg-muted/30 hover:bg-muted/50 transition-colors text-left text-sm"
       >
         <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', open && 'rotate-90')} />

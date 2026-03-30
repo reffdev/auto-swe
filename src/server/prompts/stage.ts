@@ -100,9 +100,10 @@ export function constructImplementPrompts(opts: {
   issueDescription: string;
   reviewFeedback?: string;
   buildErrors?: string;
+  lintErrors?: string;
   testErrors?: string;
 }): { system: string; user: string } {
-  const isRetry = !!(opts.reviewFeedback || opts.buildErrors || opts.testErrors);
+  const isRetry = !!(opts.reviewFeedback || opts.buildErrors || opts.lintErrors || opts.testErrors);
 
   const system = isRetry
     ? `# Implementation — Fix Requested
@@ -166,6 +167,20 @@ ${opts.buildErrors}
 `;
   }
 
+  if (opts.lintErrors) {
+    user += `## LINT FAILING — FIX THESE ERRORS
+
+Your previous changes have lint violations. The worktree ALREADY contains your code. Fix the lint errors below.
+
+\`\`\`
+${opts.lintErrors}
+\`\`\`
+
+---
+
+`;
+  }
+
   if (opts.testErrors) {
     user += `## TESTS FAILING — FIX THESE ERRORS
 
@@ -194,7 +209,7 @@ ${opts.reviewFeedback}
 `;
   }
 
-  user += `${opts.scoutBrief}`;
+  user += opts.scoutBrief;
 
   return { system, user };
 }
@@ -210,6 +225,7 @@ export function constructTestWritePrompts(opts: {
   gitContext?: string;
   projectContext?: string;
   testErrors?: string;
+  lintErrors?: string;
 }): { system: string; user: string } {
   const system = `# Test Writing
 
@@ -285,6 +301,20 @@ You reported tests as passing, but the automated test gate found failures. The w
 
 \`\`\`
 ${opts.testErrors}
+\`\`\`
+
+---
+
+`;
+  }
+
+  if (opts.lintErrors) {
+    user += `## LINT FAILING — FIX THESE ERRORS
+
+Your test files have lint violations. The worktree ALREADY contains your test files. Fix the lint errors below.
+
+\`\`\`
+${opts.lintErrors}
 \`\`\`
 
 ---

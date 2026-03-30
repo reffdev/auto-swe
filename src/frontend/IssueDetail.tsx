@@ -284,7 +284,7 @@ function ToolCallDetail({ call, result, duration }: {
   return (
     <div className="border border-border rounded-md overflow-hidden text-xs">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-1.5 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
       >
         <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -318,7 +318,7 @@ function PromptSection({ label, content, tokenEst }: { label: string; content: s
   return (
     <div className="border border-border rounded-md overflow-hidden text-xs">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={() => { setOpen(!open); }}
         className="w-full flex items-center gap-2 px-3 py-1.5 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
       >
         <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -406,16 +406,16 @@ function useLiveOutput(runs: Run[]) {
       if (parsed) setActiveRunOutput({ steps: parsed, raw: null })
       else if (output) setActiveRunOutput({ steps: null, raw: output })
     }).catch(() => {})
-  }, [activeRun?.id])
+  }, [activeRun])
 
   useEffect(() => {
     if (!activeRun) return
     fetchOutput()
     if (activeRun.status === 'running' || activeRun.status === 'pending') {
       const id = setInterval(fetchOutput, 2000)
-      return () => clearInterval(id)
+      return () => { clearInterval(id); }
     }
-  }, [activeRun?.id, activeRun?.status, fetchOutput])
+  }, [activeRun, fetchOutput])
 
   return { allRuns: sortedRuns, activeRun, activeRunOutput }
 }
@@ -449,7 +449,7 @@ function EditableDescription({ issue, onDataChange }: { issue: Issue; onDataChan
       <div className="ml-9 mt-1">
         <Textarea
           value={draft}
-          onChange={e => setDraft(e.target.value)}
+          onChange={e => { setDraft(e.target.value); }}
           rows={Math.max(4, draft.split('\n').length + 1)}
           className="text-sm font-mono"
           autoFocus
@@ -537,12 +537,12 @@ function LensChips({ issue, editable, onDataChange }: { issue: Issue; editable: 
 
 // ─── Epic story list ──────────────────────────────────────────────────────────
 
-function EpicStoryList({ epicId, projectId, onSelectIssue }: { epicId: string; projectId: string; onSelectIssue: (id: string) => void }) {
+function EpicStoryList({ epicId, projectId: _projectId, onSelectIssue }: { epicId: string; projectId: string; onSelectIssue: (id: string) => void }) {
   const [children, setChildren] = useState<Issue[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api.getChildIssues(epicId).then(setChildren).finally(() => setLoading(false))
+    void api.getChildIssues(epicId).then(setChildren).finally(() => { setLoading(false); })
   }, [epicId])
 
   if (loading) return <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">Loading stories...</div>
@@ -553,7 +553,7 @@ function EpicStoryList({ epicId, projectId, onSelectIssue }: { epicId: string; p
       {children.map(child => (
         <button
           key={child.id}
-          onClick={() => onSelectIssue(child.id)}
+          onClick={() => { onSelectIssue(child.id); }}
           className="w-full text-left px-6 py-3 border-b border-border hover:bg-accent/50 transition-colors"
         >
           <div className="flex items-center gap-3">
@@ -592,7 +592,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
   // Check if a checkpoint exists for failed issues
   useEffect(() => {
     if (issue.status === 'failed') {
-      api.checkHasCheckpoint(issue.id).then(r => setCheckpointAvailable(r.hasCheckpoint)).catch(() => setCheckpointAvailable(false))
+      api.checkHasCheckpoint(issue.id).then(r => { setCheckpointAvailable(r.hasCheckpoint); }).catch(() => { setCheckpointAvailable(false); })
     } else {
       setCheckpointAvailable(false)
     }
@@ -626,7 +626,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
       if (parsed) setViewedOutput({ steps: parsed, raw: null })
       else setViewedOutput({ steps: null, raw: output })
     }).catch(() => {})
-  }, [displayRun?.id, activeRun?.id, activeRunOutput])
+  }, [displayRun, activeRun?.id, activeRunOutput])
 
   const doAction = async (name: string, fn: () => Promise<unknown>) => {
     setActionLoading(name)
@@ -669,7 +669,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
         <LensChips issue={issue} editable={issue.status === 'pending'} onDataChange={onDataChange} />
         {issue.parent_id && (
           <button
-            onClick={() => onBack()}
+            onClick={() => { onBack(); }}
             className="flex items-center gap-1.5 ml-9 mt-2 text-xs text-blue-400 hover:underline"
           >
             <Layers className="size-3" />
@@ -780,7 +780,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
             className="text-destructive hover:text-destructive hover:bg-destructive/10 ml-auto"
             onClick={() => {
               if (confirm(`Delete "${issue.title}"? This cannot be undone.`)) {
-                doAction('delete', async () => { await api.deleteIssue(issue.id); onBack() })
+                void doAction('delete', async () => { await api.deleteIssue(issue.id); onBack() })
               }
             }}
             disabled={!!actionLoading}
@@ -802,7 +802,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
       {hasBranch && (
         <div className="px-6 py-2 border-b border-border flex items-center gap-1">
           <button
-            onClick={() => setActiveTab('pipeline')}
+            onClick={() => { setActiveTab('pipeline'); }}
             className={cn(
               'px-3 py-1.5 text-xs font-medium rounded-md transition-colors',
               activeTab === 'pipeline' ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
@@ -845,7 +845,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
         <StageStepper
           runs={allRuns}
           activeRunId={displayRun?.id ?? null}
-          onSelectRun={(id) => setViewingRunId(id === activeRun?.id ? null : id)}
+          onSelectRun={(id) => { setViewingRunId(id === activeRun?.id ? null : id); }}
           reviewLenses={(() => { try { return JSON.parse(issue.review_lenses || '[]') } catch { return [] } })()}
         />
       )}

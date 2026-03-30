@@ -7,7 +7,7 @@
  */
 
 import type { SttAdapter } from "./types";
-import { pcmToWav, wavToPcm } from "./wav";
+import { pcmToWav } from "./wav";
 import { spawnSync } from "child_process";
 
 /** Check if sox is available on the system */
@@ -91,7 +91,7 @@ export class LlamaCppStt implements SttAdapter {
 
     const url = new URL("/v1/audio/transcriptions", this.baseUrl).href;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const timeout = setTimeout(() => { controller.abort(); }, 120_000);
     let res: Response;
     try {
       res = await fetch(url, {

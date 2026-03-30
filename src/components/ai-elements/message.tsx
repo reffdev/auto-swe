@@ -201,8 +201,8 @@ export const MessageBranchContent = ({
   ...props
 }: MessageBranchContentProps) => {
   const { currentBranch, setBranches, branches } = useMessageBranch();
-  const childrenArray = useMemo(
-    () => (Array.isArray(children) ? children : [children]),
+  const childrenArray: ReactElement[] = useMemo(
+    () => (Array.isArray(children) ? (children as ReactElement[]) : [children as ReactElement]),
     [children]
   );
 
@@ -213,7 +213,7 @@ export const MessageBranchContent = ({
     }
   }, [childrenArray, branches, setBranches]);
 
-  return childrenArray.map((branch, index) => (
+  return childrenArray.map((branch: ReactElement, index: number) => (
     <div
       className={cn(
         "grid gap-2 overflow-hidden [&>div]:pb-0",

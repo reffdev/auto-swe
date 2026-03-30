@@ -1,4 +1,3 @@
-// @ts-nocheck
 "use client";
 
 import {
@@ -41,7 +40,23 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
+// Local type definitions (these types were removed from the "ai" package in v4)
+interface FileUIPart {
+  type: "file";
+  filename: string;
+  mediaType: string;
+  url: string;
+}
+
+interface SourceDocumentUIPart {
+  type: "source-document";
+  sourceId: string;
+  title?: string;
+  url?: string;
+  [key: string]: unknown;
+}
+
+type ChatStatus = "submitted" | "streaming" | "error" | "ready" | "idle";
 import {
   CornerDownLeftIcon,
   ImageIcon,
@@ -56,13 +71,12 @@ import type {
   ChangeEventHandler,
   ClipboardEventHandler,
   ComponentProps,
-  FormEvent,
-  FormEventHandler,
   HTMLAttributes,
   KeyboardEventHandler,
   PropsWithChildren,
   ReactNode,
   RefObject,
+  SyntheticEvent,
 } from "react";
 import {
   Children,
@@ -85,12 +99,12 @@ const convertBlobUrlToDataUrl = async (url: string): Promise<string | null> => {
     const blob = await response.blob();
     // FileReader uses callback-based API, wrapping in Promise is necessary
     // oxlint-disable-next-line eslint-plugin-promise(avoid-new)
-    return new Promise((resolve) => {
+    return await new Promise((resolve) => {
       const reader = new FileReader();
       // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-      reader.onloadend = () => resolve(reader.result as string);
+      reader.onloadend = () => { resolve(reader.result as string); };
       // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-      reader.onerror = () => resolve(null);
+      reader.onerror = () => { resolve(null); };
       reader.readAsDataURL(blob);
     });
   } catch {
@@ -123,9 +137,9 @@ const captureScreenshot = async (): Promise<File | null> => {
     // oxlint-disable-next-line eslint-plugin-promise(avoid-new)
     await new Promise<void>((resolve, reject) => {
       // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-      video.onloadedmetadata = () => resolve();
+      video.onloadedmetadata = () => { resolve(); };
       // oxlint-disable-next-line eslint-plugin-unicorn(prefer-add-event-listener)
-      video.onerror = () => reject(new Error("Failed to load screen stream"));
+      video.onerror = () => { reject(new Error("Failed to load screen stream")); };
     });
 
     await video.play();
@@ -252,7 +266,7 @@ export const PromptInputProvider = ({
 }: PromptInputProviderProps) => {
   // ----- textInput state
   const [textInput, setTextInput] = useState(initialTextInput);
-  const clearInput = useCallback(() => setTextInput(""), []);
+  const clearInput = useCallback(() => { setTextInput(""); }, []);
 
   // ----- attachments state (global when wrapped)
   const [attachmentFiles, setAttachmentFiles] = useState<
@@ -430,6 +444,7 @@ export const PromptInputActionAddAttachments = ({
   );
 
   return (
+    // @ts-expect-error - Event type mismatch with BaseUI component
     <DropdownMenuItem {...props} onSelect={handleSelect}>
       <ImageIcon className="mr-2 size-4" /> {label}
     </DropdownMenuItem>
@@ -451,6 +466,7 @@ export const PromptInputActionAddScreenshot = ({
 
   const handleSelect = useCallback(
     async (event: Event) => {
+      // @ts-expect-error - Event type mismatch with BaseUI component
       onSelect?.(event);
       if (event.defaultPrevented) {
         return;
@@ -475,6 +491,7 @@ export const PromptInputActionAddScreenshot = ({
   );
 
   return (
+    // @ts-expect-error - Event type mismatch with BaseUI component
     <DropdownMenuItem {...props} onSelect={handleSelect}>
       <Monitor className="mr-2 size-4" />
       {label}
@@ -508,7 +525,7 @@ export type PromptInputProps = Omit<
   }) => void;
   onSubmit: (
     message: PromptInputMessage,
-    event: FormEvent<HTMLFormElement>
+    event: SyntheticEvent<HTMLFormElement>
   ) => void | Promise<void>;
 };
 
@@ -629,13 +646,13 @@ export const PromptInput = ({
 
   const removeLocal = useCallback(
     (id: string) =>
-      setItems((prev) => {
+      { setItems((prev) => {
         const found = prev.find((file) => file.id === id);
         if (found?.url) {
           URL.revokeObjectURL(found.url);
         }
         return prev.filter((file) => file.id !== id);
-      }),
+      }); },
     []
   );
 
@@ -684,22 +701,25 @@ export const PromptInput = ({
   );
 
   const clearAttachments = useCallback(
-    () =>
-      usingProvider
-        ? controller?.attachments.clear()
-        : setItems((prev) => {
+    () => {
+      if (usingProvider) {
+        controller?.attachments.clear();
+      } else {
+        setItems((prev) => {
             for (const file of prev) {
               if (file.url) {
                 URL.revokeObjectURL(file.url);
               }
             }
             return [];
-          }),
+          });
+      }
+    },
     [usingProvider, controller]
   );
 
   const clearReferencedSources = useCallback(
-    () => setReferencedSources([]),
+    () => { setReferencedSources([]); },
     []
   );
 
@@ -842,7 +862,7 @@ export const PromptInput = ({
     [referencedSources, clearReferencedSources]
   );
 
-  const handleSubmit: FormEventHandler<HTMLFormElement> = useCallback(
+  const handleSubmit: (event: SyntheticEvent<HTMLFormElement>) => void = useCallback(
     async (event) => {
       event.preventDefault();
 
@@ -1039,8 +1059,8 @@ export const PromptInputTextarea = ({
     [attachments]
   );
 
-  const handleCompositionEnd = useCallback(() => setIsComposing(false), []);
-  const handleCompositionStart = useCallback(() => setIsComposing(true), []);
+  const handleCompositionEnd = useCallback(() => { setIsComposing(false); }, []);
+  const handleCompositionStart = useCallback(() => { setIsComposing(true); }, []);
 
   const controlledProps = controller
     ? {
@@ -1239,6 +1259,7 @@ export const PromptInputSubmit = ({
         onStop();
         return;
       }
+      // @ts-expect-error - MouseEvent type mismatch with BaseUI component
       onClick?.(e);
     },
     [isGenerating, onStop, onClick]
@@ -1315,10 +1336,13 @@ export const PromptInputSelectValue = ({
 export type PromptInputHoverCardProps = ComponentProps<typeof HoverCard>;
 
 export const PromptInputHoverCard = ({
+  // @ts-expect-error - openDelay not in HoverCard props type
   openDelay = 0,
+  // @ts-expect-error - closeDelay not in HoverCard props type
   closeDelay = 0,
   ...props
 }: PromptInputHoverCardProps) => (
+  // @ts-expect-error - HoverCard props type mismatch with openDelay/closeDelay
   <HoverCard closeDelay={closeDelay} openDelay={openDelay} {...props} />
 );
 

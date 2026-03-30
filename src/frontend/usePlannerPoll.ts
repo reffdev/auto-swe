@@ -60,7 +60,7 @@ export function usePlannerPoll(conversationId: string | null) {
     // Reset and do a full fetch (no afterId)
     lastMessageIdRef.current = undefined;
     setMessages([]);
-    fetchMessages();
+    void fetchMessages();
   }, [conversationId, fetchMessages]);
 
   // Polling interval — faster while generating

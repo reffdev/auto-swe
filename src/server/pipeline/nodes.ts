@@ -3,7 +3,6 @@
  */
 
 import type { LangGraphRunnableConfig } from "@langchain/langgraph";
-import { END } from "@langchain/langgraph";
 import { tool as aiTool, generateText, type ToolSet } from "ai";
 import { z } from "zod";
 import { readFileSync, readdirSync } from "fs";
@@ -251,7 +250,7 @@ export async function scoutNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
+  const { ctx, machine, project: _project, model, abortSignal } = config.configurable as PipelineConfig;
 
   // Check for cached scout brief — reuse if the codebase hasn't changed
   const currentCommit = getHeadCommit(state.worktreePath);
@@ -317,7 +316,7 @@ export async function scoutNode(
   // Abort controller that saveCheckpoint can trigger to end the scout immediately
   const scoutAbort = new AbortController();
   if (abortSignal) {
-    abortSignal.addEventListener("abort", () => scoutAbort.abort(), { once: true });
+    abortSignal.addEventListener("abort", () => { scoutAbort.abort(); }, { once: true });
   }
 
   let scoutOutput: string;
@@ -458,6 +457,7 @@ export async function implementNode(
     issueDescription: state.issueDescription,
     reviewFeedback: state.reviewFeedback || undefined,
     buildErrors: state.buildErrors || undefined,
+    lintErrors: state.lintErrors || undefined,
     testErrors: state.testErrors || undefined,
   });
 
@@ -468,7 +468,7 @@ export async function implementNode(
     userPrompt: implPrompts.user,
     tools: {
       ...makeFilesystemTools(state.worktreePath),
-      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }),
+      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }),
       ...makePackageCheckTool(state.worktreePath),
       ...makeStoryContextTool(ctx.db, state.issueId),
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
@@ -481,7 +481,7 @@ export async function implementNode(
   });
 
   // Clear gate errors and test verdict after implement runs — they'll be re-checked by the gates
-  return { implementOutput: output, buildErrors: "", testErrors: "", testWriteVerdict: "" };
+  return { implementOutput: output, buildErrors: "", lintErrors: "", testErrors: "", testWriteVerdict: "" };
 }
 
 // ─── Test-Write Node ──────────────────────────────────────────────────────────
@@ -510,6 +510,7 @@ export async function testWriteNode(
     gitContext,
     projectContext: projectCtx.context,
     testErrors: state.testErrors || undefined,
+    lintErrors: state.lintErrors || undefined,
   });
 
   const output = await runStage({
@@ -519,7 +520,7 @@ export async function testWriteNode(
     userPrompt: testPrompts.user,
     tools: {
       ...makeTestWriteTools(state.worktreePath),
-      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }),
+      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }),
       ...makePackageCheckTool(state.worktreePath),
       lookupDocs,
     } as ToolSet,
@@ -579,7 +580,7 @@ export async function reviewNode(
     model, modelId: state.modelId,
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.user,
-    tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command }), ...makeReviewVerdictTool() } as ToolSet,
+    tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }), ...makeReviewVerdictTool() } as ToolSet,
     abortSignal,
     contextLimit: machine.context_limit ?? undefined,
     worktreePath: state.worktreePath,
@@ -665,13 +666,13 @@ export async function gitOpsNode(
   // Create GitHub issue if not already created
   const existingIssue = ctx.db.getIssue(state.issueId);
   let ghIssueNumber = existingIssue?.github_issue_number ?? null;
-  let ghIssueUrl = existingIssue?.github_issue_url ?? null;
+  let _ghIssueUrl = existingIssue?.github_issue_url ?? null;
 
   if (!ghIssueNumber) {
     const ghIssue = await createGitHubIssue(project, state.issueTitle, state.issueDescription || "");
     if (ghIssue) {
       ghIssueNumber = ghIssue.number;
-      ghIssueUrl = ghIssue.url;
+      _ghIssueUrl = ghIssue.url;
       ctx.db.updateIssue(state.issueId, {
         github_issue_number: ghIssue.number,
         github_issue_url: ghIssue.url,
@@ -743,20 +744,32 @@ export async function buildGateNode(
   console.log(`Pipeline: build gate — running: ${project.build_command}`);
   const result = runAndExtractErrors(project.build_command, state.worktreePath);
 
-  if (result === "success") {
-    console.log("Pipeline: build gate — passed");
-    ctx.db.updateRun(run.id, { status: "pass", output: "Build passed", completed_at: new Date().toISOString() });
-    return { buildErrors: "", buildRetryCount: 0 };
+  if (result !== "success") {
+    const retryCount = state.buildRetryCount + 1;
+    console.log(`Pipeline: build gate — build FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
+    ctx.db.updateRun(run.id, { status: "fail", output: result, completed_at: new Date().toISOString() });
+    return { buildErrors: result, lintErrors: "", buildRetryCount: retryCount };
   }
 
-  const retryCount = state.buildRetryCount + 1;
-  console.log(`Pipeline: build gate — FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
-  ctx.db.updateRun(run.id, { status: "fail", output: result, completed_at: new Date().toISOString() });
-  return { buildErrors: result, buildRetryCount: retryCount };
+  // Build passed — run lint if configured
+  if (project.lint_command) {
+    console.log(`Pipeline: build gate — running lint: ${project.lint_command}`);
+    const lintResult = runAndExtractErrors(project.lint_command, state.worktreePath);
+    if (lintResult !== "success") {
+      const retryCount = state.buildRetryCount + 1;
+      console.log(`Pipeline: build gate — lint FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
+      ctx.db.updateRun(run.id, { status: "fail", output: `Build passed, lint failed:\n${lintResult}`, completed_at: new Date().toISOString() });
+      return { buildErrors: "", lintErrors: lintResult, buildRetryCount: retryCount };
+    }
+  }
+
+  console.log("Pipeline: build gate — passed");
+  ctx.db.updateRun(run.id, { status: "pass", output: "Build passed", completed_at: new Date().toISOString() });
+  return { buildErrors: "", lintErrors: "", buildRetryCount: 0 };
 }
 
 export async function routeAfterBuildGate(state: PipelineStateType): Promise<string> {
-  if (!state.buildErrors) return "test_write";
+  if (!state.buildErrors && !state.lintErrors) return "test_write";
   if (state.buildRetryCount >= MAX_BUILD_RETRIES) {
     console.error("Pipeline: build gate — exhausted retries, failing pipeline");
     return "fail_pipeline";
@@ -785,16 +798,28 @@ export async function testGateNode(
   console.log(`Pipeline: test gate — running: ${project.test_command}`);
   const result = runAndExtractErrors(project.test_command, state.worktreePath);
 
-  if (result === "success") {
-    console.log("Pipeline: test gate — passed");
-    ctx.db.updateRun(run.id, { status: "pass", output: "Tests passed", completed_at: new Date().toISOString() });
-    return { testErrors: "", testRetryCount: 0 };
+  if (result !== "success") {
+    const retryCount = state.testRetryCount + 1;
+    console.log(`Pipeline: test gate — tests FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);
+    ctx.db.updateRun(run.id, { status: "fail", output: result, completed_at: new Date().toISOString() });
+    return { testErrors: result, lintErrors: "", testRetryCount: retryCount };
   }
 
-  const retryCount = state.testRetryCount + 1;
-  console.log(`Pipeline: test gate — FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);
-  ctx.db.updateRun(run.id, { status: "fail", output: result, completed_at: new Date().toISOString() });
-  return { testErrors: result, testRetryCount: retryCount };
+  // Tests passed — run lint if configured
+  if (project.lint_command) {
+    console.log(`Pipeline: test gate — running lint: ${project.lint_command}`);
+    const lintResult = runAndExtractErrors(project.lint_command, state.worktreePath);
+    if (lintResult !== "success") {
+      const retryCount = state.testRetryCount + 1;
+      console.log(`Pipeline: test gate — lint FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);
+      ctx.db.updateRun(run.id, { status: "fail", output: `Tests passed, lint failed:\n${lintResult}`, completed_at: new Date().toISOString() });
+      return { testErrors: "", lintErrors: lintResult, testRetryCount: retryCount };
+    }
+  }
+
+  console.log("Pipeline: test gate — passed");
+  ctx.db.updateRun(run.id, { status: "pass", output: "Tests passed", completed_at: new Date().toISOString() });
+  return { testErrors: "", lintErrors: "", testRetryCount: 0 };
 }
 
 export async function routeAfterTestWrite(state: PipelineStateType): Promise<string> {
@@ -806,12 +831,12 @@ export async function routeAfterTestWrite(state: PipelineStateType): Promise<str
 }
 
 export async function routeAfterTestGate(state: PipelineStateType): Promise<string> {
-  if (!state.testErrors) return "review";
+  if (!state.testErrors && !state.lintErrors) return "review";
   if (state.testRetryCount >= MAX_TEST_RETRIES) {
     console.error("Pipeline: test gate — exhausted retries, failing pipeline");
     return "fail_pipeline";
   }
-  // Gate failed but test_write said pass — send back to test_write to investigate
+  // Gate failed — send back to test_write to investigate
   return "test_write";
 }
 
@@ -822,7 +847,7 @@ export async function failPipelineNode(
 ): Promise<Partial<PipelineStateType>> {
   // Preserve error if already set (e.g. by review exhaustion)
   if (state.error) return {};
-  const errors = [state.buildErrors, state.testErrors].filter(Boolean).join("\n\n");
+  const errors = [state.buildErrors, state.lintErrors, state.testErrors].filter(Boolean).join("\n\n");
   return {
     error: `Pipeline failed — retries exhausted.\n\n${errors}`,
   };

@@ -23,7 +23,7 @@ async function fetchContext7(path: string, params: Record<string, string>): Prom
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const timeout = setTimeout(() => { controller.abort(); }, 15_000);
 
   try {
     const res = await fetch(url.toString(), { headers, signal: controller.signal });
@@ -31,7 +31,7 @@ async function fetchContext7(path: string, params: Record<string, string>): Prom
       const text = await res.text();
       throw new Error(`Context7 HTTP ${res.status}: ${text}`);
     }
-    return res.json();
+    return await res.json();
   } finally {
     clearTimeout(timeout);
   }

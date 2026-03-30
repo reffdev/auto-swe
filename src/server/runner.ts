@@ -292,7 +292,7 @@ async function runAgentWithTimeout(
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutTimer = setTimeout(
-      () => reject(new Error(`Agent timed out after ${Math.round(timeoutMs / 1000)}s`)),
+      () => { reject(new Error(`Agent timed out after ${Math.round(timeoutMs / 1000)}s`)); },
       timeoutMs
     );
   });

@@ -14,14 +14,14 @@ export function usePoll(projectId?: string) {
         setData(d);
         setError(null);
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => { setError(e.message); })
+      .finally(() => { setLoading(false); });
   }, [projectId]);
 
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, POLL_INTERVAL);
-    return () => clearInterval(id);
+    return () => { clearInterval(id); };
   }, [refresh]);
 
   return { data, error, loading, refresh };

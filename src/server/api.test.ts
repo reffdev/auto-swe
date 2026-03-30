@@ -2,9 +2,10 @@ import express from "express";
 import request from "supertest";
 import { Db } from "./db";
 import { createApiRouter } from "./api";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { execSync } from "child_process";
 
 let db: Db;
 let app: express.Express;
@@ -36,10 +37,10 @@ describe("GET /api/poll", () => {
   });
 
   it("returns populated state", async () => {
-    const machine = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const _machine = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
     const project = db.createProject({ name: "test", workdir: testDir });
     const issue = db.createIssue({ project_id: project.id, title: "Fix bug" });
-    const run = db.createRun({ issue_id: issue.id });
+    const _run = db.createRun({ issue_id: issue.id });
 
     const res = await request(app).get("/api/poll");
     expect(res.body.projects).toHaveLength(1);
@@ -112,14 +113,13 @@ describe("projects", () => {
   it("POST /api/projects auto-clones when only git_remote is provided", async () => {
     // Create a local bare repo to clone from (avoids network)
     const bareRepo = mkdtempSync(join(tmpdir(), "bare-repo-"));
-    const { execSync } = require("child_process");
     execSync("git init --bare", { cwd: bareRepo });
     // Need at least one commit for clone to work — create a temp repo, commit, push
     const tempRepo = mkdtempSync(join(tmpdir(), "temp-repo-"));
     execSync("git init", { cwd: tempRepo });
     execSync("git config user.email test@test.com", { cwd: tempRepo });
     execSync("git config user.name Test", { cwd: tempRepo });
-    require("fs").writeFileSync(join(tempRepo, "README.md"), "# test\n");
+    writeFileSync(join(tempRepo, "README.md"), "# test\n");
     execSync("git add -A && git commit -m init", { cwd: tempRepo });
     execSync(`git remote add origin "${bareRepo}"`, { cwd: tempRepo });
     execSync("git push origin master", { cwd: tempRepo });
@@ -131,7 +131,7 @@ describe("projects", () => {
       expect(res.status).toBe(201);
       expect(res.body.workdir).toBeTruthy();
       // The workdir should exist and be a git repo
-      expect(require("fs").existsSync(join(res.body.workdir, ".git"))).toBe(true);
+      expect(existsSync(join(res.body.workdir, ".git"))).toBe(true);
     } finally {
       rmSync(bareRepo, { recursive: true, force: true });
       rmSync(tempRepo, { recursive: true, force: true });

@@ -24,6 +24,7 @@ function makeState(overrides: Partial<PipelineStateType>): PipelineStateType {
     testErrors: "",
     buildRetryCount: 0,
     testRetryCount: 0,
+    lintErrors: "",
     error: "",
     ...overrides,
   };
@@ -32,9 +33,19 @@ function makeState(overrides: Partial<PipelineStateType>): PipelineStateType {
 // ─── Build Gate Router ───────────────────────────────────────────────────────
 
 describe("routeAfterBuildGate", () => {
-  it("routes to test_write when no build errors", async () => {
-    const state = makeState({ buildErrors: "" });
+  it("routes to test_write when no build or lint errors", async () => {
+    const state = makeState({ buildErrors: "", lintErrors: "" });
     expect(await routeAfterBuildGate(state)).toBe("test_write");
+  });
+
+  it("routes to implement when lint errors exist and retries remain", async () => {
+    const state = makeState({ buildErrors: "", lintErrors: "no-unused-vars", buildRetryCount: 1 });
+    expect(await routeAfterBuildGate(state)).toBe("implement");
+  });
+
+  it("routes to fail_pipeline when lint retries exhausted", async () => {
+    const state = makeState({ buildErrors: "", lintErrors: "no-unused-vars", buildRetryCount: 3 });
+    expect(await routeAfterBuildGate(state)).toBe("fail_pipeline");
   });
 
   it("routes to implement when build errors exist and retries remain", async () => {
@@ -70,9 +81,19 @@ describe("routeAfterTestWrite", () => {
 // ─── Test Gate Router ────────────────────────────────────────────────────────
 
 describe("routeAfterTestGate", () => {
-  it("routes to review when no test errors", async () => {
-    const state = makeState({ testErrors: "" });
+  it("routes to review when no test or lint errors", async () => {
+    const state = makeState({ testErrors: "", lintErrors: "" });
     expect(await routeAfterTestGate(state)).toBe("review");
+  });
+
+  it("routes to test_write when lint errors exist and retries remain", async () => {
+    const state = makeState({ testErrors: "", lintErrors: "no-unused-imports", testRetryCount: 1 });
+    expect(await routeAfterTestGate(state)).toBe("test_write");
+  });
+
+  it("routes to fail_pipeline when lint retries exhausted via test gate", async () => {
+    const state = makeState({ testErrors: "", lintErrors: "no-unused-imports", testRetryCount: 3 });
+    expect(await routeAfterTestGate(state)).toBe("fail_pipeline");
   });
 
   it("routes to test_write when test errors exist and retries remain", async () => {

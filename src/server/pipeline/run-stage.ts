@@ -8,7 +8,7 @@
  * the checkpoint, and a git diff. Up to 3 compactions per stage.
  */
 
-import { streamText, generateText, type StepResult, type ToolSet } from "ai";
+import { streamText, generateText, type StepResult, type ToolSet, type CoreMessage } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { spawnSync } from "child_process";
 import type { Db } from "../db";
@@ -272,13 +272,13 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
       // Merge abort signals: external cancel + compaction
       const combinedAbort = new AbortController();
-      const onExternalAbort = () => combinedAbort.abort();
+      const onExternalAbort = () => { combinedAbort.abort(); };
       const onCompactionAbort = () => { if (compactionNeeded || expandFilesNeeded || reasoningLoopDetected) combinedAbort.abort(); };
       abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
       compactionAbort.signal.addEventListener("abort", onCompactionAbort, { once: true });
 
       const agentPromise = (async () => {
-        const messages: Array<{ role: "user" | "assistant" | "tool"; content: any }> = [];
+        const messages: CoreMessage[] = [];
         messages.push({ role: "user", content: currentUserPrompt });
 
         if (currentPreloads?.length) {

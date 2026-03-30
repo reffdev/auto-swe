@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePoll } from './usePoll'
@@ -26,7 +26,7 @@ export function Dashboard() {
   const selectedIssueId = issueId ?? null
   const selectedMachineId = machineId ?? null
 
-  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [statusFilter, setStatusFilter] = useState('all')
   const { data, error, loading, refresh } = usePoll(selectedProjectId ?? undefined)
 
   const projects = data?.projects ?? []
@@ -48,11 +48,15 @@ export function Dashboard() {
     ? issues
     : issues.filter((i) => i.status === statusFilter)
 
-  // Keep a ref to the last known issue so the detail view doesn't flicker
-  const lastIssueRef = useRef<Issue | null>(null)
+  // Keep the last known issue so the detail view doesn't flicker.
+  // We store the previous value in state and update it during render
+  // (the "store previous rendering value" pattern from React docs).
+  const [lastIssue, setLastIssue] = useState<Issue | null>(null)
   const freshIssue = issues.find((i) => i.id === selectedIssueId) ?? null
-  if (freshIssue) lastIssueRef.current = freshIssue
-  const selectedIssue = selectedIssueId ? (freshIssue ?? lastIssueRef.current) : null
+  if (freshIssue && freshIssue !== lastIssue) {
+    setLastIssue(freshIssue)
+  }
+  const selectedIssue = selectedIssueId ? (freshIssue ?? lastIssue) : null
 
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null
 
@@ -77,12 +81,12 @@ export function Dashboard() {
         selectedProjectId={selectedProjectId}
         selectedMachineId={selectedMachineId}
         onSelectProject={(id) => {
-          if (id) navigate(`/project/${id}`)
-          else navigate('/')
+          if (id) void navigate(`/project/${id}`)
+          else void navigate('/')
         }}
         onSelectMachine={(id) => {
-          if (id) navigate(`/machine/${id}`)
-          else navigate('/')
+          if (id) void navigate(`/machine/${id}`)
+          else void navigate('/')
         }}
         onDataChange={refresh}
       />
@@ -117,7 +121,7 @@ export function Dashboard() {
             statusFilter={statusFilter}
             onStatusFilter={setStatusFilter}
             onSelectIssue={(id) => navigate(`/project/${selectedProjectId}/issue/${id}`)}
-            projectId={selectedProjectId!}
+            projectId={selectedProjectId}
             onDataChange={refresh}
           />
         )}
@@ -136,7 +140,7 @@ export function Dashboard() {
         )}
         {showLlmLogs && selectedProject && (
           <LlmLogs
-            projectId={selectedProjectId!}
+            projectId={selectedProjectId}
           />
         )}
         {showIssueDetail && selectedIssue && (

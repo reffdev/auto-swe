@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Plus, FolderGit2, Server, AlertCircle, Terminal } from 'lucide-react'
@@ -41,7 +41,7 @@ function ConsoleLog() {
         })
       } catch { /* ignore */ }
     }
-    return () => es.close()
+    return () => { es.close(); }
   }, [])
 
   // Auto-scroll to bottom
@@ -60,7 +60,7 @@ function ConsoleLog() {
   return (
     <Card className="overflow-hidden">
       <button
-        onClick={() => setCollapsed(!collapsed)}
+        onClick={() => { setCollapsed(!collapsed); }}
         className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
       >
         <div className="flex items-center gap-2">
@@ -94,13 +94,11 @@ function ConsoleLog() {
 }
 
 export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts; onRefresh: () => void }) {
-  const navigate = useNavigate()
-
   const handleNewProject = () => {
     const name = prompt('Project name:')
     if (name) {
-      api.createProject({ name, workdir: '', git_remote: undefined, git_server_token: undefined, git_default_branch: 'main', model_id: undefined })
-        .then(() => onRefresh())
+      void api.createProject({ name, workdir: '', git_remote: undefined, git_server_token: undefined, git_default_branch: 'main', model_id: undefined })
+        .then(() => { onRefresh(); })
     }
   }
 
@@ -109,11 +107,11 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
     const baseUrl = prompt('Base URL:', 'https://openrouter.ai/api/v1')
     const modelId = prompt('Default Model ID (optional):')
     if (baseUrl) {
-      api.createMachine({
+      void api.createMachine({
         name: name || '',
         base_url: baseUrl,
         model_id: modelId || undefined,
-      }).then(() => onRefresh())
+      }).then(() => { onRefresh(); })
     }
   }
 

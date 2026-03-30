@@ -14,13 +14,15 @@ interface ProjectSettingsProps {
 export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettingsProps) {
   const [buildCommand, setBuildCommand] = useState(project.build_command ?? '')
   const [testCommand, setTestCommand] = useState(project.test_command ?? '')
+  const [lintCommand, setLintCommand] = useState(project.lint_command ?? '')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const hasChanges =
     (buildCommand || null) !== (project.build_command ?? null) ||
-    (testCommand || null) !== (project.test_command ?? null)
+    (testCommand || null) !== (project.test_command ?? null) ||
+    (lintCommand || null) !== (project.lint_command ?? null)
 
   const handleSave = async () => {
     setSaving(true)
@@ -30,10 +32,11 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
       await api.updateProject(project.id, {
         build_command: buildCommand || null,
         test_command: testCommand || null,
+        lint_command: lintCommand || null,
       } as Partial<Project>)
       onDataChange()
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      setTimeout(() => { setSaved(false); }, 2000)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -85,13 +88,14 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
 
         {/* Editable commands */}
         <section>
-          <h3 className="text-sm font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Build & Test Commands</h3>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Build, Lint & Test Commands</h3>
           <div className="space-y-4">
             <div>
-              <label className="block text-sm text-muted-foreground mb-1">Build Command</label>
+              <label htmlFor="project-build-command" className="block text-sm text-muted-foreground mb-1">Build Command</label>
               <Input
+                id="project-build-command"
                 value={buildCommand}
-                onChange={e => setBuildCommand(e.target.value)}
+                onChange={e => { setBuildCommand(e.target.value); }}
                 placeholder="npx tsc --noEmit"
                 className="font-mono text-sm"
               />
@@ -100,10 +104,24 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
               </p>
             </div>
             <div>
-              <label className="block text-sm text-muted-foreground mb-1">Test Command</label>
+              <label htmlFor="project-lint-command" className="block text-sm text-muted-foreground mb-1">Lint Command</label>
               <Input
+                id="project-lint-command"
+                value={lintCommand}
+                onChange={e => { setLintCommand(e.target.value); }}
+                placeholder="e.g. npx eslint . --max-warnings 0"
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground mt-1">
+                Runs after both build and test gates. Used by <code className="bg-muted px-1 rounded">checkLint</code> tool. Leave empty to skip lint checking.
+              </p>
+            </div>
+            <div>
+              <label htmlFor="project-test-command" className="block text-sm text-muted-foreground mb-1">Test Command</label>
+              <Input
+                id="project-test-command"
                 value={testCommand}
-                onChange={e => setTestCommand(e.target.value)}
+                onChange={e => { setTestCommand(e.target.value); }}
                 placeholder="npx jest --passWithNoTests --no-colors"
                 className="font-mono text-sm"
               />

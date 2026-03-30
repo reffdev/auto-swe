@@ -31,6 +31,7 @@ export interface Project {
   model_id: string | null;
   build_command: string | null;
   test_command: string | null;
+  lint_command: string | null;
   created_at: string;
 }
 
@@ -114,19 +115,19 @@ const API_TIMEOUT_MS = 30_000;
 
 async function json<T>(url: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), init?.timeoutMs ?? API_TIMEOUT_MS);
+  const timeout = setTimeout(() => { controller.abort(); }, init?.timeoutMs ?? API_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       ...init,
       signal: controller.signal,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: { "Content-Type": "application/json", ...Object.fromEntries(new Headers(init?.headers).entries()) },
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(body.error ?? `HTTP ${res.status}`);
     }
     if (res.status === 204) return undefined as T;
-    return res.json();
+    return await res.json();
   } finally {
     clearTimeout(timeout);
   }

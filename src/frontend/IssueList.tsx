@@ -124,7 +124,7 @@ function NewIssueDialog({ open, onClose, projectId, onCreated }: {
 }) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [lenses, setLenses] = useState<string[]>(['general'])
+  const [lenses, setLenses] = useState(['general'])
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -162,11 +162,11 @@ function NewIssueDialog({ open, onClose, projectId, onCreated }: {
           <DialogTitle>New Issue</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3">
-          <Input placeholder="Issue title" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <Input placeholder="Issue title" value={title} onChange={(e) => { setTitle(e.target.value); }} />
           <Textarea
             placeholder="Description — what should the agent do?"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => { setDescription(e.target.value); }}
             rows={6}
           />
           <div>
@@ -186,7 +186,7 @@ function NewIssueDialog({ open, onClose, projectId, onCreated }: {
                   <button
                     key={lens.key}
                     type="button"
-                    onClick={() => toggleLens(lens.key)}
+                    onClick={() => { toggleLens(lens.key); }}
                     disabled={lens.key === 'general'}
                     className={cn(
                       'inline-flex items-center gap-1 text-xs font-medium px-2 py-1 rounded-full transition-colors',
@@ -238,7 +238,7 @@ function formatDuration(ms: number): string {
 function IssueRow({ issue, run, indent, onSelect, onSummary }: { issue: Issue; run?: Run; indent?: boolean; onSelect: (id: string) => void; onSummary: (issue: Issue) => void }) {
   return (
     <button
-      onClick={() => onSelect(issue.id)}
+      onClick={() => { onSelect(issue.id); }}
       className={cn(
         "w-full text-left py-3 border-b border-border hover:bg-accent/50 transition-colors",
         indent ? "pl-12 pr-6" : "px-6 py-4"
@@ -303,7 +303,7 @@ function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue, on
   return (
     <div>
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => { setExpanded(!expanded); }}
         className="w-full text-left px-6 py-4 border-b border-border hover:bg-accent/50 transition-colors"
       >
         <div className="flex items-start justify-between gap-4">
@@ -356,7 +356,7 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
           {STATUS_TABS.map((tab) => (
             <button
               key={tab}
-              onClick={() => onStatusFilter(tab)}
+              onClick={() => { onStatusFilter(tab); }}
               className={cn(
                 'px-3 py-1.5 text-xs font-medium rounded-md transition-colors capitalize',
                 statusFilter === tab ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground',
@@ -374,7 +374,7 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
             <MessageSquarePlus className="size-3.5 mr-1" />
             Plan with AI
           </Button>
-          <Button size="sm" onClick={() => setShowNewIssue(true)}>
+          <Button size="sm" onClick={() => { setShowNewIssue(true); }}>
             <Plus className="size-3.5 mr-1" />
             New Issue
           </Button>
@@ -420,7 +420,7 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
 
       <NewIssueDialog
         open={showNewIssue}
-        onClose={() => setShowNewIssue(false)}
+        onClose={() => { setShowNewIssue(false); }}
         projectId={projectId}
         onCreated={onDataChange}
       />

@@ -150,8 +150,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "project not found" });
       return;
     }
-    const { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command } = req.body;
-    db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command });
+    const { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command, lint_command } = req.body;
+    db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command, lint_command });
     res.json(db.getProject(req.params.id));
   });
 
@@ -491,7 +491,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
-    db.updateIssue(issue.id, { scout_brief: null as any, scout_commit: null as any });
+    db.updateIssue(issue.id, { scout_brief: null, scout_commit: null });
     res.json({ issue: db.getIssue(issue.id) });
   });
 

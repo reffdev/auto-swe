@@ -83,9 +83,9 @@ describe("Pipeline flow — happy path", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "done" }],
-      build_gate: [{ buildErrors: "", buildRetryCount: 0 }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
       test_write: [{ testWriteOutput: "tests pass", testWriteVerdict: "pass", testErrors: "" }],
-      test_gate: [{ testErrors: "", testRetryCount: 0 }],
+      test_gate: [{ testErrors: "", lintErrors: "", testRetryCount: 0 }],
       review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
       git_ops: [{}],
     });
@@ -112,11 +112,11 @@ describe("Pipeline flow — build gate retry", () => {
         { implementOutput: "fixed" },
       ],
       build_gate: [
-        { buildErrors: "error TS1234", buildRetryCount: 1 },  // fail first time
-        { buildErrors: "", buildRetryCount: 0 },               // pass second time
+        { buildErrors: "error TS1234", lintErrors: "", buildRetryCount: 1 },  // fail first time
+        { buildErrors: "", lintErrors: "", buildRetryCount: 0 },               // pass second time
       ],
       test_write: [{ testWriteOutput: "tests pass", testWriteVerdict: "pass", testErrors: "" }],
-      test_gate: [{ testErrors: "", testRetryCount: 0 }],
+      test_gate: [{ testErrors: "", lintErrors: "", testRetryCount: 0 }],
       review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
       git_ops: [{}],
     });
@@ -133,7 +133,7 @@ describe("Pipeline flow — build gate retry", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "attempt" }],
-      build_gate: [{ buildErrors: "error TS1234", buildRetryCount: 3 }],
+      build_gate: [{ buildErrors: "error TS1234", lintErrors: "", buildRetryCount: 3 }],
       test_write: [{}],
       test_gate: [{}],
       review: [{}],
@@ -156,14 +156,14 @@ describe("Pipeline flow — test_write verdict routing", () => {
         { implementOutput: "fixed" },
       ],
       build_gate: [
-        { buildErrors: "", buildRetryCount: 0 },
-        { buildErrors: "", buildRetryCount: 0 },
+        { buildErrors: "", lintErrors: "", buildRetryCount: 0 },
+        { buildErrors: "", lintErrors: "", buildRetryCount: 0 },
       ],
       test_write: [
         { testWriteOutput: "tests fail", testWriteVerdict: "needs_fix", testErrors: "FAIL: stuff broken" },
         { testWriteOutput: "tests pass", testWriteVerdict: "pass", testErrors: "" },
       ],
-      test_gate: [{ testErrors: "", testRetryCount: 0 }],
+      test_gate: [{ testErrors: "", lintErrors: "", testRetryCount: 0 }],
       review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
       git_ops: [{}],
     });
@@ -183,14 +183,14 @@ describe("Pipeline flow — test gate routing", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "done" }],
-      build_gate: [{ buildErrors: "", buildRetryCount: 0 }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
       test_write: [
         { testWriteOutput: "tests pass", testWriteVerdict: "pass", testErrors: "" },
         { testWriteOutput: "fixed tests", testWriteVerdict: "pass", testErrors: "" },
       ],
       test_gate: [
-        { testErrors: "FAIL: unexpected", testRetryCount: 1 },  // fail → back to test_write
-        { testErrors: "", testRetryCount: 0 },                   // pass
+        { testErrors: "FAIL: unexpected", lintErrors: "", testRetryCount: 1 },  // fail → back to test_write
+        { testErrors: "", lintErrors: "", testRetryCount: 0 },                   // pass
       ],
       review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
       git_ops: [{}],
@@ -208,16 +208,16 @@ describe("Pipeline flow — test gate routing", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "done" }],
-      build_gate: [{ buildErrors: "", buildRetryCount: 0 }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
       test_write: [
         { testWriteOutput: "pass", testWriteVerdict: "pass", testErrors: "" },
         { testWriteOutput: "fixed", testWriteVerdict: "pass", testErrors: "" },
         { testWriteOutput: "fixed again", testWriteVerdict: "pass", testErrors: "" },
       ],
       test_gate: [
-        { testErrors: "FAIL", testRetryCount: 1 },  // fail → test_write
-        { testErrors: "FAIL", testRetryCount: 2 },  // fail → test_write
-        { testErrors: "", testRetryCount: 0 },       // pass
+        { testErrors: "FAIL", lintErrors: "", testRetryCount: 1 },  // fail → test_write
+        { testErrors: "FAIL", lintErrors: "", testRetryCount: 2 },  // fail → test_write
+        { testErrors: "", lintErrors: "", testRetryCount: 0 },       // pass
       ],
       review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
       git_ops: [{}],
@@ -236,9 +236,9 @@ describe("Pipeline flow — test gate routing", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "done" }],
-      build_gate: [{ buildErrors: "", buildRetryCount: 0 }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
       test_write: [{ testWriteOutput: "pass", testWriteVerdict: "pass", testErrors: "" }],
-      test_gate: [{ testErrors: "FAIL always", testRetryCount: 3 }],
+      test_gate: [{ testErrors: "FAIL always", lintErrors: "", testRetryCount: 3 }],
       review: [{}],
       git_ops: [{}],
     });
@@ -255,9 +255,9 @@ describe("Pipeline flow — review routing", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "done" }],
-      build_gate: [{ buildErrors: "", buildRetryCount: 0 }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
       test_write: [{ testWriteOutput: "pass", testWriteVerdict: "pass", testErrors: "" }],
-      test_gate: [{ testErrors: "", testRetryCount: 0 }],
+      test_gate: [{ testErrors: "", lintErrors: "", testRetryCount: 0 }],
       review: [
         { reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 },
         { reviewVerdict: "accept", currentLensIndex: 2, retryCount: 0 },
@@ -283,16 +283,16 @@ describe("Pipeline flow — review routing", () => {
         { implementOutput: "fixed" },
       ],
       build_gate: [
-        { buildErrors: "", buildRetryCount: 0 },
-        { buildErrors: "", buildRetryCount: 0 },
+        { buildErrors: "", lintErrors: "", buildRetryCount: 0 },
+        { buildErrors: "", lintErrors: "", buildRetryCount: 0 },
       ],
       test_write: [
         { testWriteOutput: "pass", testWriteVerdict: "pass", testErrors: "" },
         { testWriteOutput: "pass", testWriteVerdict: "pass", testErrors: "" },
       ],
       test_gate: [
-        { testErrors: "", testRetryCount: 0 },
-        { testErrors: "", testRetryCount: 0 },
+        { testErrors: "", lintErrors: "", testRetryCount: 0 },
+        { testErrors: "", lintErrors: "", testRetryCount: 0 },
       ],
       review: [
         { reviewVerdict: "reject", reviewFeedback: "fix X", retryCount: 1 },
@@ -316,9 +316,9 @@ describe("Pipeline flow — review routing", () => {
     const { graph, nodes } = buildTestGraph({
       scout: [{ scoutBrief: "files: [...]" }],
       implement: [{ implementOutput: "done" }],
-      build_gate: [{ buildErrors: "", buildRetryCount: 0 }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
       test_write: [{ testWriteOutput: "pass", testWriteVerdict: "pass", testErrors: "" }],
-      test_gate: [{ testErrors: "", testRetryCount: 0 }],
+      test_gate: [{ testErrors: "", lintErrors: "", testRetryCount: 0 }],
       review: [{ reviewVerdict: "reject", error: "review exhausted retries", retryCount: 3 }],
       git_ops: [{}],
     });
@@ -327,6 +327,59 @@ describe("Pipeline flow — review routing", () => {
 
     expect(nodes.git_ops.getCallCount()).toBe(0);
     expect(result.error).toContain("review exhausted");
+  });
+});
+
+describe("Pipeline flow — lint gate (via build gate)", () => {
+  it("retries implement on lint failure in build gate, then proceeds", async () => {
+    const { graph, nodes } = buildTestGraph({
+      scout: [{ scoutBrief: "files: [...]" }],
+      implement: [
+        { implementOutput: "first attempt" },
+        { implementOutput: "fixed lint" },
+      ],
+      build_gate: [
+        { buildErrors: "", lintErrors: "no-unused-vars error", buildRetryCount: 1 },  // lint fail
+        { buildErrors: "", lintErrors: "", buildRetryCount: 0 },                       // pass
+      ],
+      test_write: [{ testWriteOutput: "tests pass", testWriteVerdict: "pass", testErrors: "" }],
+      test_gate: [{ testErrors: "", lintErrors: "", testRetryCount: 0 }],
+      review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
+      git_ops: [{}],
+    });
+
+    const result = await graph.invoke(BASE_INPUT, { recursionLimit: 20 });
+
+    expect(nodes.implement.getCallCount()).toBe(2);
+    expect(nodes.build_gate.getCallCount()).toBe(2);
+    expect(nodes.git_ops.getCallCount()).toBe(1);
+    expect(result.error).toBe("");
+  });
+
+  it("retries test_write on lint failure in test gate, then proceeds", async () => {
+    const { graph, nodes } = buildTestGraph({
+      scout: [{ scoutBrief: "files: [...]" }],
+      implement: [{ implementOutput: "done" }],
+      build_gate: [{ buildErrors: "", lintErrors: "", buildRetryCount: 0 }],
+      test_write: [
+        { testWriteOutput: "tests pass", testWriteVerdict: "pass", testErrors: "" },
+        { testWriteOutput: "fixed lint", testWriteVerdict: "pass", testErrors: "" },
+      ],
+      test_gate: [
+        { testErrors: "", lintErrors: "no-unused-imports", testRetryCount: 1 },  // lint fail
+        { testErrors: "", lintErrors: "", testRetryCount: 0 },                    // pass
+      ],
+      review: [{ reviewVerdict: "accept", currentLensIndex: 1, retryCount: 0 }],
+      git_ops: [{}],
+    });
+
+    const result = await graph.invoke(BASE_INPUT, { recursionLimit: 20 });
+
+    expect(nodes.test_write.getCallCount()).toBe(2);
+    expect(nodes.test_gate.getCallCount()).toBe(2);
+    expect(nodes.implement.getCallCount()).toBe(1);
+    expect(nodes.git_ops.getCallCount()).toBe(1);
+    expect(result.error).toBe("");
   });
 });
 

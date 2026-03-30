@@ -67,7 +67,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
       await api.updateMachine(machine.id, update as Partial<Machine>)
       setSuccess(true)
       onDataChange()
-      setTimeout(() => setSuccess(false), 2000)
+      setTimeout(() => { setSuccess(false); }, 2000)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -113,59 +113,62 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="max-w-lg space-y-5">
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Name</label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. local-gpu" />
+            <label htmlFor="machine-name" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Name</label>
+            <Input id="machine-name" value={name} onChange={(e) => { setName(e.target.value); }} placeholder="e.g. local-gpu" />
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Base URL</label>
-            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" />
+            <label htmlFor="machine-base-url" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Base URL</label>
+            <Input id="machine-base-url" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} placeholder="https://openrouter.ai/api/v1" />
             <p className="text-xs text-muted-foreground mt-1">OpenAI-compatible API endpoint (OpenRouter, LiteLLM, local llama.cpp, etc.)</p>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Model ID</label>
-            <Input value={modelId} onChange={(e) => setModelId(e.target.value)} placeholder="e.g. anthropic/claude-sonnet-4-20250514" />
+            <label htmlFor="machine-model-id" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Model ID</label>
+            <Input id="machine-model-id" value={modelId} onChange={(e) => { setModelId(e.target.value); }} placeholder="e.g. anthropic/claude-sonnet-4-20250514" />
             <p className="text-xs text-muted-foreground mt-1">Default model name. Optional if projects specify their own model.</p>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Max Concurrent Jobs</label>
-            <Input value={maxConcurrent} onChange={(e) => setMaxConcurrent(e.target.value)} placeholder="1" type="number" min="1" className="max-w-[100px]" />
+            <label htmlFor="machine-max-concurrent" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Max Concurrent Jobs</label>
+            <Input id="machine-max-concurrent" value={maxConcurrent} onChange={(e) => { setMaxConcurrent(e.target.value); }} placeholder="1" type="number" min="1" className="max-w-[100px]" />
             <p className="text-xs text-muted-foreground mt-1">How many issues this machine can process simultaneously. Cloud APIs support many; local servers typically 1.</p>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Context Limit (tokens)</label>
-            <Input value={contextLimit} onChange={(e) => setContextLimit(e.target.value)} placeholder="128000" type="number" />
-            <p className="text-xs text-muted-foreground mt-1">Model's context window size. Leave empty for default (128k). Tool output truncation scales to this.</p>
+            <label htmlFor="machine-context-limit" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Context Limit (tokens)</label>
+            <Input id="machine-context-limit" value={contextLimit} onChange={(e) => { setContextLimit(e.target.value); }} placeholder="128000" type="number" />
+            <p className="text-xs text-muted-foreground mt-1">Model&apos;s context window size. Leave empty for default (128k). Tool output truncation scales to this.</p>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">API Key</label>
-            <Input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." type="password" />
+            <label htmlFor="machine-api-key" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">API Key</label>
+            <Input id="machine-api-key" value={apiKey} onChange={(e) => { setApiKey(e.target.value); }} placeholder="sk-..." type="password" />
             <p className="text-xs text-muted-foreground mt-1">Bearer token for cloud providers (OpenRouter, LiteLLM, etc.). Leave empty for local servers.</p>
           </div>
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setEnabled(!enabled)}
+              id="machine-enabled"
+              onClick={() => { setEnabled(!enabled); }}
               className={cn(
                 'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
                 enabled ? 'bg-primary' : 'bg-muted-foreground/30'
               )}
+              role="switch"
+              aria-checked={enabled}
             >
               <span className={cn(
                 'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
                 enabled ? 'translate-x-4' : 'translate-x-0'
               )} />
             </button>
-            <label className="text-sm">Enabled</label>
+            <label htmlFor="machine-enabled" className="text-sm">Enabled</label>
           </div>
 
           {machine.active_issue_ids?.length > 0 && (
             <div>
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Active Jobs ({machine.active_issue_ids.length}/{machine.max_concurrent})</label>
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Active Jobs ({machine.active_issue_ids.length}/{machine.max_concurrent})</span>
               <div className="space-y-1">
                 {machine.active_issue_ids.map(id => (
                   <code key={id} className="text-xs text-muted-foreground block">{id}</code>
@@ -175,7 +178,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
           )}
 
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">ID</label>
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">ID</span>
             <code className="text-xs text-muted-foreground">{machine.id}</code>
           </div>
 

@@ -59,6 +59,7 @@ jest.mock('./LlmLogs', () => ({
 }))
 
 describe('Dashboard', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mockUsePoll = require('./usePoll').usePoll as jest.Mock
 
   beforeEach(() => {

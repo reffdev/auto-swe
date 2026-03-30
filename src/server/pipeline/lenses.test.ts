@@ -18,7 +18,7 @@ describe("REVIEW_LENSES", () => {
   });
 
   it("each lens has a name and focus", () => {
-    for (const [key, lens] of Object.entries(REVIEW_LENSES)) {
+    for (const [_key, lens] of Object.entries(REVIEW_LENSES)) {
       expect(lens.name).toBeTruthy();
       expect(lens.focus).toBeTruthy();
     }

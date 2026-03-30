@@ -8,7 +8,7 @@
 
 import BetterSqlite from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { eq, desc, and, inArray, or, sql } from "drizzle-orm";
+import { eq, desc, inArray, or, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { resolve } from "path";
 import * as schema from "./schema";
@@ -112,6 +112,7 @@ export class Db {
       "ALTER TABLE issues ADD COLUMN scout_commit TEXT",
       "ALTER TABLE projects ADD COLUMN build_command TEXT",
       "ALTER TABLE projects ADD COLUMN test_command TEXT",
+      "ALTER TABLE projects ADD COLUMN lint_command TEXT",
       "ALTER TABLE projects ADD COLUMN context_limit INTEGER", // unused — context_limit is per-machine only
     ];
     for (const sql of migrations) {
@@ -253,7 +254,7 @@ export class Db {
     return this.getProject(id)!;
   }
 
-  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "model_id" | "build_command" | "test_command">>): void {
+  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "model_id" | "build_command" | "test_command" | "lint_command">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.projects).set(clean).where(eq(schema.projects.id, id)).run();

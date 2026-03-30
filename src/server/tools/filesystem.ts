@@ -26,7 +26,7 @@ import { ContextBudget } from "./context-budget";
 
 // ─── Full tool set (read + write + run) ───────────────────────────────────────
 
-export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
+export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
   /** Normalize Windows \r\n to \n for consistent text handling across platforms */
   const normalizeEol = (text: string) => text.replace(/\r\n/g, "\n");
 
@@ -59,12 +59,12 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
   ): string | null {
     const sorted = Object.keys(args)
       .sort()
-      .reduce(
+      .reduce<Record<string, unknown>>(
         (o, k) => {
           o[k] = args[k] ?? null;
           return o;
         },
-        {} as Record<string, unknown>
+        {}
       );
     const key = `${toolName}:${JSON.stringify(sorted)}`;
     recentCalls.push(key);
@@ -245,6 +245,7 @@ export function makeFilesystemTools(workdir: string, budget?: ContextBudget) {
           // Guard against symlink loops by tracking real paths
           let realDir: string;
           try {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
             realDir = require("fs").realpathSync(dir);
           } catch {
             return; // Broken symlink — skip

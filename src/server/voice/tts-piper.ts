@@ -18,11 +18,11 @@ import { readFileSync } from "fs";
 export class PiperHttpTts implements TtsAdapter {
   constructor(private baseUrl: string) {}
 
-  async synthesize(text: string, sampleRate: number): Promise<Buffer> {
+  async synthesize(text: string, _sampleRate: number): Promise<Buffer> {
     const url = this.baseUrl.replace(/\/+$/, "") + "/api/tts";
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    const timeout = setTimeout(() => { controller.abort(); }, 30_000);
 
     let res: Response;
     try {
@@ -104,7 +104,7 @@ export class PiperCliTts implements TtsAdapter {
       proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
       proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
-      proc.on("error", (err) => reject(new Error(`Piper spawn failed: ${err.message}`)));
+      proc.on("error", (err) => { reject(new Error(`Piper spawn failed: ${err.message}`)); });
       proc.on("close", (code) => {
         if (code !== 0) {
           reject(new Error(`Piper exited with code ${code}: ${stderr}`));

@@ -1,5 +1,4 @@
 import { Db } from "./db";
-import type { Machine, Project, Issue, Run } from "./db";
 
 let db: Db;
 

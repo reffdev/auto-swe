@@ -65,7 +65,7 @@ export const fetchUrlTool = tool({
   }),
   execute: async ({ url }) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const timeout = setTimeout(() => { controller.abort(); }, FETCH_TIMEOUT_MS);
 
     try {
       const res = await fetch(url, {
@@ -106,7 +106,7 @@ export const fetchUrlTool = tool({
         if (done) break;
         totalBytes += value.byteLength;
         if (totalBytes > MAX_RESPONSE_BYTES) {
-          reader.cancel();
+          void reader.cancel();
           throw new Error(
             `Response exceeded ${MAX_RESPONSE_BYTES} byte limit`
           );

@@ -20,11 +20,12 @@ jest.mock('./api', () => ({
 
 // Mock the UI components
 jest.mock('@/components/ui/button', () => ({
-  Button: ({ children, onClick, variant = 'default', size = 'default' }: any) => (
+  Button: ({ children, onClick, variant = 'default', size = 'default', ...rest }: any) => (
     <button
       onClick={onClick}
       className={`btn-${variant}-${size}`}
       data-testid="mock-button"
+      {...rest}
     >
       {children}
     </button>
@@ -41,7 +42,7 @@ jest.mock('@/components/ui/card', () => ({
 jest.mock('@/components/ui/dialog', () => ({
   Dialog: ({ children, open }: any) => (
     <div data-testid="mock-dialog" className={open ? 'open' : 'closed'}>
-      {children}
+      {open ? children : null}
     </div>
   ),
   DialogContent: ({ children }: any) => <div data-testid="mock-dialog-content">{children}</div>,
@@ -451,39 +452,19 @@ describe('LlmLogs', () => {
     const expandButton = screen.getByRole('button', { name: /#1 Fix bug/i })
     fireEvent.click(expandButton)
 
-    // Click prompt button (get all buttons and find the one with the message icon)
-    const promptButtons = screen.getAllByRole('button')
-    let promptButtonClicked = false
-    for (const btn of promptButtons) {
-      // Check if button has MessageSquare icon (prompt button)
-      if (btn.innerHTML.includes('MessageSquare') || btn.getAttribute('title') === 'View prompt') {
-        fireEvent.click(btn)
-        promptButtonClicked = true
-        break
-      }
-    }
-    
-    if (promptButtonClicked) {
-      // Should open modal
-      expect(screen.getByText('Prompt')).toBeInTheDocument()
-    }
+    // Click prompt button
+    const promptBtns = screen.getAllByTitle('View prompt')
+    fireEvent.click(promptBtns[0])
+    // Should open prompt modal (Dialog title)
+    const promptDialogTitles = screen.getAllByText('Prompt')
+    expect(promptDialogTitles.length).toBeGreaterThanOrEqual(1)
 
     // Click response button
-    const responseButtons = screen.getAllByRole('button')
-    let responseButtonClicked = false
-    for (const btn of responseButtons) {
-      // Check if button has Eye icon (response button)
-      if (btn.innerHTML.includes('Eye') || btn.getAttribute('title') === 'View response') {
-        fireEvent.click(btn)
-        responseButtonClicked = true
-        break
-      }
-    }
-    
-    if (responseButtonClicked) {
-      // Should open modal
-      expect(screen.getByText('Response')).toBeInTheDocument()
-    }
+    const responseBtns = screen.getAllByTitle('View response')
+    fireEvent.click(responseBtns[0])
+    // Should open response modal (Dialog title)
+    const responseDialogTitles = screen.getAllByText('Response')
+    expect(responseDialogTitles.length).toBeGreaterThanOrEqual(1)
   })
 
   it('shows empty state when no logs found', async () => {
@@ -1266,7 +1247,7 @@ describe('LlmLogs', () => {
 
       // Add model filter for gpt-4
       let dropdownTriggers = screen.getAllByTestId('mock-dropdown-trigger')
-      let modelDropdown = dropdownTriggers.find(trigger => 
+      const modelDropdown = dropdownTriggers.find(trigger => 
         trigger.textContent?.includes('Model')
       )
 
@@ -1275,7 +1256,7 @@ describe('LlmLogs', () => {
       }
 
       let checkboxItems = screen.getAllByTestId('mock-checkbox-item')
-      let gpt4Checkbox = checkboxItems.find(item => 
+      const gpt4Checkbox = checkboxItems.find(item => 
         item.textContent?.includes('gpt-4')
       )
       
@@ -1289,7 +1270,7 @@ describe('LlmLogs', () => {
 
       // Add status filter for success
       dropdownTriggers = screen.getAllByTestId('mock-dropdown-trigger')
-      let statusDropdown = dropdownTriggers.find(trigger => 
+      const statusDropdown = dropdownTriggers.find(trigger => 
         trigger.textContent?.includes('Status')
       )
 
@@ -1298,7 +1279,7 @@ describe('LlmLogs', () => {
       }
 
       checkboxItems = screen.getAllByTestId('mock-checkbox-item')
-      let successCheckbox = checkboxItems.find(item => 
+      const successCheckbox = checkboxItems.find(item => 
         item.textContent?.includes('Success')
       )
       

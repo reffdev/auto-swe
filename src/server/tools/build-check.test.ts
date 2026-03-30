@@ -1,5 +1,5 @@
 import { runAndExtractErrors } from "./build-check";
-import { mkdtempSync, writeFileSync, mkdirSync } from "fs";
+import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { rmSync } from "fs";

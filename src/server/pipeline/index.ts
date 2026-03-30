@@ -8,7 +8,8 @@
  * Each stage is a LangGraph node running streamText from the AI SDK.
  */
 
-import { StateGraph, START, END } from "@langchain/langgraph";
+import { StateGraph, START, END, type LangGraphRunnableConfig } from "@langchain/langgraph";
+import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { resolve } from "path";
@@ -108,7 +109,7 @@ function createModelProvider(machine: Machine) {
           // Use a connect timeout that we cancel once headers arrive.
           // The caller's signal (for cancel/compaction) stays active for the stream body.
           const connectAbort = new AbortController();
-          const connectTimer = setTimeout(() => connectAbort.abort(), LLM_CONNECT_TIMEOUT_MS);
+          const connectTimer = setTimeout(() => { connectAbort.abort(); }, LLM_CONNECT_TIMEOUT_MS);
           const signals: AbortSignal[] = [connectAbort.signal];
           if (callerSignal) signals.push(callerSignal);
           const connectSignal = AbortSignal.any(signals);
@@ -155,7 +156,7 @@ function createModelProvider(machine: Machine) {
             inactivityTimer = null;
             const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
             console.log(`Pipeline: LLM stream inactive for ${elapsed}s (limit: ${LLM_REQUEST_TIMEOUT_MS / 1000}s) — aborting stream`);
-            reader.cancel("LLM stream inactivity timeout");
+            void reader.cancel("LLM stream inactivity timeout");
             try { streamController?.error(new Error(`LLM stream timed out — no data for ${elapsed}s`)); } catch { /* controller may already be closed */ }
           }, LLM_REQUEST_TIMEOUT_MS);
         };
@@ -188,7 +189,7 @@ function createModelProvider(machine: Machine) {
               try { controller.error(err); } catch { /* controller may already be errored */ }
             }
           },
-          cancel() { streamDone = true; clearTimer(); reader.cancel(); },
+          cancel() { streamDone = true; clearTimer(); void reader.cancel(); },
         });
 
         return new Response(watchedStream, {
@@ -206,7 +207,7 @@ function createModelProvider(machine: Machine) {
 
 // ─── Graph wiring (shared between production and tests) ─────────────────────
 
-type NodeFn = (state: any, config?: any) => Promise<any>;
+type NodeFn = (state: PipelineStateType, config: LangGraphRunnableConfig) => Promise<Partial<PipelineStateType>>;
 
 export interface PipelineNodes {
   scout: NodeFn;
@@ -220,7 +221,7 @@ export interface PipelineNodes {
 }
 
 /** Build the pipeline graph with given node implementations. Single source of truth for edges. */
-export function buildPipelineGraph(nodes: PipelineNodes, opts?: { checkpointer?: any }) {
+export function buildPipelineGraph(nodes: PipelineNodes, opts?: { checkpointer?: BaseCheckpointSaver }) {
   return new StateGraph(PipelineState)
     .addNode("scout", nodes.scout)
     .addNode("implement", nodes.implement)
@@ -456,7 +457,7 @@ export async function executeStageRetry(
       const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
       if (activeCount === 0) ctx.db.updateMachine(machine.id, { status: "idle" });
       // Re-run as a full pipeline instead of checkpoint resume
-      return executePipeline(ctx, machine, issue, project);
+      return await executePipeline(ctx, machine, issue, project);
     }
 
     const modelId = project.model_id ?? machine.model_id;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -104,7 +104,7 @@ interface Stats {
 let _cachedStats: Stats | null = null;
 
 function useStats(): Stats | null {
-  const [stats, setStats] = useState<Stats | null>(_cachedStats)
+  const [stats, setStats] = useState(_cachedStats)
 
   useEffect(() => {
     const fetchStats = () => {
@@ -115,7 +115,7 @@ function useStats(): Stats | null {
     }
     if (!_cachedStats) fetchStats()
     const interval = setInterval(fetchStats, 10_000)
-    return () => clearInterval(interval)
+    return () => { clearInterval(interval); }
   }, [])
 
   return stats
@@ -228,11 +228,11 @@ function NewProjectDialog({ open, onClose, onCreated }: {
           <DialogTitle>New Project</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3">
-          <Input placeholder="Project name" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input placeholder="Git remote URL" value={gitRemote} onChange={(e) => setGitRemote(e.target.value)} />
-          <Input placeholder="Git server token (for PR creation)" type="password" value={gitToken} onChange={(e) => setGitToken(e.target.value)} />
-          <Input placeholder="Local workdir path (optional — clones remote if empty)" value={workdir} onChange={(e) => setWorkdir(e.target.value)} />
-          <Input placeholder="Default branch" value={branch} onChange={(e) => setBranch(e.target.value)} />
+          <Input placeholder="Project name" value={name} onChange={(e) => { setName(e.target.value); }} />
+          <Input placeholder="Git remote URL" value={gitRemote} onChange={(e) => { setGitRemote(e.target.value); }} />
+          <Input placeholder="Git server token (for PR creation)" type="password" value={gitToken} onChange={(e) => { setGitToken(e.target.value); }} />
+          <Input placeholder="Local workdir path (optional — clones remote if empty)" value={workdir} onChange={(e) => { setWorkdir(e.target.value); }} />
+          <Input placeholder="Default branch" value={branch} onChange={(e) => { setBranch(e.target.value); }} />
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
@@ -282,9 +282,9 @@ function NewMachineDialog({ open, onClose, onCreated }: {
           <DialogTitle>Add Machine</DialogTitle>
         </DialogHeader>
         <div className="grid gap-3">
-          <Input placeholder="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input placeholder="Base URL (e.g. http://192.168.1.50:8080/v1)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-          <Input placeholder="Model ID (e.g. qwen2.5-coder-32b)" value={modelId} onChange={(e) => setModelId(e.target.value)} />
+          <Input placeholder="Name (optional)" value={name} onChange={(e) => { setName(e.target.value); }} />
+          <Input placeholder="Base URL (e.g. http://192.168.1.50:8080/v1)" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} />
+          <Input placeholder="Model ID (e.g. qwen2.5-coder-32b)" value={modelId} onChange={(e) => { setModelId(e.target.value); }} />
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
@@ -343,7 +343,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       {/* Projects */}
       <div className="px-3 pt-3 pb-1 flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Projects</span>
-        <Button variant="ghost" size="icon-sm" onClick={() => setShowNewProject(true)}>
+        <Button variant="ghost" size="icon-sm" onClick={() => { setShowNewProject(true); }}>
           <Plus className="size-3.5" />
         </Button>
       </div>
@@ -354,7 +354,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
         {projects.map((p) => (
           <div key={p.id} className="relative">
             <button
-              onClick={() => onSelectProject(p.id === selectedProjectId ? null : p.id)}
+              onClick={() => { onSelectProject(p.id === selectedProjectId ? null : p.id); }}
               className={cn(
                 'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
                 'hover:bg-accent',
@@ -394,7 +394,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       {/* Machines */}
       <div className="px-3 pt-3 pb-1 flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Machines</span>
-        <Button variant="ghost" size="icon-sm" onClick={() => setShowNewMachine(true)}>
+        <Button variant="ghost" size="icon-sm" onClick={() => { setShowNewMachine(true); }}>
           <Plus className="size-3.5" />
         </Button>
       </div>
@@ -427,7 +427,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
             <div key={m.id}>
               <div className="flex items-center">
                 <button
-                  onClick={() => onSelectMachine(m.id === selectedMachineId ? null : m.id)}
+                  onClick={() => { onSelectMachine(m.id === selectedMachineId ? null : m.id); }}
                   className={cn(
                     'flex-1 text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
                     'hover:bg-accent',
@@ -454,7 +454,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    navigate(`/project/${nextIssue!.project_id}/issue/${nextIssue!.id}`)
+                    void navigate(`/project/${nextIssue.project_id}/issue/${nextIssue.id}`)
                   }}
                   title={nextIssue.title}
                   className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
@@ -495,8 +495,8 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       </div>
 
       {/* Dialogs */}
-      <NewProjectDialog open={showNewProject} onClose={() => setShowNewProject(false)} onCreated={onDataChange} />
-      <NewMachineDialog open={showNewMachine} onClose={() => setShowNewMachine(false)} onCreated={onDataChange} />
+      <NewProjectDialog open={showNewProject} onClose={() => { setShowNewProject(false); }} onCreated={onDataChange} />
+      <NewMachineDialog open={showNewMachine} onClose={() => { setShowNewMachine(false); }} onCreated={onDataChange} />
 
       {/* Restart overlay */}
       {restarting && <RestartOverlay />}

@@ -3,9 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { 
   ChevronRight, 
-  ChevronDown, 
   Eye, 
-  EyeOff, 
   Clock, 
   Cpu, 
   AlertCircle, 
@@ -18,7 +16,6 @@ import {
   Calendar
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { 
@@ -38,8 +35,8 @@ function useDebounce<T>(value: T, delay: number): T {
   const [debouncedValue, setDebouncedValue] = useState(value)
 
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedValue(value), delay)
-    return () => clearTimeout(timer)
+    const timer = setTimeout(() => { setDebouncedValue(value); }, delay)
+    return () => { clearTimeout(timer); }
   }, [value, delay])
 
   return debouncedValue
@@ -154,11 +151,13 @@ function FilterBar({
   const debouncedSearch = useDebounce(searchInput, 300)
 
   // Update parent when debounced search changes
+  /* eslint-disable react-hooks/exhaustive-deps -- Only react to debouncedSearch changes; including filters/onFiltersChange would cause infinite re-render loops */
   useEffect(() => {
     if (debouncedSearch !== filters.search) {
       onFiltersChange({ ...filters, search: debouncedSearch })
     }
   }, [debouncedSearch])
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchInput(e.target.value)
@@ -225,14 +224,14 @@ function FilterBar({
             <DropdownMenuSeparator />
             <DropdownMenuCheckboxItem
               checked={filters.status.has('success')}
-              onCheckedChange={() => handleStatusToggle('success')}
+              onCheckedChange={() => { handleStatusToggle('success'); }}
             >
               <CheckCircle className="size-3.5 mr-1.5 text-emerald-500" />
               Success
             </DropdownMenuCheckboxItem>
             <DropdownMenuCheckboxItem
               checked={filters.status.has('error')}
-              onCheckedChange={() => handleStatusToggle('error')}
+              onCheckedChange={() => { handleStatusToggle('error'); }}
             >
               <AlertCircle className="size-3.5 mr-1.5 text-destructive" />
               Error
@@ -261,7 +260,7 @@ function FilterBar({
                 <DropdownMenuCheckboxItem
                   key={model}
                   checked={filters.models.has(model)}
-                  onCheckedChange={() => handleModelToggle(model)}
+                  onCheckedChange={() => { handleModelToggle(model); }}
                 >
                   {model}
                 </DropdownMenuCheckboxItem>
@@ -371,7 +370,7 @@ function TruncatedText({ text, maxLines = 2 }: { text: string; maxLines?: number
       </pre>
       {isTruncated && (
         <button
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => { setExpanded(!expanded); }}
           className="absolute bottom-0 right-0 bg-background px-2 py-0.5 text-xs text-primary hover:underline rounded-tl-md"
         >
           {expanded ? 'Show less' : 'Show more'}
@@ -459,7 +458,7 @@ function LlmCallRow({ call }: { call: GroupedLlmLogCall }) {
           <Button 
             variant="ghost" 
             size="icon-xs" 
-            onClick={() => setShowPrompt(true)}
+            onClick={() => { setShowPrompt(true); }}
             title="View prompt"
           >
             <MessageSquare className="size-3.5" />
@@ -467,7 +466,7 @@ function LlmCallRow({ call }: { call: GroupedLlmLogCall }) {
           <Button 
             variant="ghost" 
             size="icon-xs" 
-            onClick={() => setShowResponse(true)}
+            onClick={() => { setShowResponse(true); }}
             title="View response"
           >
             <Eye className="size-3.5" />
@@ -492,13 +491,13 @@ function LlmCallRow({ call }: { call: GroupedLlmLogCall }) {
       {/* Modals */}
       <ContentModal 
         open={showPrompt} 
-        onClose={() => setShowPrompt(false)} 
+        onClose={() => { setShowPrompt(false); }} 
         title="Prompt" 
         content={call.prompt_preview} 
       />
       <ContentModal 
         open={showResponse} 
-        onClose={() => setShowResponse(false)} 
+        onClose={() => { setShowResponse(false); }} 
         title="Response" 
         content={call.response_preview} 
       />
@@ -617,8 +616,8 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
   const [groups, setGroups] = useState<GroupedLlmLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTER_STATE)
+  const [expandedGroups, setExpandedGroups] = useState(new Set())
+  const [filters, setFilters] = useState(DEFAULT_FILTER_STATE)
 
   // Extract distinct models from fetched data
   const availableModels = useMemo(() => extractDistinctModels(groups), [groups])
@@ -653,7 +652,7 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
       }
     }
     
-    fetchLogs()
+    void fetchLogs()
   }, [projectId])
 
   const toggleGroup = (issueId: string | null) => {
@@ -729,7 +728,7 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
                   key={group.issue_id ?? 'unassigned'}
                   group={group}
                   expanded={expandedGroups.has(group.issue_id ?? 'unassigned')}
-                  onToggle={() => toggleGroup(group.issue_id)}
+                  onToggle={() => { toggleGroup(group.issue_id); }}
                 />
               ))
             )}

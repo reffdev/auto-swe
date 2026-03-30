@@ -6,7 +6,7 @@
  * machines directly.
  */
 
-import type { Db, Machine } from "./db";
+import type { Db } from "./db";
 
 export interface SpeedResult {
   prompt_tokens_per_sec: number | null;
@@ -29,7 +29,7 @@ const FETCH_TIMEOUT_MS = 3_000;
 
 let cachedSpeed: SpeedResult = { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
 const cachedMachineSpeed = new Map<string, SpeedResult>(); // machineId → speed
-let lastCollectTime = 0;
+let _lastCollectTime = 0;
 let collectInterval: ReturnType<typeof setInterval> | null = null;
 
 async function fetchMachineMetrics(baseUrl: string): Promise<{
@@ -127,7 +127,7 @@ async function collect(db: Db): Promise<void> {
     cachedSpeed = getSpeedFromDb(db);
   }
 
-  lastCollectTime = Date.now();
+  _lastCollectTime = Date.now();
 }
 
 /** Start the background stats collector. Call once at server startup. */

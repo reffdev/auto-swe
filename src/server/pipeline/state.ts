@@ -45,6 +45,7 @@ export const PipelineState = Annotation.Root({
   testErrors:       Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
   buildRetryCount:  Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
   testRetryCount:   Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
+  lintErrors:       Annotation<string>({ reducer: (_, b) => b, default: () => "" }),
 
   // Error tracking
   error:            Annotation<string>({ reducer: (_, b) => b, default: () => "" }),

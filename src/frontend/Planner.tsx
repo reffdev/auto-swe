@@ -24,7 +24,7 @@ interface PlannerProps {
 
 export function Planner({ projectId, conversationId: initialConversationId }: PlannerProps) {
   const navigate = useNavigate()
-  const [conversationId, setConversationId] = useState<string | null>(initialConversationId ?? null)
+  const [conversationId, setConversationId] = useState(initialConversationId ?? null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -40,9 +40,9 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
     api.createPlannerConversation(projectId).then(conv => {
       if (!cancelled) {
         setConversationId(conv.id)
-        navigate(`/project/${projectId}/planner/${conv.id}`, { replace: true })
+        void navigate(`/project/${projectId}/planner/${conv.id}`, { replace: true })
       }
-    }).catch(err => setError(err.message))
+    }).catch(err => { setError(err.message); })
     return () => { cancelled = true }
   }, [projectId, initialConversationId, navigate])
 
@@ -81,7 +81,7 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
     return (lastEpicMsg.content.match(/^story:\s*\d+/gm) ?? []).length
   })()
 
-  const handleSend = useCallback(async (e?: React.FormEvent) => {
+  const handleSend = useCallback(async (e?: React.SyntheticEvent) => {
     e?.preventDefault()
     if (!conversationId || !input.trim() || sending || generating) return
 
@@ -116,9 +116,9 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
     setApproving(true)
     setError(null)
     try {
-      const result = await api.approvePlannerConversation(conversationId) as any
+      const result = await api.approvePlannerConversation(conversationId) as unknown as { epic?: { id: string }; issue?: { id: string } }
       const issueId = result.epic?.id ?? result.issue?.id
-      navigate(`/project/${projectId}/issue/${issueId}`)
+      void navigate(`/project/${projectId}/issue/${issueId}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create issue')
     } finally {
@@ -129,7 +129,7 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      handleSend()
+      void handleSend()
     }
   }, [handleSend])
 
@@ -204,7 +204,7 @@ export function Planner({ projectId, conversationId: initialConversationId }: Pl
           <Textarea
             ref={textareaRef}
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={e => { setInput(e.target.value); }}
             onKeyDown={handleKeyDown}
             placeholder="Describe what you want to build or fix..."
             className="min-h-[44px] max-h-[200px] resize-none"

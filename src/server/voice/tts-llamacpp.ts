@@ -9,10 +9,10 @@ import type { TtsAdapter } from "./types";
 export class LlamaCppTts implements TtsAdapter {
   constructor(private baseUrl: string) {}
 
-  async synthesize(text: string, sampleRate: number): Promise<Buffer> {
+  async synthesize(text: string, _sampleRate: number): Promise<Buffer> {
     const url = new URL("/v1/audio/speech", this.baseUrl).href;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    const timeout = setTimeout(() => { controller.abort(); }, 30_000);
     let res: Response;
     try {
       res = await fetch(url, {
