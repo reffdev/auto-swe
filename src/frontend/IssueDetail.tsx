@@ -835,7 +835,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
       {/* Restarting transition */}
       {isRestarting && !allRuns.some(r => r.status === 'running' || r.status === 'pending') && (
         <div className="flex-1 flex flex-col items-center justify-center gap-3 text-muted-foreground animate-pulse">
-          <RotateCcw className="size-6 animate-spin" style={{ animationDuration: '2s' }} />
+          <RotateCcw className="size-6 animate-[spin_2s_linear_infinite_reverse]" />
           <span className="text-sm">Starting pipeline...</span>
         </div>
       )}

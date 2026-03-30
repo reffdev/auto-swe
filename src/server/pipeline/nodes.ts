@@ -256,17 +256,43 @@ export async function scoutNode(
   // Check for cached scout brief — reuse if the codebase hasn't changed
   const currentCommit = getHeadCommit(state.worktreePath);
   const issue = ctx.db.getIssue(state.issueId);
-  if (issue?.scout_brief && issue.scout_commit && issue.scout_commit === currentCommit) {
-    console.log(`Pipeline: scout — reusing cached brief (${issue.scout_brief.length} chars, commit ${currentCommit.slice(0, 8)})`);
-    const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
-    ctx.db.updateRun(run.id, {
-      machine_id: state.machineId,
-      status: "pass",
-      output: JSON.stringify([{ step: 0, text: `**Scout skipped** — reusing cached brief from commit ${currentCommit.slice(0, 8)}`, tokens: { prompt: 0, completion: 0 }, durationMs: 0 }]),
-      started_at: new Date().toISOString(),
-      completed_at: new Date().toISOString(),
-    });
-    return { scoutBrief: issue.scout_brief };
+  if (issue?.scout_brief && issue.scout_commit) {
+    // Check if any of the relevant files changed since the scout ran
+    let filesChanged = false;
+    if (issue.scout_commit !== currentCommit) {
+      try {
+        const manifest = JSON.parse(issue.scout_brief) as { files?: Array<{ path: string }> };
+        const filePaths = manifest.files?.map(f => f.path) ?? [];
+        if (filePaths.length > 0) {
+          // Check if any relevant files differ between the cached commit and current HEAD
+          const diffResult = spawnSync("git", ["diff", "--name-only", issue.scout_commit, currentCommit, "--", ...filePaths], {
+            cwd: state.worktreePath, encoding: "utf-8", shell: true,
+          });
+          const changedFiles = (diffResult.stdout?.trim() || "").split("\n").filter(Boolean);
+          filesChanged = changedFiles.length > 0;
+          if (filesChanged) {
+            console.log(`Pipeline: scout — ${changedFiles.length} relevant file(s) changed since last scout: ${changedFiles.join(", ")}`);
+          }
+        } else {
+          filesChanged = true; // can't parse manifest — re-scout to be safe
+        }
+      } catch {
+        filesChanged = true; // parse error — re-scout
+      }
+    }
+
+    if (!filesChanged) {
+      console.log(`Pipeline: scout — reusing cached brief (${issue.scout_brief.length} chars, no relevant files changed)`);
+      const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
+      ctx.db.updateRun(run.id, {
+        machine_id: state.machineId,
+        status: "pass",
+        output: JSON.stringify([{ step: 0, text: `**Scout skipped** — reusing cached brief (no relevant files changed)`, tokens: { prompt: 0, completion: 0 }, durationMs: 0 }]),
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      });
+      return { scoutBrief: issue.scout_brief };
+    }
   }
 
   const projectCtx = gatherProjectContext(state.worktreePath);
