@@ -140,7 +140,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   // Detect text-only reasoning loops (no tool calls, repetitive output)
   let textOnlySteps = 0;
   let reasoningLoopDetected = false;
-  const MAX_TEXT_ONLY_STEPS = 3; // abort after 3 consecutive steps with no tool calls
+  const MAX_TEXT_ONLY_STEPS = 3;
 
   const onStep = (step: StepResult<ToolSet>) => {
     stepCount++;
