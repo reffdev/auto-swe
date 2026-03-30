@@ -22,6 +22,7 @@ const CODING_STANDARDS = `
 - Make ADDITIVE changes — add new functions, methods, and endpoints alongside existing code
 - NEVER rewrite, restructure, or reorganize existing files. If you need to change more than a few lines in a function, something is wrong — stop and reconsider.
 - NEVER change function signatures, constructor parameters, return types, or export shapes of existing code — other code depends on them
+- NEVER remove or disconnect existing event handlers, callbacks, or interactive behavior. If a component currently responds to clicks, it must still respond to clicks after your change. Add new interactions alongside existing ones (e.g. use stopPropagation to intercept specific sub-element clicks without breaking the parent handler).
 - Use \`replaceInFile\` for modifying existing files. Only use \`writeFile\` for creating brand new files.
 - Read files before modifying them
 - Fix root causes, not symptoms
@@ -58,6 +59,7 @@ Your task is not complete until you call \`saveCheckpoint\` with your file list.
 - Files with **patterns to follow** (how similar things are already done)
 - **Type definitions** and **schemas** the new code will use
 - **Test files** showing the testing pattern
+- **UI component source files** (e.g. components/ui/dialog.tsx, components/ui/button.tsx) if the feature uses or wraps them — the implementer needs to know what the component renders by default (built-in close buttons, labels, etc.) to avoid duplicating behavior
 - Be thorough — missing a file means the implementer works blind
 
 ## What NOT to do
@@ -138,7 +140,7 @@ ${CODING_STANDARDS}
 - Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files
 - Call \`checkBuild\` to verify your changes compile
 - Do NOT commit, push, or write tests
-- When done, run \`gitStatus\` and \`gitDiff\` to verify
+- When done, run \`gitDiff\` and review your own changes: verify that every function you modified still handles all the cases it handled before — no dropped callbacks, no lost interactivity, no removed branches
 
 ## Output
 
@@ -238,8 +240,13 @@ ${CODING_STANDARDS}
 - Test BEHAVIOR, not implementation details. If a refactor (renaming internals, changing state shape) would break your tests while the feature still works, you're testing the wrong thing.
 - NEVER duplicate mock setup across test cases. Use shared fixtures, beforeEach, or factory functions.
 - NEVER mock UI primitives (Button, Input, Dialog) individually — render the real components or use a single shared mock module. Mocking every leaf component makes tests fragile and verbose.
+- NEVER mock the module under test (e.g. jest.mock('./Foo') in Foo.test.ts) — this replaces the real code with stubs and makes the test meaningless.
+- NEVER write tests with conditional assertions (if/for around expect) — if the condition is false the test passes without asserting anything. Always assert unconditionally.
+- NEVER write circular assertions where the expected value is copy-pasted from mock setup — the test must verify behavior, not echo its own configuration.
+- NEVER write a test where removing the "act" step (the function call or user interaction) would still make it pass — that means the test asserts on setup, not behavior.
 - Import constants, routes, types, and schemas from the source of truth — never duplicate them as inline literals in test files.
 - Each test should assert ONE behavior. If a test name has "and" in it, split it.
+- Include jest.clearAllMocks() in beforeEach or afterEach to prevent mock state leaking between tests.
 - Prefer fewer, meaningful tests over exhaustive permutations. Cover: happy path, one key edge case, one error path. That's usually enough.
 
 ## Output
@@ -328,6 +335,14 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
    - A new component exists but is never imported or rendered
    - A new database column or table exists but is not read or written where it should be
    - Any layer in the feature's data path is disconnected — follow the full chain from UI to API to data and back
+   - An existing callback, prop, or event handler that was previously wired is no longer called after the change — trace each prop/callback from where it is passed to where it should be invoked
+
+   Behavioral regression — use \`gitDiff\` to identify every function/component that was modified, then verify. REJECT if:
+   - A modified function has different observable behavior for inputs it handled before the change (not just new inputs)
+   - An interactive element (button, link, clickable row) was replaced with a non-interactive element (div, span) without preserving click handlers, keyboard access (tabIndex, onKeyDown), and focus behavior
+   - A component that previously called a callback prop no longer calls it in any code path — trace the prop from where it is passed to where it must be invoked
+   - Conditional branches or error paths present in the old code are missing from the new code
+   - Serialization or formatting logic changed (date formats, JSON shapes, enum values) without updating all consumers
 
    Collateral damage — REJECT if:
    - Files unrelated to the issue were modified, even for cosmetic reasons (formatting, style changes, renaming, type tweaks)
@@ -336,6 +351,7 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
 
    Dead code — REJECT if:
    - New functions, parameters, or props are declared but never used or called
+   - Existing props or parameters that are still accepted but no longer used anywhere in the function body after the change
    - New imports that are unused
    - New configuration or options that have no effect`,
   },
@@ -354,9 +370,21 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
     focus: `Focus exclusively on UI/UX quality:
    - Visual consistency with existing styles and design patterns
    - Responsive layout — does it work at common breakpoints?
-   - Accessibility (a11y): semantic HTML, ARIA attributes, keyboard navigation, color contrast
    - Loading states, error states, and empty states handled
-   - Only reject for genuine UI/UX issues, not backend logic or correctness.`,
+
+   Accessibility (a11y) — REJECT if:
+   - Any onClick handler is on a non-interactive element (div, span) without role="button", tabIndex={0}, and onKeyDown for Enter/Space
+   - Any custom component handles click but not keyboard events (Enter, Space, Escape as appropriate)
+   - A modal/dialog does not manage focus (focus should move into the dialog on open, return to the trigger on close)
+   - Any form input lacks an associated label element or aria-labelledby
+   - Any image lacks alt text (use alt="" only for purely decorative images)
+   - Color is the sole indicator of state with no text/icon alternative
+
+   Duplicate/conflicting controls — REJECT if:
+   - A component library widget already renders a control (close button, scroll handle, toggle) by default and the code adds a second one manually — read the component's source or props to check for built-in controls before adding custom ones
+   - Two overlapping click targets do the same thing (e.g. two close buttons in the same corner)
+
+   Only reject for genuine UI/UX issues, not backend logic or correctness.`,
   },
   performance: {
     name: "Performance Review",
@@ -383,10 +411,20 @@ export const REVIEW_LENSES: Record<string, ReviewLens> = {
    - Tests cover trivial permutations that don't exercise distinct code paths
 
    Mock fidelity — REJECT if:
+   - Tests mock the module under test (jest.mock('./MyComponent') inside MyComponent.test.ts) — this replaces real code with stubs, making the test assert on mock behavior instead of real behavior
    - Tests mock a different module than the code under test actually imports
    - Tests duplicate shared definitions (routes, constants, schemas) inline instead of importing the source of truth — these drift silently
    - Mock return values are shaped differently from the real implementation (missing fields, wrong types, impossible states)
    - Test data represents scenarios the real code path cannot produce
+   - Every dependency is mocked — if nothing real executes, the test verifies wiring between mocks, not actual behavior
+   - Assertion values are copy-pasted from mock setup — the test is circular (it verifies the mock returns what it was configured to return)
+
+   Silent pass anti-patterns — REJECT if:
+   - Tests use conditional logic (if/for loops) around assertions that may silently skip the assertion if the condition is false
+   - Tests search for an element and only assert if found — if the element is missing the test passes vacuously
+   - Tests have zero assertions or only assert truthy/defined (expect(x).toBeDefined() alone is not meaningful)
+   - Tests catch all exceptions with an empty catch block — failures are silently swallowed
+   - Removing the "act" step (the action being tested) would still make the test pass
 
    Coverage gaps — REJECT if:
    - Happy path is untested
@@ -437,12 +475,16 @@ ${lens.focus}
 
 ## Steps
 
-1. Read the changed files
-2. Call \`checkTests\` to verify tests pass
-3. Call \`checkBuild\` to verify the build compiles
-4. Call \`submitVerdict\` with your verdict — this is MANDATORY and must be the LAST thing you do
+1. Run \`gitDiff\` to see what changed — identify every modified file and function
+2. Read the changed files in their current state
+3. For each modified function/component, verify it still handles all the cases it handled before the diff — look for dropped branches, disconnected callbacks, lost interactivity
+4. Call \`checkTests\` to verify tests pass
+5. Call \`checkBuild\` to verify the build compiles
+6. Call \`submitVerdict\` with your verdict — this is MANDATORY and must be the LAST thing you do
 
-Do NOT keep calling gitDiff, gitStatus, checkTests, or checkBuild after you have already gathered the information you need. Once you have read the files, checked tests, and checked the build, call \`submitVerdict\` immediately.`;
+Do NOT keep calling gitDiff, gitStatus, checkTests, or checkBuild after you have already gathered the information you need. Once you have the diff, read the files, checked tests, and checked the build, call \`submitVerdict\` immediately.
+
+If no issues are found, say so — do not fabricate findings to fill a checklist.`;
 
   const brief = opts.scoutBrief;
   const impl = opts.implementOutput;

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers, Settings, X } from 'lucide-react'
+import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -42,12 +42,9 @@ export function IssueSummaryModal({ issue, onClose }: { issue: Issue; onClose: (
   return (
     <Dialog open={true} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-md">
-        <div className="flex items-center justify-between mb-4">
+        <DialogHeader>
           <DialogTitle>Issue Summary</DialogTitle>
-          <Button variant="ghost" size="icon-sm" onClick={onClose}>
-            <X className="size-4" />
-          </Button>
-        </div>
+        </DialogHeader>
         
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -240,7 +237,8 @@ function formatDuration(ms: number): string {
 
 function IssueRow({ issue, run, indent, onSelect, onSummary }: { issue: Issue; run?: Run; indent?: boolean; onSelect: (id: string) => void; onSummary: (issue: Issue) => void }) {
   return (
-    <div
+    <button
+      onClick={() => onSelect(issue.id)}
       className={cn(
         "w-full text-left py-3 border-b border-border hover:bg-accent/50 transition-colors",
         indent ? "pl-12 pr-6" : "px-6 py-4"
@@ -252,12 +250,15 @@ function IssueRow({ issue, run, indent, onSelect, onSummary }: { issue: Issue; r
             {indent && issue.sequence != null && (
               <span className="text-xs text-muted-foreground font-mono w-4 shrink-0">{issue.sequence}.</span>
             )}
-            <button
-              onClick={() => onSummary(issue)}
-              className={cn("font-medium truncate text-left hover:text-primary transition-colors", indent ? "text-xs" : "text-sm")}
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => { e.stopPropagation(); onSummary(issue) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onSummary(issue) } }}
+              className={cn("font-medium truncate text-left hover:text-primary hover:underline transition-colors cursor-pointer", indent ? "text-xs" : "text-sm")}
             >
               {issue.title}
-            </button>
+            </span>
             <StatusBadge status={issue.status} />
             {run?.stage && (issue.status === 'running' || issue.status === 'approved') && (
               <span className="text-xs text-muted-foreground capitalize">{run.stage.replace('_', '-')}</span>
@@ -276,7 +277,7 @@ function IssueRow({ issue, run, indent, onSelect, onSummary }: { issue: Issue; r
           )}
         </div>
       </div>
-    </div>
+    </button>
   )
 }
 
