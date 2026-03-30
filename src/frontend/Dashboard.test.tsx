@@ -1,14 +1,25 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
-import { Dashboard } from './Dashboard'
-import { ROUTE_PATHS } from './routes'
+import { DashboardLayout } from './Dashboard'
+import type { ViewName } from './routes'
+
+const TEST_ROUTES: Array<{ path: string; view: ViewName }> = [
+  { path: '/', view: 'landing' },
+  { path: '/project/:projectId', view: 'issue-list' },
+  { path: '/project/:projectId/issue/:issueId', view: 'issue-detail' },
+  { path: '/project/:projectId/planner/:conversationId?', view: 'planner' },
+  { path: '/project/:projectId/settings', view: 'settings' },
+  { path: '/project/:projectId/llm-logs', view: 'llm-logs' },
+  { path: '/project/:projectId/analysis', view: 'analysis' },
+  { path: '/machine/:machineId', view: 'machine-detail' },
+]
 
 function renderWithRouter(initialEntry = '/') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        {ROUTE_PATHS.map(path => (
-          <Route key={path} path={path} element={<Dashboard />} />
+        {TEST_ROUTES.map(({ path, view }) => (
+          <Route key={path} path={path} element={<DashboardLayout view={view} />} />
         ))}
       </Routes>
     </MemoryRouter>
@@ -56,6 +67,10 @@ jest.mock('./ProjectSettings', () => ({
 
 jest.mock('./LlmLogs', () => ({
   LlmLogs: () => <div data-testid="mock-llm-logs">LLM Logs</div>,
+}))
+
+jest.mock('./AnalysisView', () => ({
+  AnalysisView: () => <div data-testid="mock-analysis">Analysis</div>,
 }))
 
 describe('Dashboard', () => {

@@ -16,6 +16,7 @@ import { Db } from "./db";
 import { createApiRouter } from "./api";
 import { createPlannerRouter } from "./planner-api";
 import { startStatsCollector } from "./stats";
+import { startAnalysisScheduler } from "./analysis";
 import { createVoiceRouter } from "./voice";
 import { LlamaCppStt } from "./voice/stt-llamacpp";
 import { LlamaCppLlm } from "./voice/llm-llamacpp";
@@ -87,6 +88,7 @@ if (existsSync(clientDir)) {
 
 // 7. Start background services
 startStatsCollector(db);
+startAnalysisScheduler(db);
 
 // 8. Start server
 const server = app.listen(PORT, () => {

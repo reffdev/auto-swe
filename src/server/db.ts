@@ -8,7 +8,7 @@
 
 import BetterSqlite from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { eq, desc, inArray, or, sql } from "drizzle-orm";
+import { eq, and, desc, inArray, or, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { resolve } from "path";
 import * as schema from "./schema";
@@ -22,6 +22,8 @@ export type Run = typeof schema.runs.$inferSelect;
 export type LlmRequest = typeof schema.llmRequests.$inferSelect;
 export type PlannerConversation = typeof schema.plannerConversations.$inferSelect;
 export type PlannerMessage = typeof schema.plannerMessages.$inferSelect;
+export type AnalysisConfig = typeof schema.analysisConfigs.$inferSelect;
+export type AnalysisRun = typeof schema.analysisRuns.$inferSelect;
 
 // ─── Database class ───────────────────────────────────────────────────────────
 
@@ -81,6 +83,22 @@ export class Db {
         id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES planner_conversations(id),
         role TEXT NOT NULL, content TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS analysis_configs (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        lens_key TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+        frequency TEXT NOT NULL DEFAULT 'weekly',
+        last_run_at TEXT, next_run_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS analysis_runs (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+        config_id TEXT NOT NULL REFERENCES analysis_configs(id),
+        lens_key TEXT NOT NULL, machine_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        findings TEXT, summary TEXT, output TEXT,
+        started_at TEXT, completed_at TEXT, duration_ms INTEGER,
+        prompt_tokens INTEGER, completion_tokens INTEGER
       );
       CREATE TABLE IF NOT EXISTS llm_requests (
         id TEXT PRIMARY KEY, issue_id TEXT, run_id TEXT, model_id TEXT,
@@ -582,6 +600,100 @@ export class Db {
       totalGroups: totalGroupsRow.count,
       totalCalls: totalCallsRow.count,
     };
+  }
+
+  // ─── Analysis ──────────────────────────────────────────────────────────────
+
+  getAnalysisConfigs(projectId: string): AnalysisConfig[] {
+    return this.drizzle.select().from(schema.analysisConfigs)
+      .where(eq(schema.analysisConfigs.project_id, projectId))
+      .orderBy(schema.analysisConfigs.lens_key)
+      .all();
+  }
+
+  getAnalysisConfig(id: string): AnalysisConfig | null {
+    return this.drizzle.select().from(schema.analysisConfigs)
+      .where(eq(schema.analysisConfigs.id, id))
+      .get() ?? null;
+  }
+
+  upsertAnalysisConfig(data: { project_id: string; lens_key: string; enabled?: number; frequency?: string }): AnalysisConfig {
+    const existing = this.drizzle.select().from(schema.analysisConfigs)
+      .where(and(eq(schema.analysisConfigs.project_id, data.project_id), eq(schema.analysisConfigs.lens_key, data.lens_key)))
+      .get();
+    if (existing) {
+      const updates: Record<string, unknown> = {};
+      if (data.enabled !== undefined) updates.enabled = data.enabled;
+      if (data.frequency !== undefined) updates.frequency = data.frequency;
+      this.drizzle.update(schema.analysisConfigs).set(updates).where(eq(schema.analysisConfigs.id, existing.id)).run();
+      return this.getAnalysisConfig(existing.id)!;
+    }
+    const id = randomUUID();
+    this.drizzle.insert(schema.analysisConfigs).values({
+      id,
+      project_id: data.project_id,
+      lens_key: data.lens_key,
+      enabled: data.enabled ?? 1,
+      frequency: data.frequency ?? "weekly",
+    }).run();
+    return this.getAnalysisConfig(id)!;
+  }
+
+  getDueAnalyses(): AnalysisConfig[] {
+    const now = new Date().toISOString();
+    return this.sqlite.prepare(`
+      SELECT * FROM analysis_configs
+      WHERE enabled = 1
+        AND (next_run_at IS NULL OR next_run_at <= ?)
+    `).all(now) as AnalysisConfig[];
+  }
+
+  updateAnalysisConfig(id: string, data: Partial<{ enabled: number; frequency: string; last_run_at: string; next_run_at: string }>): void {
+    this.drizzle.update(schema.analysisConfigs).set(data).where(eq(schema.analysisConfigs.id, id)).run();
+  }
+
+  createAnalysisRun(data: { project_id: string; config_id: string; lens_key: string; machine_id?: string }): AnalysisRun {
+    const id = randomUUID();
+    this.drizzle.insert(schema.analysisRuns).values({
+      id,
+      project_id: data.project_id,
+      config_id: data.config_id,
+      lens_key: data.lens_key,
+      machine_id: data.machine_id ?? null,
+    }).run();
+    return this.getAnalysisRun(id)!;
+  }
+
+  getAnalysisRun(id: string): AnalysisRun | null {
+    return this.drizzle.select().from(schema.analysisRuns)
+      .where(eq(schema.analysisRuns.id, id))
+      .get() ?? null;
+  }
+
+  getAnalysisRuns(projectId: string, limit = 50): AnalysisRun[] {
+    return this.sqlite.prepare(`
+      SELECT * FROM analysis_runs
+      WHERE project_id = ?
+      ORDER BY started_at DESC
+      LIMIT ?
+    `).all(projectId, limit) as AnalysisRun[];
+  }
+
+  getLatestAnalysisRun(configId: string): AnalysisRun | null {
+    return this.sqlite.prepare(`
+      SELECT * FROM analysis_runs
+      WHERE config_id = ?
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get(configId) as AnalysisRun | null ?? null;
+  }
+
+  updateAnalysisRun(id: string, data: Partial<{
+    machine_id: string; status: string; findings: string; summary: string;
+    output: string; started_at: string; completed_at: string;
+    duration_ms: number; prompt_tokens: number; completion_tokens: number;
+  }>): void {
+    this.drizzle.update(schema.analysisRuns).set(data).where(eq(schema.analysisRuns.id, id)).run();
   }
 
   // ─── Planner Conversations ────────────────────────────────────────────────

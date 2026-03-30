@@ -20,6 +20,7 @@ const STATUS_COLORS: Record<Issue['status'], string> = {
   awaiting_review: 'bg-yellow-500/20 text-yellow-400',
   completed: 'bg-emerald-500/20 text-emerald-400',
   failed: 'bg-destructive/20 text-destructive',
+  cancelled: 'bg-orange-500/20 text-orange-400',
   epic: 'bg-indigo-500/20 text-indigo-400',
 }
 
@@ -294,7 +295,7 @@ function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue, on
   // Derive epic status from children
   const childStatuses = children.map(c => c.status)
   const derivedStatus = childStatuses.every(s => s === 'completed') ? 'completed'
-    : childStatuses.some(s => s === 'failed') ? 'failed'
+    : childStatuses.some(s => s === 'failed' || s === 'cancelled') ? 'failed'
     : childStatuses.some(s => s === 'running' || s === 'approved') ? 'running'
     : 'pending'
 

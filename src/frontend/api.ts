@@ -40,7 +40,7 @@ export interface Issue {
   project_id: string;
   title: string;
   description: string;
-  status: "pending" | "approved" | "running" | "awaiting_review" | "completed" | "failed" | "epic";
+  status: "pending" | "approved" | "running" | "awaiting_review" | "completed" | "failed" | "cancelled" | "epic";
   git_branch: string | null;
   git_worktree: string | null;
   git_pr_url: string | null;
@@ -71,6 +71,61 @@ export interface Run {
   prompt_tokens: number | null;
   completion_tokens: number | null;
   created_at: string;
+}
+
+// ─── Analysis ───────────────────────────────────────────────────────────────
+
+export interface AnalysisConfig {
+  id: string;
+  project_id: string;
+  lens_key: string;
+  enabled: number;
+  frequency: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+}
+
+export interface AnalysisFinding {
+  severity: "critical" | "high" | "medium" | "low";
+  file: string;
+  line: number;
+  title: string;
+  description: string;
+  recommendation: string;
+}
+
+export interface AnalysisRun {
+  id: string;
+  project_id: string;
+  config_id: string;
+  lens_key: string;
+  machine_id: string | null;
+  status: string;
+  findings: string | null;  // JSON array
+  summary: string | null;   // JSON { critical, high, medium, low, total }
+  output: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+}
+
+export function getAnalysisConfigs(projectId: string): Promise<AnalysisConfig[]> {
+  return json(`/api/projects/${projectId}/analysis/configs`);
+}
+
+export function updateAnalysisConfig(projectId: string, lensKey: string, data: { enabled?: boolean; frequency?: string }): Promise<AnalysisConfig> {
+  return json(`/api/projects/${projectId}/analysis/configs/${lensKey}`, { method: "PUT", body: JSON.stringify(data) });
+}
+
+export function getAnalysisRuns(projectId: string, limit = 50): Promise<AnalysisRun[]> {
+  return json(`/api/projects/${projectId}/analysis/runs?limit=${limit}`);
+}
+
+export function triggerAnalysis(projectId: string, lensKey: string): Promise<{ config: AnalysisConfig }> {
+  return json(`/api/projects/${projectId}/analysis/trigger/${lensKey}`, { method: "POST" });
 }
 
 export interface PollResponse {

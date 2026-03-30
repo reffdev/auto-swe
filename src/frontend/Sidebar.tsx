@@ -383,6 +383,13 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                   <Activity className="size-3" />
                   LLM Logs
                 </button>
+                <button
+                  onClick={() => navigate(`/project/${p.id}/analysis`)}
+                  className="w-full text-left px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors flex items-center gap-2"
+                >
+                  <Activity className="size-3" />
+                  Analysis
+                </button>
               </div>
             )}
           </div>

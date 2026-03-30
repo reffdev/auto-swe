@@ -2,11 +2,26 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
-import { Dashboard } from './Dashboard'
-import { ROUTE_PATHS } from './routes'
+import { DashboardLayout } from './Dashboard'
+import type { ViewName } from './routes'
+
+/** Each route maps to a view name — the layout renders the right component */
+const routes: Array<{ path: string; view: ViewName }> = [
+  { path: '/', view: 'landing' },
+  { path: '/project/:projectId', view: 'issue-list' },
+  { path: '/project/:projectId/issue/:issueId', view: 'issue-detail' },
+  { path: '/project/:projectId/planner/:conversationId?', view: 'planner' },
+  { path: '/project/:projectId/settings', view: 'settings' },
+  { path: '/project/:projectId/llm-logs', view: 'llm-logs' },
+  { path: '/project/:projectId/analysis', view: 'analysis' },
+  { path: '/machine/:machineId', view: 'machine-detail' },
+]
 
 const router = createHashRouter(
-  ROUTE_PATHS.map(path => ({ path, element: <Dashboard /> }))
+  routes.map(({ path, view }) => ({
+    path,
+    element: <DashboardLayout view={view} />,
+  }))
 )
 
 createRoot(document.getElementById('root')!).render(

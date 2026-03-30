@@ -591,7 +591,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
 
   // Check if a checkpoint exists for failed issues
   useEffect(() => {
-    if (issue.status === 'failed') {
+    if (issue.status === 'failed' || issue.status === 'cancelled') {
       api.checkHasCheckpoint(issue.id).then(r => { setCheckpointAvailable(r.hasCheckpoint); }).catch(() => { setCheckpointAvailable(false); })
     } else {
       setCheckpointAvailable(false)
@@ -699,7 +699,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
             {actionLoading === 'approve' ? 'Approving...' : 'Approve & Run'}
           </Button>
         )}
-        {(issue.status === 'pending' || issue.status === 'failed') && (
+        {(issue.status === 'pending' || issue.status === 'failed' || issue.status === 'cancelled') && (
           <Button
             size="sm"
             variant="outline"
@@ -742,23 +742,22 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
             {actionLoading === 'cancel' ? 'Cancelling...' : 'Cancel'}
           </Button>
         )}
-        {issue.status === 'failed' && (
+        {(issue.status === 'failed' || issue.status === 'cancelled') && (
           <>
-            <Button size="sm" onClick={() => doAction('retry', () => api.retryIssue(issue.id))} disabled={!!actionLoading}>
-              <RotateCcw className="size-3.5 mr-1" />
-              {actionLoading === 'retry' ? 'Retrying...' : 'Retry All'}
-            </Button>
             {checkpointAvailable && (
               <Button
                 size="sm"
-                variant="outline"
                 onClick={() => doAction('retry-stage', () => api.retryStage(issue.id))}
                 disabled={!!actionLoading}
               >
                 <RotateCcw className="size-3.5 mr-1" />
-                {actionLoading === 'retry-stage' ? 'Resuming...' : 'Resume from Checkpoint'}
+                {actionLoading === 'retry-stage' ? 'Resuming...' : 'Resume'}
               </Button>
             )}
+            <Button size="sm" variant={checkpointAvailable ? "outline" : "default"} onClick={() => doAction('retry', () => api.retryIssue(issue.id))} disabled={!!actionLoading}>
+              <RotateCcw className="size-3.5 mr-1" />
+              {actionLoading === 'retry' ? 'Retrying...' : 'Retry All'}
+            </Button>
             {issue.scout_brief && (
               <Button
                 size="sm"

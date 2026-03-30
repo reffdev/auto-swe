@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
@@ -10,9 +10,11 @@ import { DashboardLanding } from './DashboardLanding'
 import { Planner } from './Planner'
 import { ProjectSettings } from './ProjectSettings'
 import { LlmLogs } from './LlmLogs'
+import { AnalysisView } from './AnalysisView'
 import type { Issue, Run } from './api'
+import type { ViewName } from './routes'
 
-export function Dashboard() {
+export function DashboardLayout({ view }: { view: ViewName }) {
   const { projectId, issueId, machineId, conversationId } = useParams<{
     projectId?: string
     issueId?: string
@@ -20,7 +22,6 @@ export function Dashboard() {
     conversationId?: string
   }>()
   const navigate = useNavigate()
-  const location = useLocation()
 
   const selectedProjectId = projectId ?? null
   const selectedIssueId = issueId ?? null
@@ -46,29 +47,16 @@ export function Dashboard() {
   // Filter issues by status
   const filteredIssues = statusFilter === 'all'
     ? issues
-    : issues.filter((i) => i.status === statusFilter)
+    : issues.filter((i) => i.status === statusFilter || (statusFilter === 'failed' && i.status === 'cancelled'))
 
-  // Keep the last known issue so the detail view doesn't flicker.
-  // We store the previous value in state and update it during render
-  // (the "store previous rendering value" pattern from React docs).
+  // Keep the last known issue so the detail view doesn't flicker
   const [lastIssue, setLastIssue] = useState<Issue | null>(null)
   const freshIssue = issues.find((i) => i.id === selectedIssueId) ?? null
   if (freshIssue && freshIssue !== lastIssue) {
     setLastIssue(freshIssue)
   }
   const selectedIssue = selectedIssueId ? (freshIssue ?? lastIssue) : null
-
   const selectedMachine = machines.find((m) => m.id === selectedMachineId) ?? null
-
-  // Determine what to show in the main panel
-  const showPlanner = selectedProjectId && location.pathname.includes('/planner')
-  const showSettings = selectedProjectId && location.pathname.includes('/settings')
-  const showLlmLogs = selectedProjectId && location.pathname.includes('/llm-logs')
-  const showMachineDetail = selectedMachine && !selectedIssue && !showPlanner && !showSettings && !showLlmLogs
-  const showIssueDetail = selectedIssue && !showPlanner && !showSettings && !showLlmLogs
-  const showIssueList = data && selectedProjectId && !selectedIssue && !showMachineDetail && !showPlanner && !showSettings && !showLlmLogs
-  const showLanding = data && !selectedProjectId && !showMachineDetail && !showIssueDetail && !showPlanner && !showSettings && !showLlmLogs
-
   const selectedProject = projects.find(p => p.id === selectedProjectId) ?? null
 
   return (
@@ -96,63 +84,36 @@ export function Dashboard() {
             API error: {error}
           </div>
         )}
+
         {loading && !data && (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            Loading...
-          </div>
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">Loading...</div>
         )}
-        {showLanding && (
-          <DashboardLanding
-            counts={{ projects: projects.length, machines: machines.length, issues: issues.length }}
-            onRefresh={refresh}
-          />
-        )}
-        {showMachineDetail && selectedMachine && (
-          <MachineDetail
-            machine={selectedMachine}
-            onBack={() => navigate('/')}
-            onDataChange={refresh}
-          />
-        )}
-        {showIssueList && (
-          <IssueList
-            issues={filteredIssues}
-            runByIssue={runByIssue}
-            statusFilter={statusFilter}
-            onStatusFilter={setStatusFilter}
-            onSelectIssue={(id) => navigate(`/project/${selectedProjectId}/issue/${id}`)}
-            projectId={selectedProjectId}
-            onDataChange={refresh}
-          />
-        )}
-        {showPlanner && selectedProjectId && (
-          <Planner
-            projectId={selectedProjectId}
-            conversationId={conversationId}
-          />
-        )}
-        {showSettings && selectedProject && (
-          <ProjectSettings
-            project={selectedProject}
-            onBack={() => navigate(`/project/${selectedProjectId}`)}
-            onDataChange={refresh}
-          />
-        )}
-        {showLlmLogs && selectedProject && (
-          <LlmLogs
-            projectId={selectedProjectId}
-          />
-        )}
-        {showIssueDetail && selectedIssue && (
-          <IssueDetail
-            issue={selectedIssue}
-            runs={runs.filter(r => r.issue_id === selectedIssue.id)}
-            onBack={() => navigate(`/project/${selectedProjectId}`)}
-            onDataChange={refresh}
-          />
-        )}
+
+        {!loading || data ? (() => {
+          switch (view) {
+            case 'landing':
+              return <DashboardLanding counts={{ projects: projects.length, machines: machines.length, issues: issues.length }} onRefresh={refresh} />
+            case 'issue-list':
+              return <IssueList issues={filteredIssues} runByIssue={runByIssue} statusFilter={statusFilter} onStatusFilter={setStatusFilter} onSelectIssue={(id) => navigate(`/project/${selectedProjectId}/issue/${id}`)} projectId={selectedProjectId!} onDataChange={refresh} />
+            case 'issue-detail':
+              return selectedIssue ? <IssueDetail issue={selectedIssue} runs={runs.filter(r => r.issue_id === selectedIssue.id)} onBack={() => navigate(`/project/${selectedProjectId}`)} onDataChange={refresh} /> : null
+            case 'planner':
+              return selectedProjectId ? <Planner projectId={selectedProjectId} conversationId={conversationId} /> : null
+            case 'settings':
+              return selectedProject ? <ProjectSettings project={selectedProject} onBack={() => navigate(`/project/${selectedProjectId}`)} onDataChange={refresh} /> : null
+            case 'llm-logs':
+              return selectedProjectId ? <LlmLogs projectId={selectedProjectId} /> : null
+            case 'analysis':
+              return selectedProjectId ? <AnalysisView projectId={selectedProjectId} /> : null
+            case 'machine-detail':
+              return selectedMachine ? <MachineDetail machine={selectedMachine} onBack={() => navigate('/')} onDataChange={refresh} /> : null
+          }
+        })() : null}
       </main>
     </div>
     </TooltipProvider>
   )
 }
+
+/** @deprecated Use DashboardLayout — kept for test compatibility */
+export const Dashboard = DashboardLayout as unknown as React.FC

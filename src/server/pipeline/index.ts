@@ -396,11 +396,12 @@ export async function executePipeline(
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Pipeline: "${issue.title}" failed:`, errorMsg);
+    const wasCancelled = abortController.signal.aborted;
+    console.error(`Pipeline: "${issue.title}" ${wasCancelled ? "cancelled" : "failed"}:`, errorMsg);
     // Don't overwrite status if gitOps already succeeded (awaiting_review/completed)
     const currentIssue = ctx.db.getIssue(issue.id);
     if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
-      ctx.db.updateIssue(issue.id, { status: "failed" });
+      ctx.db.updateIssue(issue.id, { status: wasCancelled ? "cancelled" : "failed" });
     }
   } finally {
     activePipelines.delete(issue.id);
@@ -506,10 +507,11 @@ export async function executeStageRetry(
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Pipeline: stage retry "${issue.title}" failed:`, errorMsg);
+    const wasCancelled = abortController.signal.aborted;
+    console.error(`Pipeline: stage retry "${issue.title}" ${wasCancelled ? "cancelled" : "failed"}:`, errorMsg);
     const currentIssue = ctx.db.getIssue(issue.id);
     if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
-      ctx.db.updateIssue(issue.id, { status: "failed" });
+      ctx.db.updateIssue(issue.id, { status: wasCancelled ? "cancelled" : "failed" });
     }
   } finally {
     activePipelines.delete(issue.id);

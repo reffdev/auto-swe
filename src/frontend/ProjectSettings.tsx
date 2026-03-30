@@ -1,9 +1,29 @@
-import { useState } from 'react'
-import { ArrowLeft, Save } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { ArrowLeft, Save, Shield, Bug, AlertTriangle, BarChart3, Trash2, Layers, TestTube, Zap, Accessibility, FileText, Play } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
 import * as api from './api'
-import type { Project } from './api'
+import type { Project, AnalysisConfig } from './api'
+
+const ANALYSIS_LENS_INFO: Record<string, { label: string; description: string; icon: typeof Shield }> = {
+  security: { label: "Security", description: "Injection, secrets, auth gaps, dependencies", icon: Shield },
+  bugs: { label: "Bug & Correctness", description: "Null access, race conditions, resource leaks", icon: Bug },
+  error_handling: { label: "Error Handling", description: "Silent catches, missing boundaries, resilience", icon: AlertTriangle },
+  complexity: { label: "Complexity", description: "Long functions, deep nesting, god objects", icon: BarChart3 },
+  dead_code: { label: "Dead Code & Debt", description: "Unused exports, TODOs, duplication", icon: Trash2 },
+  architecture: { label: "Architecture", description: "Layer violations, circular deps, inconsistencies", icon: Layers },
+  testing: { label: "Testing Quality", description: "Coverage gaps, mock fidelity, anti-patterns", icon: TestTube },
+  performance: { label: "Performance", description: "N+1 queries, unbounded fetches, missing cache", icon: Zap },
+  accessibility: { label: "Accessibility", description: "ARIA, keyboard nav, semantic HTML, contrast", icon: Accessibility },
+  documentation: { label: "Documentation", description: "Missing docs, stale comments, any usage", icon: FileText },
+}
+
+const FREQUENCY_OPTIONS = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+]
 
 interface ProjectSettingsProps {
   project: Project
@@ -143,7 +163,129 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
           {saved && <span className="text-sm text-emerald-400">Saved</span>}
           {error && <span className="text-sm text-destructive">{error}</span>}
         </div>
+
+        {/* Automated Analysis */}
+        <AnalysisSettings projectId={project.id} />
       </div>
     </div>
+  )
+}
+
+// ─── Analysis Settings ───────────────────────────────────────────────────────
+
+function AnalysisSettings({ projectId }: { projectId: string }) {
+  const [configs, setConfigs] = useState<AnalysisConfig[]>([])
+  const [loading, setLoading] = useState(true)
+  const [triggering, setTriggering] = useState<string | null>(null)
+
+  const fetchConfigs = () => {
+    api.getAnalysisConfigs(projectId).then(setConfigs).catch(() => {}).finally(() => setLoading(false))
+  }
+
+  useEffect(() => { fetchConfigs() }, [projectId])
+
+  const toggleLens = async (lensKey: string, currentlyEnabled: boolean) => {
+    await api.updateAnalysisConfig(projectId, lensKey, { enabled: !currentlyEnabled })
+    fetchConfigs()
+  }
+
+  const setFrequency = async (lensKey: string, frequency: string) => {
+    await api.updateAnalysisConfig(projectId, lensKey, { frequency })
+    fetchConfigs()
+  }
+
+  const triggerNow = async (lensKey: string) => {
+    setTriggering(lensKey)
+    try {
+      await api.triggerAnalysis(projectId, lensKey)
+    } catch { /* ignore */ }
+    finally { setTriggering(null) }
+  }
+
+  const getConfig = (lensKey: string) => configs.find(c => c.lens_key === lensKey)
+
+  return (
+    <section>
+      <h3 className="text-sm font-semibold text-muted-foreground mb-1 uppercase tracking-wide">Automated Analysis</h3>
+      <p className="text-xs text-muted-foreground mb-4">
+        Runs when machines are idle. Each category analyzes the codebase with a specific focus and produces actionable findings.
+      </p>
+
+      {loading ? (
+        <p className="text-xs text-muted-foreground">Loading...</p>
+      ) : (
+        <div className="space-y-2">
+          {Object.entries(ANALYSIS_LENS_INFO).map(([key, info]) => {
+            const config = getConfig(key)
+            const enabled = config?.enabled === 1
+            const frequency = config?.frequency ?? 'weekly'
+            const lastRun = config?.last_run_at
+            const Icon = info.icon
+
+            return (
+              <div
+                key={key}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-colors",
+                  enabled ? "border-border bg-card" : "border-transparent bg-muted/30 opacity-60"
+                )}
+              >
+                <button
+                  onClick={() => toggleLens(key, enabled)}
+                  className={cn(
+                    'relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                    enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                  )}
+                  role="switch"
+                  aria-checked={enabled}
+                >
+                  <span className={cn(
+                    'pointer-events-none block h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
+                    enabled ? 'translate-x-3' : 'translate-x-0'
+                  )} />
+                </button>
+
+                <Icon className="size-4 text-muted-foreground shrink-0" />
+
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">{info.label}</div>
+                  <div className="text-[11px] text-muted-foreground truncate">{info.description}</div>
+                </div>
+
+                {enabled && (
+                  <select
+                    value={frequency}
+                    onChange={(e) => setFrequency(key, e.target.value)}
+                    className="text-xs bg-muted border-none rounded px-2 py-1 text-muted-foreground cursor-pointer"
+                  >
+                    {FREQUENCY_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                )}
+
+                {enabled && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => triggerNow(key)}
+                    disabled={triggering === key}
+                    title="Run now"
+                  >
+                    <Play className={cn("size-3", triggering === key && "animate-pulse")} />
+                  </Button>
+                )}
+
+                {lastRun && (
+                  <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                    {new Date(lastRun).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </section>
   )
 }

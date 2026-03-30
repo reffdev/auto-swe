@@ -435,7 +435,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
-    if (issue.status !== "failed") {
+    if (issue.status !== "failed" && issue.status !== "cancelled") {
       res.status(409).json({ error: `cannot retry issue in status '${issue.status}'` });
       return;
     }
@@ -479,9 +479,9 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const cancelled = cancelPipeline(issue.id);
     if (!cancelled) {
       // No active pipeline — just reset the status directly
-      db.updateIssue(issue.id, { status: "failed" });
+      db.updateIssue(issue.id, { status: "cancelled" });
     }
-    // If cancelled, the pipeline's catch block will set status to "failed"
+    // If cancelled, the pipeline's catch block will set status to "cancelled"
     res.json({ cancelled: true, issue: db.getIssue(issue.id) });
   });
 
@@ -505,7 +505,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "issue not found" });
       return;
     }
-    if (issue.status !== "failed") {
+    if (issue.status !== "failed" && issue.status !== "cancelled") {
       res.status(409).json({ error: `cannot retry stage for issue in status '${issue.status}'` });
       return;
     }
@@ -584,7 +584,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
     try {
       // For running/failed issues with a worktree, diff the worktree (includes uncommitted changes)
-      if (issue.git_worktree && (issue.status === "running" || issue.status === "failed")) {
+      if (issue.git_worktree && (issue.status === "running" || issue.status === "failed" || issue.status === "cancelled")) {
         const { getWorktreeDiff } = await import("./git");
         const files = await getWorktreeDiff(issue.git_worktree, baseBranch);
         res.json({ files, branch: issue.git_branch ?? "(worktree)", base: baseBranch, live: true });
@@ -694,7 +694,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const issues = db.getIssues();
     const queued = issues.filter(i => i.status === "pending" || i.status === "approved").length;
     const prOpen = issues.filter(i => i.status === "awaiting_review").length;
-    const failed = issues.filter(i => i.status === "failed").length;
+    const failed = issues.filter(i => i.status === "failed" || i.status === "cancelled").length;
 
     const speed = getGenerationSpeed();
 
@@ -727,6 +727,58 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     });
 
     req.on("close", unsub);
+  });
+
+  // ─── Analysis ──────────────────────────────────────────────────────────
+
+  router.get("/projects/:id/analysis/configs", (req, res) => {
+    const project = db.getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: "project not found" }); return; }
+    res.json(db.getAnalysisConfigs(project.id));
+  });
+
+  router.put("/projects/:id/analysis/configs/:lensKey", (req, res) => {
+    const project = db.getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: "project not found" }); return; }
+    const { enabled, frequency } = req.body;
+    const config = db.upsertAnalysisConfig({
+      project_id: project.id,
+      lens_key: req.params.lensKey,
+      enabled: enabled !== undefined ? (enabled ? 1 : 0) : undefined,
+      frequency,
+    });
+    res.json(config);
+  });
+
+  router.get("/projects/:id/analysis/runs", (req, res) => {
+    const project = db.getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: "project not found" }); return; }
+    const limit = parseInt(req.query.limit as string) || 50;
+    res.json(db.getAnalysisRuns(project.id, limit));
+  });
+
+  router.get("/projects/:id/analysis/runs/:runId", (req, res) => {
+    const run = db.getAnalysisRun(req.params.runId);
+    if (!run) { res.status(404).json({ error: "analysis run not found" }); return; }
+    res.json(run);
+  });
+
+  router.post("/projects/:id/analysis/trigger/:lensKey", async (req, res) => {
+    const project = db.getProject(req.params.id);
+    if (!project) { res.status(404).json({ error: "project not found" }); return; }
+    const machine = db.getAvailableMachine();
+    if (!machine) { res.status(409).json({ error: "no machine available" }); return; }
+    const modelId = project.model_id ?? machine.model_id;
+    if (!modelId) { res.status(409).json({ error: "no model specified" }); return; }
+
+    const config = db.upsertAnalysisConfig({ project_id: project.id, lens_key: req.params.lensKey });
+
+    // Dynamic import to avoid circular dependency
+    const { executeAnalysis } = await import("./analysis");
+    executeAnalysis(db, machine, project, config).catch((err: Error) => {
+      console.error("Analysis trigger error:", err);
+    });
+    res.status(202).json({ config });
   });
 
   // ─── Server info ────────────────────────────────────────────────────────
