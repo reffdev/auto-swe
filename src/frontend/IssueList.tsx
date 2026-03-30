@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers, Settings } from 'lucide-react'
+import { Plus, MessageSquarePlus, Shield, Monitor, Zap, ClipboardCheck, FlaskConical, ShieldAlert, ChevronRight, Layers, Settings, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -28,6 +28,88 @@ function StatusBadge({ status }: { status: Issue['status'] }) {
     <span className={cn('text-xs font-medium px-2 py-0.5 rounded-full', STATUS_COLORS[status])}>
       {status.replace('_', ' ')}
     </span>
+  )
+}
+
+// ─── Issue summary modal ─────────────────────────────────────────────────────
+
+export function IssueSummaryModal({ issue, onClose }: { issue: Issue; onClose: () => void }) {
+  const formatDate = (dateStr: string | null) => {
+    if (!dateStr) return 'N/A'
+    return new Date(dateStr).toLocaleString()
+  }
+
+  return (
+    <Dialog open={true} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <div className="flex items-center justify-between mb-4">
+          <DialogTitle>Issue Summary</DialogTitle>
+          <Button variant="ghost" size="icon-sm" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
+        </div>
+        
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <span className="text-xs text-muted-foreground block mb-1">Issue ID</span>
+              <span className="font-mono text-sm">{issue.id}</span>
+            </div>
+            <div>
+              <span className="text-xs text-muted-foreground block mb-1">Status</span>
+              <StatusBadge status={issue.status} />
+            </div>
+          </div>
+          
+          <div>
+            <span className="text-xs text-muted-foreground block mb-1">Title</span>
+            <p className="text-sm font-medium">{issue.title}</p>
+          </div>
+          
+          {issue.description && (
+            <div>
+              <span className="text-xs text-muted-foreground block mb-1">Description</span>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{issue.description}</p>
+            </div>
+          )}
+          
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <span className="text-xs text-muted-foreground block mb-1">Created</span>
+              <span className="text-sm">{formatDate(issue.created_at)}</span>
+            </div>
+            <div>
+              <span className="text-xs text-muted-foreground block mb-1">Completed</span>
+              <span className="text-sm">{formatDate(issue.completed_at)}</span>
+            </div>
+          </div>
+          
+          {(issue.git_branch || issue.git_pr_url) && (
+            <div className="border-t border-border pt-4">
+              {issue.git_branch && (
+                <div className="mb-2">
+                  <span className="text-xs text-muted-foreground block mb-1">Branch</span>
+                  <span className="text-sm font-mono">{issue.git_branch}</span>
+                </div>
+              )}
+              {issue.git_pr_url && (
+                <div>
+                  <span className="text-xs text-muted-foreground block mb-1">Pull Request</span>
+                  <a 
+                    href={issue.git_pr_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-400 hover:underline"
+                  >
+                    {issue.git_pr_url}
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -156,10 +238,9 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remaining}s`
 }
 
-function IssueRow({ issue, run, indent, onSelect }: { issue: Issue; run?: Run; indent?: boolean; onSelect: (id: string) => void }) {
+function IssueRow({ issue, run, indent, onSelect, onSummary }: { issue: Issue; run?: Run; indent?: boolean; onSelect: (id: string) => void; onSummary: (issue: Issue) => void }) {
   return (
-    <button
-      onClick={() => onSelect(issue.id)}
+    <div
       className={cn(
         "w-full text-left py-3 border-b border-border hover:bg-accent/50 transition-colors",
         indent ? "pl-12 pr-6" : "px-6 py-4"
@@ -171,7 +252,12 @@ function IssueRow({ issue, run, indent, onSelect }: { issue: Issue; run?: Run; i
             {indent && issue.sequence != null && (
               <span className="text-xs text-muted-foreground font-mono w-4 shrink-0">{issue.sequence}.</span>
             )}
-            <span className={cn("font-medium truncate", indent ? "text-xs" : "text-sm")}>{issue.title}</span>
+            <button
+              onClick={() => onSummary(issue)}
+              className={cn("font-medium truncate text-left hover:text-primary transition-colors", indent ? "text-xs" : "text-sm")}
+            >
+              {issue.title}
+            </button>
             <StatusBadge status={issue.status} />
             {run?.stage && (issue.status === 'running' || issue.status === 'approved') && (
               <span className="text-xs text-muted-foreground capitalize">{run.stage.replace('_', '-')}</span>
@@ -190,18 +276,18 @@ function IssueRow({ issue, run, indent, onSelect }: { issue: Issue; run?: Run; i
           )}
         </div>
       </div>
-    </button>
+    </div>
   )
 }
 
-function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue }: {
+function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue, onSummary }: {
   issue: Issue; children: Issue[]; isEpic: boolean;
-  runByIssue: Map<string, Run>; onSelectIssue: (id: string) => void;
+  runByIssue: Map<string, Run>; onSelectIssue: (id: string) => void; onSummary: (issue: Issue) => void;
 }) {
   const [expanded, setExpanded] = useState(true)
 
   if (!isEpic) {
-    return <IssueRow issue={issue} run={runByIssue.get(issue.id)} onSelect={onSelectIssue} />
+    return <IssueRow issue={issue} run={runByIssue.get(issue.id)} onSelect={onSelectIssue} onSummary={onSummary} />
   }
 
   // Derive epic status from children
@@ -241,6 +327,7 @@ function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue }: 
           run={runByIssue.get(child.id)}
           indent
           onSelect={onSelectIssue}
+          onSummary={onSummary}
         />
       ))}
     </div>
@@ -249,7 +336,16 @@ function EpicOrIssueRow({ issue, children, isEpic, runByIssue, onSelectIssue }: 
 
 export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, onSelectIssue, projectId, onDataChange }: IssueListProps) {
   const [showNewIssue, setShowNewIssue] = useState(false)
+  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
   const navigate = useNavigate()
+
+  const handleSummary = (issue: Issue) => {
+    setSelectedIssue(issue)
+  }
+
+  const handleCloseSummary = () => {
+    setSelectedIssue(null)
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -314,6 +410,7 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
                 isEpic={isEpic}
                 runByIssue={runByIssue}
                 onSelectIssue={onSelectIssue}
+                onSummary={handleSummary}
               />
             )
           })
@@ -326,6 +423,13 @@ export function IssueList({ issues, runByIssue, statusFilter, onStatusFilter, on
         projectId={projectId}
         onCreated={onDataChange}
       />
+
+      {selectedIssue && (
+        <IssueSummaryModal
+          issue={selectedIssue}
+          onClose={handleCloseSummary}
+        />
+      )}
     </div>
   )
 }
