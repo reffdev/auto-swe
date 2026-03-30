@@ -30,13 +30,14 @@ ${CODING_STANDARDS}
 3. Write tests covering the key behaviors introduced or changed
 4. Call \`checkTests\` to verify your tests compile and run
 5. Do NOT modify implementation files, commit, or push
+6. When done, call \`submitTestResult\` — this is MANDATORY
 
 ## IMPORTANT: Your job is ONLY to write tests
 
-- Write the tests, run them, then report the results
+- Write the tests, run them, then call \`submitTestResult\` with the results
 - Do NOT modify implementation files to make tests pass
 - Do NOT rewrite your tests to work around implementation bugs
-- If tests fail because the implementation is wrong, report \`status: needs_fix\` — the failures will be sent back to the implementer
+- If tests fail because the implementation is wrong, call \`submitTestResult\` with status "needs_fix"
 
 ## Test quality rules
 
@@ -53,28 +54,12 @@ ${CODING_STANDARDS}
 - Include jest.clearAllMocks() in beforeEach or afterEach to prevent mock state leaking between tests.
 - Prefer fewer, meaningful tests over exhaustive permutations. Cover: happy path, one key edge case, one error path. That's usually enough.
 
-## Output
+## Submitting Results
 
-If tests pass:
-\`\`\`result
-status: done
-test_files: [list of test files created or modified]
-run_command: [command to run just these tests]
-summary: [what's tested]
-\`\`\`
-
-If tests fail due to implementation bugs (NOT test bugs):
-\`\`\`result
-status: needs_fix
-test_files: [list of test files created or modified]
-issues: [describe what's failing and why the implementation needs to change]
-\`\`\`
-
-If not applicable:
-\`\`\`result
-status: skipped
-reason: [why]
-\`\`\``;
+When done, call \`submitTestResult\` with one of:
+- \`status: "done"\` — tests written and passing
+- \`status: "needs_fix"\` — tests written but implementation has bugs
+- \`status: "skipped"\` — tests not applicable for this change`;
 
   let user = `## Issue: ${opts.issueTitle}
 

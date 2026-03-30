@@ -107,3 +107,46 @@ export function makeReviewVerdictTool() {
 
   return { submitVerdict };
 }
+
+// ─── Implement result tool ──────────────────────────────────────────────────
+
+export function makeImplementResultTool() {
+  const submitResult = tool({
+    description: `Submit your implementation result. Call this exactly once when you are DONE making all changes. This is MANDATORY — do not run verification commands instead.`,
+    parameters: z.object({
+      files_changed: z.array(z.string()).describe("List of files you modified or created"),
+      summary: z.string().describe("What was changed and why"),
+    }),
+    execute: async ({ files_changed, summary }) => {
+      return `\`\`\`result\nstatus: done\nfiles_changed: ${JSON.stringify(files_changed)}\nsummary: ${summary}\n\`\`\``;
+    },
+  });
+
+  return { submitResult };
+}
+
+// ─── Test-write result tool ─────────────────────────────────────────────────
+
+export function makeTestWriteResultTool() {
+  const submitTestResult = tool({
+    description: `Submit your test-writing result. Call this exactly once when you are done. Use status "done" if tests pass, "needs_fix" if the implementation has bugs, or "skipped" if tests are not applicable.`,
+    parameters: z.object({
+      status: z.enum(["done", "needs_fix", "skipped"]).describe("done = tests pass, needs_fix = implementation bugs found, skipped = not applicable"),
+      test_files: z.array(z.string()).optional().describe("List of test files created or modified"),
+      summary: z.string().optional().describe("What's tested (for done)"),
+      issues: z.string().optional().describe("What's failing and why (for needs_fix)"),
+      reason: z.string().optional().describe("Why tests were skipped (for skipped)"),
+    }),
+    execute: async ({ status, test_files, summary, issues, reason }) => {
+      if (status === "done") {
+        return `\`\`\`result\nstatus: done\ntest_files: ${JSON.stringify(test_files ?? [])}\nsummary: ${summary || "Tests written and passing"}\n\`\`\``;
+      }
+      if (status === "needs_fix") {
+        return `\`\`\`result\nstatus: needs_fix\ntest_files: ${JSON.stringify(test_files ?? [])}\nissues: ${issues || "Implementation needs changes"}\n\`\`\``;
+      }
+      return `\`\`\`result\nstatus: skipped\nreason: ${reason || "Not applicable"}\n\`\`\``;
+    },
+  });
+
+  return { submitTestResult };
+}

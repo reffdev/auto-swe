@@ -29,20 +29,9 @@ ${CODING_STANDARDS}
 ## Instructions
 
 1. Run \`gitStatus\` to see your existing changes
-2. Read the review feedback, then make targeted fixes with \`replaceInFile\`
-3. Call \`checkBuild\` to verify your changes compile
-4. Do NOT commit, push, or write tests
-5. When finished, immediately produce the output block below
-
-## Output — MANDATORY
-
-When you are done making fixes, you MUST end with this block immediately. Do not keep running verification commands:
-
-\`\`\`result
-status: done
-files_changed: [list of files you modified]
-summary: [what was fixed]
-\`\`\``
+2. Read the feedback below, then make targeted fixes with \`replaceInFile\`
+3. Do NOT commit, push, or write tests
+4. When done, call \`submitResult\` — this is MANDATORY`
     : `# Implementation
 
 ${workingEnv(opts.workingDir)}
@@ -54,19 +43,13 @@ ${CODING_STANDARDS}
 ## Instructions
 
 - Use \`replaceInFile\` for targeted edits, \`writeFile\` for new files
-- Call \`checkBuild\` to verify your changes compile
 - Do NOT commit, push, or write tests
-- When finished, immediately produce the output block below — do NOT keep running gitDiff, gitStatus, or other verification commands
+- Do NOT run gitDiff, gitStatus, checkBuild, or other verification commands — the pipeline handles verification automatically
+- When done making changes, call \`submitResult\` immediately — this is MANDATORY
 
-## Output — MANDATORY
+## IMPORTANT
 
-When you are done making changes, you MUST end with this block. Do not delay it, do not run additional verification commands. Produce it immediately after your last file edit:
-
-\`\`\`result
-status: done
-files_changed: [list of files you modified or created]
-summary: [what was changed and why]
-\`\`\``;
+Your ONLY job is to make the code changes. Do not verify, review, or summarize your work. The build gate, test gate, and review stages will verify everything automatically. Just make the changes and call \`submitResult\`.`;
 
   let user = `## Issue: ${opts.issueTitle}\n\n${opts.issueDescription || "(No additional details)"}\n\n`;
 
