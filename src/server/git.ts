@@ -168,7 +168,7 @@ export async function setupWorktree(
   mainWorkdir: string,
   worktreePath: string,
   branch: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; fresh: boolean } | { ok: false; error: string }> {
   try {
     // Verify the main workdir exists before any git operations
     try {
@@ -204,7 +204,7 @@ export async function setupWorktree(
             const defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
             await git(`rebase origin/${defaultBranch}`, worktreePath);
             console.log(`Git: reusing existing worktree for branch ${branch} (rebased onto origin/${defaultBranch})`);
-            return { ok: true };
+            return { ok: true, fresh: false };
           } catch {
             // Rebase conflict — abort and start fresh
             try { await git("rebase --abort", worktreePath); } catch { /* already aborted */ }
@@ -258,7 +258,7 @@ export async function setupWorktree(
     console.log(
       `Git: worktree created for ${branch} @ ${hash} (${entries.length} entries)`
     );
-    return { ok: true };
+    return { ok: true, fresh: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`Git: failed to create worktree for ${branch}:`, msg);

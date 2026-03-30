@@ -334,7 +334,7 @@ export async function executePipeline(
       }
     });
 
-    console.log(`Pipeline: starting for "${issue.title}"`);
+    console.log(`Pipeline: starting for "${issue.title}" (machine: ${machine.name || machine.id})`);
 
     // Create model once — shared across all pipeline nodes
     const modelId = project.model_id ?? machine.model_id;
@@ -438,6 +438,7 @@ export async function executeStageRetry(
   ctx.db.updateIssue(issue.id, { status: "running" });
 
   try {
+    let worktreeFresh = false;
     await withProjectLock(project.id, async () => {
       await ensureWorkdir(project);
       await resetToOrigin(project);
@@ -445,7 +446,18 @@ export async function executeStageRetry(
       if (!worktreeResult.ok) {
         throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
       }
+      worktreeFresh = worktreeResult.fresh;
     });
+
+    // If worktree was recreated fresh (rebase failed), checkpoint is invalid — fall back to full pipeline
+    if (worktreeFresh) {
+      console.log(`Pipeline: worktree recreated fresh — checkpoint invalid, falling back to full pipeline`);
+      activePipelines.delete(issue.id);
+      const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
+      if (activeCount === 0) ctx.db.updateMachine(machine.id, { status: "idle" });
+      // Re-run as a full pipeline instead of checkpoint resume
+      return executePipeline(ctx, machine, issue, project);
+    }
 
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
@@ -461,7 +473,7 @@ export async function executeStageRetry(
     // Check if we have a checkpoint to resume from
     const existingState = await graph.getState({ configurable: { thread_id: threadId } });
     if (existingState?.values) {
-      console.log(`Pipeline: resuming from checkpoint for "${issue.title}" (thread: ${threadId})`);
+      console.log(`Pipeline: resuming from checkpoint for "${issue.title}" (thread: ${threadId}, machine: ${machine.name || machine.id})`);
     } else {
       throw new Error("Checkpoint state is empty — use 'Retry All' to start a fresh pipeline");
     }
