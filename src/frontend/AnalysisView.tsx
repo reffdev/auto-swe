@@ -1,24 +1,29 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { ArrowLeft, Shield, Bug, AlertTriangle, BarChart3, Trash2, Layers, TestTube, Zap, Accessibility, FileText, ChevronRight, Clock } from 'lucide-react'
+import { ArrowLeft, Shield, Bug, AlertTriangle, BarChart3, Trash2, Layers, TestTube, Zap, Accessibility, FileText, ChevronRight, Clock, Play } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import * as api from './api'
-import type { AnalysisRun, AnalysisFinding } from './api'
+import type { AnalysisRun, AnalysisConfig, AnalysisFinding } from './api'
 
-const LENS_ICONS: Record<string, typeof Shield> = {
-  security: Shield, bugs: Bug, error_handling: AlertTriangle,
-  complexity: BarChart3, dead_code: Trash2, architecture: Layers,
-  testing: TestTube, performance: Zap, accessibility: Accessibility,
-  documentation: FileText,
+const LENS_INFO: Record<string, { label: string; description: string; icon: typeof Shield }> = {
+  security: { label: "Security", description: "Injection, secrets, auth gaps, dependencies", icon: Shield },
+  bugs: { label: "Bug & Correctness", description: "Null access, race conditions, resource leaks", icon: Bug },
+  error_handling: { label: "Error Handling", description: "Silent catches, missing boundaries, resilience", icon: AlertTriangle },
+  complexity: { label: "Complexity", description: "Long functions, deep nesting, god objects", icon: BarChart3 },
+  dead_code: { label: "Dead Code & Debt", description: "Unused exports, TODOs, duplication", icon: Trash2 },
+  architecture: { label: "Architecture", description: "Layer violations, circular deps, inconsistencies", icon: Layers },
+  testing: { label: "Testing Quality", description: "Coverage gaps, mock fidelity, anti-patterns", icon: TestTube },
+  performance: { label: "Performance", description: "N+1 queries, unbounded fetches, missing cache", icon: Zap },
+  accessibility: { label: "Accessibility", description: "ARIA, keyboard nav, semantic HTML, contrast", icon: Accessibility },
+  documentation: { label: "Documentation", description: "Missing docs, stale comments, any usage", icon: FileText },
 }
 
-const LENS_LABELS: Record<string, string> = {
-  security: "Security", bugs: "Bug & Correctness", error_handling: "Error Handling",
-  complexity: "Complexity", dead_code: "Dead Code & Debt", architecture: "Architecture",
-  testing: "Testing Quality", performance: "Performance", accessibility: "Accessibility",
-  documentation: "Documentation",
-}
+const FREQUENCY_OPTIONS = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+]
 
 const SEVERITY_COLORS: Record<string, string> = {
   critical: "text-red-500 bg-red-500/10",
@@ -33,24 +38,43 @@ interface AnalysisViewProps {
 
 export function AnalysisView({ projectId }: AnalysisViewProps) {
   const navigate = useNavigate()
+  const [configs, setConfigs] = useState<AnalysisConfig[]>([])
   const [runs, setRuns] = useState<AnalysisRun[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedRun, setSelectedRun] = useState<AnalysisRun | null>(null)
+  const [triggering, setTriggering] = useState<string | null>(null)
 
-  useEffect(() => {
-    api.getAnalysisRuns(projectId).then(setRuns).catch(() => {}).finally(() => setLoading(false))
-    const interval = setInterval(() => {
-      api.getAnalysisRuns(projectId).then(setRuns).catch(() => {})
-    }, 10_000)
-    return () => clearInterval(interval)
+  const fetchData = useCallback(() => {
+    Promise.all([
+      api.getAnalysisConfigs(projectId),
+      api.getAnalysisRuns(projectId),
+    ]).then(([c, r]) => { setConfigs(c); setRuns(r); }).catch(() => {}).finally(() => setLoading(false))
   }, [projectId])
 
-  // Group by lens_key, show latest per lens
-  const latestByLens = new Map<string, AnalysisRun>()
-  for (const run of runs) {
-    if (!latestByLens.has(run.lens_key) || (run.started_at && run.started_at > (latestByLens.get(run.lens_key)!.started_at ?? ''))) {
-      latestByLens.set(run.lens_key, run)
-    }
+  useEffect(() => {
+    fetchData()
+    const interval = setInterval(fetchData, 10_000)
+    return () => clearInterval(interval)
+  }, [fetchData])
+
+  const getConfig = (lensKey: string) => configs.find(c => c.lens_key === lensKey)
+  const getLatestRun = (lensKey: string) => runs.find(r => r.lens_key === lensKey)
+
+  const toggleLens = async (lensKey: string, currentlyEnabled: boolean) => {
+    await api.updateAnalysisConfig(projectId, lensKey, { enabled: !currentlyEnabled })
+    fetchData()
+  }
+
+  const setFrequency = async (lensKey: string, frequency: string) => {
+    await api.updateAnalysisConfig(projectId, lensKey, { frequency })
+    fetchData()
+  }
+
+  const triggerNow = async (lensKey: string) => {
+    setTriggering(lensKey)
+    try { await api.triggerAnalysis(projectId, lensKey) }
+    catch { /* ignore */ }
+    finally { setTriggering(null) }
   }
 
   if (selectedRun) {
@@ -63,81 +87,111 @@ export function AnalysisView({ projectId }: AnalysisViewProps) {
         <Button variant="ghost" size="icon-sm" onClick={() => navigate(`/project/${projectId}`)}>
           <ArrowLeft className="size-4" />
         </Button>
-        <h2 className="text-lg font-semibold">Analysis Results</h2>
+        <h2 className="text-lg font-semibold">Analysis</h2>
+        <span className="text-xs text-muted-foreground">Runs automatically when machines are idle</span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading...</p>
-        ) : latestByLens.size === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">
-            <p className="text-sm">No analysis results yet.</p>
-            <p className="text-xs mt-1">Enable analyses in Project Settings and they&apos;ll run automatically when machines are idle.</p>
-          </div>
         ) : (
-          <div className="space-y-3 max-w-3xl">
-            {[...latestByLens.entries()].map(([lensKey, run]) => {
-              const Icon = LENS_ICONS[lensKey] ?? Shield
-              const label = LENS_LABELS[lensKey] ?? lensKey
-              const summary = run.summary ? JSON.parse(run.summary) as { total: number; critical: number; high: number; medium: number; low: number } : null
-              const isRunning = run.status === 'running' || run.status === 'pending'
+          <div className="space-y-2 max-w-3xl">
+            {Object.entries(LENS_INFO).map(([key, info]) => {
+              const config = getConfig(key)
+              const enabled = config?.enabled === 1
+              const frequency = config?.frequency ?? 'weekly'
+              const lastRun = config?.last_run_at
+              const latestRun = getLatestRun(key)
+              const summary = latestRun?.summary ? JSON.parse(latestRun.summary) as { total: number; critical: number; high: number; medium: number; low: number } : null
+              const isRunning = latestRun?.status === 'running' || latestRun?.status === 'pending'
+              const Icon = info.icon
 
               return (
-                <button
-                  key={lensKey}
-                  onClick={() => setSelectedRun(run)}
-                  className="w-full text-left px-4 py-3 rounded-lg border border-border bg-card hover:bg-accent/30 transition-colors flex items-center gap-3"
-                >
-                  <Icon className="size-5 text-muted-foreground shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium">{label}</div>
-                    {isRunning && <span className="text-xs text-yellow-400 animate-pulse">Running...</span>}
-                    {summary && (
-                      <div className="flex gap-2 mt-1">
-                        {summary.critical > 0 && <span className="text-[11px] px-1.5 py-0.5 rounded-full text-red-500 bg-red-500/10 font-medium">{summary.critical} critical</span>}
-                        {summary.high > 0 && <span className="text-[11px] px-1.5 py-0.5 rounded-full text-orange-400 bg-orange-400/10 font-medium">{summary.high} high</span>}
-                        {summary.medium > 0 && <span className="text-[11px] px-1.5 py-0.5 rounded-full text-yellow-400 bg-yellow-400/10 font-medium">{summary.medium} med</span>}
-                        {summary.low > 0 && <span className="text-[11px] px-1.5 py-0.5 rounded-full text-blue-400 bg-blue-400/10 font-medium">{summary.low} low</span>}
-                        {summary.total === 0 && <span className="text-[11px] text-emerald-400">No issues found</span>}
-                      </div>
-                    )}
-                    {run.status === 'fail' && !summary && <span className="text-xs text-destructive">Analysis failed</span>}
-                  </div>
-                  {run.completed_at && (
-                    <span className="text-[10px] text-muted-foreground/60 shrink-0 flex items-center gap-1">
-                      <Clock className="size-3" />
-                      {new Date(run.completed_at).toLocaleDateString()}
-                    </span>
+                <div
+                  key={key}
+                  className={cn(
+                    "rounded-lg border transition-colors",
+                    enabled ? "border-border bg-card" : "border-transparent bg-muted/30 opacity-60"
                   )}
-                  <ChevronRight className="size-4 text-muted-foreground shrink-0" />
-                </button>
+                >
+                  {/* Config row */}
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    <button
+                      onClick={() => toggleLens(key, enabled)}
+                      className={cn(
+                        'relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                        enabled ? 'bg-primary' : 'bg-muted-foreground/30'
+                      )}
+                      role="switch"
+                      aria-checked={enabled}
+                    >
+                      <span className={cn(
+                        'pointer-events-none block h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
+                        enabled ? 'translate-x-3' : 'translate-x-0'
+                      )} />
+                    </button>
+
+                    <Icon className="size-4 text-muted-foreground shrink-0" />
+
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium">{info.label}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">{info.description}</div>
+                    </div>
+
+                    {enabled && (
+                      <select
+                        value={frequency}
+                        onChange={(e) => setFrequency(key, e.target.value)}
+                        className="text-xs bg-muted border-none rounded px-2 py-1 text-muted-foreground cursor-pointer"
+                      >
+                        {FREQUENCY_OPTIONS.map(opt => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    )}
+
+                    {enabled && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => triggerNow(key)}
+                        disabled={triggering === key || isRunning}
+                        title="Run now"
+                      >
+                        <Play className={cn("size-3", (triggering === key || isRunning) && "animate-pulse")} />
+                      </Button>
+                    )}
+
+                    {lastRun && (
+                      <span className="text-[10px] text-muted-foreground/60 shrink-0">
+                        {new Date(lastRun).toLocaleDateString()}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Results row — show if there's a completed run */}
+                  {enabled && latestRun && latestRun.status !== 'pending' && (
+                    <button
+                      onClick={() => setSelectedRun(latestRun)}
+                      className="w-full text-left px-4 py-2 border-t border-border/50 hover:bg-accent/30 transition-colors flex items-center gap-2"
+                    >
+                      {isRunning && <span className="text-xs text-yellow-400 animate-pulse">Running...</span>}
+                      {summary && (
+                        <div className="flex gap-1.5 flex-1">
+                          {summary.critical > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full text-red-500 bg-red-500/10 font-medium">{summary.critical} critical</span>}
+                          {summary.high > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full text-orange-400 bg-orange-400/10 font-medium">{summary.high} high</span>}
+                          {summary.medium > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full text-yellow-400 bg-yellow-400/10 font-medium">{summary.medium} med</span>}
+                          {summary.low > 0 && <span className="text-[10px] px-1.5 py-0.5 rounded-full text-blue-400 bg-blue-400/10 font-medium">{summary.low} low</span>}
+                          {summary.total === 0 && <span className="text-[10px] text-emerald-400">No issues found</span>}
+                        </div>
+                      )}
+                      {latestRun.status === 'fail' && !summary && <span className="text-xs text-destructive flex-1">Analysis failed</span>}
+                      <ChevronRight className="size-3.5 text-muted-foreground shrink-0" />
+                    </button>
+                  )}
+                </div>
               )
             })}
-          </div>
-        )}
-
-        {/* History */}
-        {runs.length > latestByLens.size && (
-          <div className="mt-8 max-w-3xl">
-            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">History</h3>
-            <div className="space-y-1">
-              {runs.filter(r => r.status !== 'pending').map(run => {
-                const label = LENS_LABELS[run.lens_key] ?? run.lens_key
-                const summary = run.summary ? JSON.parse(run.summary) as { total: number } : null
-                return (
-                  <button
-                    key={run.id}
-                    onClick={() => setSelectedRun(run)}
-                    className="w-full text-left px-3 py-2 rounded-md hover:bg-accent/30 transition-colors flex items-center gap-2 text-xs"
-                  >
-                    <span className="text-muted-foreground w-20 shrink-0">{run.started_at ? new Date(run.started_at).toLocaleDateString() : '—'}</span>
-                    <span className="font-medium flex-1">{label}</span>
-                    {summary && <span className="text-muted-foreground">{summary.total} findings</span>}
-                    {run.status === 'fail' && <span className="text-destructive">failed</span>}
-                  </button>
-                )
-              })}
-            </div>
           </div>
         )}
       </div>
@@ -148,11 +202,10 @@ export function AnalysisView({ projectId }: AnalysisViewProps) {
 // ─── Run Detail ──────────────────────────────────────────────────────────────
 
 function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
-  const label = LENS_LABELS[run.lens_key] ?? run.lens_key
+  const label = LENS_INFO[run.lens_key]?.label ?? run.lens_key
   const findings: AnalysisFinding[] = run.findings ? JSON.parse(run.findings) : []
   const summary = run.summary ? JSON.parse(run.summary) as { total: number; critical: number; high: number; medium: number; low: number } : null
 
-  // Group findings by severity
   const grouped = {
     critical: findings.filter(f => f.severity === 'critical'),
     high: findings.filter(f => f.severity === 'high'),
@@ -175,7 +228,6 @@ function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 max-w-3xl">
-        {/* Summary badges */}
         {summary && summary.total > 0 && (
           <div className="flex gap-2 mb-6">
             {summary.critical > 0 && <span className="text-sm px-2.5 py-1 rounded-full text-red-500 bg-red-500/10 font-medium">{summary.critical} Critical</span>}
@@ -188,18 +240,15 @@ function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
         {summary?.total === 0 && (
           <div className="text-center py-8 text-emerald-400">
             <p className="text-sm font-medium">No issues found</p>
-            <p className="text-xs text-muted-foreground mt-1">The codebase looks clean for this analysis category.</p>
           </div>
         )}
 
         {run.status === 'fail' && findings.length === 0 && (
           <div className="text-center py-8 text-destructive">
             <p className="text-sm font-medium">Analysis failed</p>
-            <p className="text-xs text-muted-foreground mt-1">The analysis could not be completed.</p>
           </div>
         )}
 
-        {/* Findings by severity */}
         {(['critical', 'high', 'medium', 'low'] as const).map(severity => {
           const items = grouped[severity]
           if (items.length === 0) return null
@@ -217,7 +266,6 @@ function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
           )
         })}
 
-        {/* Metadata */}
         <div className="mt-8 pt-4 border-t border-border text-xs text-muted-foreground space-y-1">
           {run.started_at && <div>Started: {new Date(run.started_at).toLocaleString()}</div>}
           {run.completed_at && <div>Completed: {new Date(run.completed_at).toLocaleString()}</div>}

@@ -34,7 +34,7 @@ export interface PreloadedFile {
 
 export interface RunStageOpts {
   db: Db;
-  runId: string;
+  runId: string;  // pipeline run ID — pass empty string to skip run updates (e.g. for analysis)
   issueId: string;
   stageName: string;
   model: ReturnType<ReturnType<typeof createOpenAICompatible>>;
@@ -107,7 +107,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     abortSignal, initialSteps, contextLimit, worktreePath,
   } = opts;
 
-  db.updateRun(runId, { status: "running", started_at: new Date().toISOString() });
+  const updateRun = (data: Parameters<typeof db.updateRun>[1]) => {
+    if (runId) db.updateRun(runId, data);
+  };
+  updateRun({ status: "running", started_at: new Date().toISOString() });
 
   let stepCount = initialSteps?.length ?? 0;
   let totalPromptTokens = 0;
@@ -176,7 +179,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     liveSteps.push(stepData);
 
     // Save incremental output for live frontend polling
-    try { db.updateRun(runId, { output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
+    try { updateRun({ output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
 
     // Log to llm_requests table
     try {
@@ -353,7 +356,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
             durationMs: 0,
           });
           stepCount += 1;
-          try { db.updateRun(runId, { output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
+          try { updateRun({ output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
 
           // Inject files as preloads for the next streamText restart
           currentPreloads = pendingExpandFiles;
@@ -373,7 +376,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
             tokens: { prompt: 0, completion: 0 },
             durationMs: 0,
           });
-          try { db.updateRun(runId, { output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
+          try { updateRun({ output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
 
           // Build a summary of what the agent did so it can produce a meaningful checkpoint
           const workSummary = liveSteps
@@ -447,7 +450,7 @@ Continue from where you left off. Do not redo completed work. Focus on the remai
     }
   } catch (err) {
     const durationMs = Date.now() - startTime;
-    db.updateRun(runId, {
+    updateRun({
       status: "fail",
       output: JSON.stringify(liveSteps),
       completed_at: new Date().toISOString(),
@@ -463,7 +466,7 @@ Continue from where you left off. Do not redo completed work. Focus on the remai
   if (fullText && !liveSteps.some(s => s.text === fullText)) {
     liveSteps.push({ step: stepCount + 1, text: fullText, tokens: { prompt: 0, completion: 0 }, durationMs: 0 });
   }
-  db.updateRun(runId, {
+  updateRun({
     status: "pass",
     output: JSON.stringify(liveSteps),
     completed_at: new Date().toISOString(),

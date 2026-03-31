@@ -150,3 +150,44 @@ export function makeTestWriteResultTool() {
 
   return { submitTestResult };
 }
+
+// ─── Analysis scout groups tool ─────────────────────────────────────────────
+
+export function makeAnalysisGroupsTool() {
+  const submitGroups = tool({
+    description: `Submit your file groupings for analysis. Call this exactly once when you have identified all groups.`,
+    parameters: z.object({
+      groups: z.array(z.object({
+        name: z.string().describe("Descriptive name for this group"),
+        files: z.array(z.string()).describe("File paths to analyze together"),
+        focus: z.string().describe("What the analyst should focus on in this group"),
+      })).describe("Groups of related files to analyze"),
+    }),
+    execute: async ({ groups }) => {
+      return `\`\`\`groups\n${JSON.stringify(groups)}\n\`\`\``;
+    },
+  });
+  return { submitGroups };
+}
+
+// ─── Analysis findings tool ─────────────────────────────────────────────────
+
+export function makeAnalysisFindingsTool() {
+  const submitFindings = tool({
+    description: `Submit your analysis findings. Call this exactly once when you are done analyzing.`,
+    parameters: z.object({
+      findings: z.array(z.object({
+        severity: z.enum(["critical", "high", "medium", "low"]).describe("Issue severity"),
+        file: z.string().describe("File path"),
+        line: z.number().describe("Line number"),
+        title: z.string().describe("Short title"),
+        description: z.string().describe("Detailed explanation"),
+        recommendation: z.string().describe("Specific fix suggestion"),
+      })).describe("Analysis findings — empty array if no issues found"),
+    }),
+    execute: async ({ findings }) => {
+      return `\`\`\`findings\n${JSON.stringify(findings)}\n\`\`\``;
+    },
+  });
+  return { submitFindings };
+}

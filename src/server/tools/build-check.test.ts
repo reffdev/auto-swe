@@ -51,3 +51,110 @@ describe("runAndExtractErrors", () => {
     expect(result).toMatch(/^Exit 1/);
   });
 });
+
+// ─── Submit tools ───────────────────────────────────────────────────────────
+
+import { makeImplementResultTool, makeTestWriteResultTool, makeReviewVerdictTool, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./build-check";
+
+describe("makeImplementResultTool", () => {
+  it("returns a result block with files and summary", async () => {
+    const { submitResult } = makeImplementResultTool();
+    const result = await submitResult.execute(
+      { files_changed: ["src/foo.ts", "src/bar.ts"], summary: "Added feature X" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("status: done");
+    expect(result).toContain("src/foo.ts");
+    expect(result).toContain("Added feature X");
+  });
+});
+
+describe("makeTestWriteResultTool", () => {
+  it("returns done result", async () => {
+    const { submitTestResult } = makeTestWriteResultTool();
+    const result = await submitTestResult.execute(
+      { status: "done", test_files: ["foo.test.ts"], summary: "Tests pass" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("status: done");
+  });
+
+  it("returns needs_fix result", async () => {
+    const { submitTestResult } = makeTestWriteResultTool();
+    const result = await submitTestResult.execute(
+      { status: "needs_fix", test_files: ["foo.test.ts"], issues: "Implementation bug" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("status: needs_fix");
+    expect(result).toContain("Implementation bug");
+  });
+
+  it("returns skipped result", async () => {
+    const { submitTestResult } = makeTestWriteResultTool();
+    const result = await submitTestResult.execute(
+      { status: "skipped", reason: "No testable changes" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("status: skipped");
+  });
+});
+
+describe("makeReviewVerdictTool", () => {
+  it("returns accept verdict", async () => {
+    const { submitVerdict } = makeReviewVerdictTool();
+    const result = await submitVerdict.execute(
+      { status: "accept", summary: "Looks good" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("status: accept");
+  });
+
+  it("returns reject verdict", async () => {
+    const { submitVerdict } = makeReviewVerdictTool();
+    const result = await submitVerdict.execute(
+      { status: "reject", feedback: "Missing validation" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("status: reject");
+    expect(result).toContain("Missing validation");
+  });
+});
+
+describe("makeAnalysisGroupsTool", () => {
+  it("returns groups as JSON block", async () => {
+    const { submitGroups } = makeAnalysisGroupsTool();
+    const result = await submitGroups.execute(
+      { groups: [{ name: "Auth", files: ["auth.ts"], focus: "Check auth" }] },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("```groups");
+    const parsed = JSON.parse(result.match(/```groups\s*\n([\s\S]*?)```/)![1]);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].name).toBe("Auth");
+  });
+});
+
+describe("makeAnalysisFindingsTool", () => {
+  it("returns findings as JSON block", async () => {
+    const { submitFindings } = makeAnalysisFindingsTool();
+    const result = await submitFindings.execute(
+      { findings: [{ severity: "high", file: "test.ts", line: 10, title: "Bug", description: "Bad", recommendation: "Fix" }] },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("```findings");
+    const parsed = JSON.parse(result.match(/```findings\s*\n([\s\S]*?)```/)![1]);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].severity).toBe("high");
+  });
+
+  it("handles empty findings", async () => {
+    const { submitFindings } = makeAnalysisFindingsTool();
+    const result = await submitFindings.execute(
+      { findings: [] },
+      { toolCallId: "test", messages: [], abortSignal: undefined as any }
+    );
+    expect(result).toContain("```findings");
+    const parsed = JSON.parse(result.match(/```findings\s*\n([\s\S]*?)```/)![1]);
+    expect(parsed).toHaveLength(0);
+  });
+});

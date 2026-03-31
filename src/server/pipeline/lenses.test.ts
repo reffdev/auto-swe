@@ -13,7 +13,10 @@ describe("REVIEW_LENSES", () => {
 
   it("has all expected lenses", () => {
     expect(Object.keys(REVIEW_LENSES)).toEqual(
-      expect.arrayContaining(["general", "security", "ui", "performance"])
+      expect.arrayContaining([
+        "general", "security", "ui", "performance", "testing", "error_handling",
+        "react", "typescript", "node", "express", "sqlite",
+      ])
     );
   });
 

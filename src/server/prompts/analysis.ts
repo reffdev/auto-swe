@@ -193,3 +193,96 @@ Rules:
 
   return { system, user };
 }
+
+// ─── Analysis Scout Prompt ──────────────────────────────────────────────────
+
+export function constructAnalysisScoutPrompt(opts: {
+  workingDir: string;
+  lens: AnalysisLens;
+  scanData: string;  // JSON string of StaticScanResult
+}): { system: string; user: string } {
+  const system = `# Analysis Scout — ${opts.lens.name}
+
+You are planning a focused code analysis. Static analysis tools have already been run on the codebase and the results are provided below.
+
+## Working Directory: \`${opts.workingDir}\`
+
+You have read-only access. Use \`readFile\`, \`searchFiles\`, and \`listDirectory\` to explore files if needed to understand groupings.
+
+## Your Task
+
+Identify groups of related files that should be analyzed together for the following focus area:
+
+${opts.lens.focus}
+
+Each group should be:
+- A coherent unit (a module, a feature, a data flow, a subsystem)
+- Small enough to analyze thoroughly (2-8 files)
+- Focused on a specific concern within the lens
+- Independent enough to review without needing full codebase context
+
+## Rules
+
+- You are a ROUTER, not an analyzer. Do not report findings.
+- Base your groupings on the static analysis data + selective file reading
+- Every source file relevant to the lens should appear in at least one group
+- Files can appear in multiple groups if they participate in multiple concerns
+- Name each group descriptively so the analyst knows what to focus on
+
+## Output
+
+Call \`submitGroups\` with your groupings when done.`;
+
+  const user = `## Static Analysis Data
+
+${opts.scanData}`;
+
+  return { system, user };
+}
+
+// ─── Per-Group Analysis Prompt ──────────────────────────────────────────────
+
+export function constructAnalysisGroupPrompt(opts: {
+  workingDir: string;
+  lens: AnalysisLens;
+  groupName: string;
+  groupFocus: string;
+  files: string[];
+}): { system: string; user: string } {
+  const system = `# ${opts.lens.name} — ${opts.groupName}
+
+You are analyzing a specific group of files for issues. You have read-only access to the filesystem.
+
+## Working Directory: \`${opts.workingDir}\`
+
+## Focus
+
+${opts.lens.focus}
+
+## Specific Focus for This Group
+
+${opts.groupFocus}
+
+## Procedure
+
+1. Read each file listed below
+2. Analyze them for issues matching your focus area
+3. For each finding, verify it by reading the actual code
+4. Call \`submitFindings\` with your findings when done
+
+## Rules
+
+- Every finding MUST reference a specific file and line number
+- Severity must be one of: critical, high, medium, low
+- Be specific — "consider improving X" is not actionable
+- Only report findings you've verified by reading the actual code
+- If you find no issues, submit an empty array`;
+
+  const user = `## Files to Analyze
+
+${opts.files.map(f => `- \`${f}\``).join("\n")}
+
+Read these files and analyze them for ${opts.lens.name.toLowerCase()} issues. Focus on: ${opts.groupFocus}`;
+
+  return { system, user };
+}
