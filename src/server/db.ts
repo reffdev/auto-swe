@@ -206,8 +206,7 @@ export class Db {
 
   /** Find a machine with capacity for another concurrent job */
   getAvailableMachine(): Machine | null {
-    // Count active issues per machine (running + approved = pending pipeline start)
-    // Uses runs for running issues, and counts approved issues separately
+    // Count active work per machine: running issues + approved issues + running analyses
     const row = this.sqlite.prepare(`
       SELECT m.*
       FROM machines m
@@ -221,6 +220,10 @@ export class Db {
           +
           (SELECT COUNT(*) FROM issues i2
            WHERE i2.status = 'approved')
+          +
+          (SELECT COUNT(*) FROM analysis_runs ar
+           WHERE ar.machine_id = m.id
+             AND ar.status = 'running')
         ) < m.max_concurrent
       ORDER BY m.created_at
       LIMIT 1
@@ -625,7 +628,9 @@ export class Db {
       const updates: Record<string, unknown> = {};
       if (data.enabled !== undefined) updates.enabled = data.enabled;
       if (data.frequency !== undefined) updates.frequency = data.frequency;
-      this.drizzle.update(schema.analysisConfigs).set(updates).where(eq(schema.analysisConfigs.id, existing.id)).run();
+      if (Object.keys(updates).length > 0) {
+        this.drizzle.update(schema.analysisConfigs).set(updates).where(eq(schema.analysisConfigs.id, existing.id)).run();
+      }
       return this.getAnalysisConfig(existing.id)!;
     }
     const id = randomUUID();

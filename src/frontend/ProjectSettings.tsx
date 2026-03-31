@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { ArrowLeft, Save, Shield, Bug, AlertTriangle, BarChart3, Trash2, Layers, TestTube, Zap, Accessibility, FileText, Play } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -178,11 +178,11 @@ function AnalysisSettings({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState<string | null>(null)
 
-  const fetchConfigs = () => {
+  const fetchConfigs = useCallback(() => {
     api.getAnalysisConfigs(projectId).then(setConfigs).catch(() => {}).finally(() => setLoading(false))
-  }
+  }, [projectId])
 
-  useEffect(() => { fetchConfigs() }, [projectId])
+  useEffect(() => { fetchConfigs() }, [fetchConfigs])
 
   const toggleLens = async (lensKey: string, currentlyEnabled: boolean) => {
     await api.updateAnalysisConfig(projectId, lensKey, { enabled: !currentlyEnabled })

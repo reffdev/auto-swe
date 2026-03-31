@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePoll } from './usePoll'
@@ -28,26 +28,15 @@ export function DashboardLayout({ view }: { view: ViewName }) {
   const selectedIssueId = issueId ?? null
   const selectedMachineId = machineId ?? null
 
-  // Sync statusFilter with URL query param
-  const urlStatus = searchParams.get('status')
-  const [statusFilter, setStatusFilter] = useState(() => urlStatus ?? 'all')
+  // Status filter: read from URL, write to URL — single source of truth, no effects
+  const statusFilter = searchParams.get('status') ?? 'all'
+  const setStatusFilter = useCallback((value: string) => {
+    const next = new URLSearchParams(searchParams)
+    if (value === 'all') next.delete('status')
+    else next.set('status', value)
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
-  useEffect(() => {
-    const urlStatus = searchParams.get('status')
-    if (urlStatus !== statusFilter) {
-      setStatusFilter(urlStatus ?? 'all')
-    }
-  }, [searchParams])
-
-  useEffect(() => {
-    const newParams = new URLSearchParams(searchParams)
-    if (statusFilter === 'all') {
-      newParams.delete('status')
-    } else {
-      newParams.set('status', statusFilter)
-    }
-    setSearchParams(newParams, { replace: true })
-  }, [statusFilter])
   const { data, error, loading, refresh } = usePoll(selectedProjectId ?? undefined)
 
   const projects = data?.projects ?? []

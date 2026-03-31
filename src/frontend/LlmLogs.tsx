@@ -619,8 +619,8 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
   const [error, setError] = useState<string | null>(null)
   const [expandedGroups, setExpandedGroups] = useState(new Set())
 
-  // Parse filter state from URL query params on initial load
-  const parseFiltersFromUrl = useCallback((): FilterState => {
+  // Filters: derive from URL (single source of truth), write to URL on change — no effects
+  const filters = useMemo((): FilterState => {
     const search = searchParams.get('search') ?? ''
     const statusParam = searchParams.get('status')
     const modelsParam = searchParams.get('models')
@@ -630,71 +630,29 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
     const status = new Set<'success' | 'error'>()
     if (statusParam) {
       for (const s of statusParam.split(',')) {
-        if (s === 'success' || s === 'error') {
-          status.add(s)
-        }
+        if (s === 'success' || s === 'error') status.add(s)
       }
     }
 
     const models = new Set<string>()
     if (modelsParam) {
       for (const m of modelsParam.split(',')) {
-        if (m.trim()) {
-          models.add(m.trim())
-        }
+        if (m.trim()) models.add(m.trim())
       }
     }
 
     return { search, status, models, startDate, endDate }
   }, [searchParams])
 
-  const [filters, setFilters] = useState<FilterState>(() => parseFiltersFromUrl())
-
-  // Update filters when URL params change (for external navigation)
-  useEffect(() => {
-    setFilters(parseFiltersFromUrl())
-  }, [searchParams, parseFiltersFromUrl])
-
-  // Sync filter state to URL query params when filters change
-  useEffect(() => {
-    const newParams = new URLSearchParams(searchParams)
-    
-    // Search param
-    if (filters.search.trim()) {
-      newParams.set('search', filters.search)
-    } else {
-      newParams.delete('search')
-    }
-
-    // Status param (comma-separated)
-    if (filters.status.size > 0) {
-      newParams.set('status', Array.from(filters.status).join(','))
-    } else {
-      newParams.delete('status')
-    }
-
-    // Models param (comma-separated)
-    if (filters.models.size > 0) {
-      newParams.set('models', Array.from(filters.models).join(','))
-    } else {
-      newParams.delete('models')
-    }
-
-    // Date range params
-    if (filters.startDate) {
-      newParams.set('start_date', filters.startDate)
-    } else {
-      newParams.delete('start_date')
-    }
-
-    if (filters.endDate) {
-      newParams.set('end_date', filters.endDate)
-    } else {
-      newParams.delete('end_date')
-    }
-
-    setSearchParams(newParams, { replace: true })
-  }, [filters, searchParams, setSearchParams])
+  const setFilters = useCallback((next: FilterState) => {
+    const p = new URLSearchParams(searchParams)
+    if (next.search.trim()) p.set('search', next.search); else p.delete('search')
+    if (next.status.size > 0) p.set('status', Array.from(next.status).join(',')); else p.delete('status')
+    if (next.models.size > 0) p.set('models', Array.from(next.models).join(',')); else p.delete('models')
+    if (next.startDate) p.set('start_date', next.startDate); else p.delete('start_date')
+    if (next.endDate) p.set('end_date', next.endDate); else p.delete('end_date')
+    setSearchParams(p, { replace: true })
+  }, [searchParams, setSearchParams])
 
   // Extract distinct models from fetched data
   const availableModels = useMemo(() => extractDistinctModels(groups), [groups])
@@ -747,7 +705,7 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
 
   const clearFilters = useCallback(() => {
     setFilters(DEFAULT_FILTER_STATE)
-  }, [])
+  }, [setFilters])
 
   const totalGroups = filteredGroups.length
   const totalCalls = filteredGroups.reduce((sum, g) => sum + g.call_count, 0)

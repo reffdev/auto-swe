@@ -72,7 +72,7 @@ export function AnalysisView({ projectId }: AnalysisViewProps) {
         ) : latestByLens.size === 0 ? (
           <div className="text-center py-12 text-muted-foreground">
             <p className="text-sm">No analysis results yet.</p>
-            <p className="text-xs mt-1">Enable analyses in Project Settings and they'll run automatically when machines are idle.</p>
+            <p className="text-xs mt-1">Enable analyses in Project Settings and they&apos;ll run automatically when machines are idle.</p>
           </div>
         ) : (
           <div className="space-y-3 max-w-3xl">

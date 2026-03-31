@@ -322,7 +322,13 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const errOutput = `Exit ${result.status ?? 1}: ${out || result.error?.message || "unknown error"}`;
         return errOutput;
       }
-      return cap(out || "(no output)");
+      // Nudge toward submitResult when running git verification commands
+      const isGitVerify = /\bgit\s+(diff|status|log|show)\b/.test(command_to_run);
+      const output = cap(out || "(no output)");
+      if (isGitVerify) {
+        return output + "\n\n(If your changes are complete, call submitResult.)";
+      }
+      return output;
     },
   });
 
@@ -596,9 +602,11 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           encoding: "utf-8",
           timeout: 10_000,
         });
-        const out = result.stdout ?? "";
+        const out = (result.stdout ?? "").trim();
         trackSuccess();
-        return out.trim() || "Nothing to commit, working tree clean";
+        if (!out) return "Nothing to commit, working tree clean";
+        return out + "\n\n(If your changes are complete, call submitResult now — do not run additional verification commands.)";
+
       } catch (e) {
         return trackResult(`git status error: ${e}`);
       }
@@ -643,12 +651,13 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         if (!out.trim())
           return staged ? "No staged changes" : "No unstaged changes";
         const lines = out.split("\n");
+        const nudge = "\n\n(If your changes are complete, call submitResult now — do not run additional verification commands.)";
         if (lines.length > 200)
           return (
             lines.slice(0, 200).join("\n") +
-            `\n... (${lines.length - 200} more lines truncated)`
+            `\n... (${lines.length - 200} more lines truncated)` + nudge
           );
-        return out.trim();
+        return out.trim() + nudge;
       } catch (e) {
         return trackResult(`git diff error: ${e}`);
       }
