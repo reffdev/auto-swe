@@ -235,7 +235,7 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: /Update & Restart/i })).toBeInTheDocument()
   })
 
-  it('calls onSelectProject when a project is clicked', () => {
+  it('navigates to project when project name is clicked', () => {
     const projects = [{ id: 'proj1', name: 'Test Project', workdir: '/tmp/test' }]
 
     render(
@@ -256,10 +256,10 @@ describe('Sidebar', () => {
     const projectButton = screen.getByText('Test Project')
     fireEvent.click(projectButton)
 
-    expect(mockOnSelectProject).toHaveBeenCalledWith('proj1')
+    expect(mockNavigate).toHaveBeenCalledWith('/project/proj1')
   })
 
-  it('deselects project when clicking already selected project', () => {
+  it('shows sub-links for all projects', () => {
     const projects = [{ id: 'proj1', name: 'Test Project', workdir: '/tmp/test' }]
 
     render(
@@ -268,7 +268,7 @@ describe('Sidebar', () => {
           projects={projects}
           machines={[]}
           issues={[]}
-          selectedProjectId={'proj1'}
+          selectedProjectId={null}
           selectedMachineId={null}
           onSelectProject={mockOnSelectProject}
           onSelectMachine={mockOnSelectMachine}
@@ -277,10 +277,10 @@ describe('Sidebar', () => {
       </MemoryRouter>
     )
 
-    const projectButton = screen.getByText('Test Project')
-    fireEvent.click(projectButton)
-
-    expect(mockOnSelectProject).toHaveBeenCalledWith(null)
+    expect(screen.getByText('Issues')).toBeInTheDocument()
+    expect(screen.getByText('LLM Logs')).toBeInTheDocument()
+    expect(screen.getByText('Analysis')).toBeInTheDocument()
+    expect(screen.getByText('Settings')).toBeInTheDocument()
   })
 
   it('calls onSelectMachine when a machine is clicked', () => {

@@ -351,49 +351,53 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
         {projects.length === 0 && (
           <p className="px-3 py-2 text-xs text-muted-foreground">No projects yet</p>
         )}
-        {projects.map((p) => (
-          <div key={p.id} className="relative">
+        {projects.map((p) => {
+          const isSelected = selectedProjectId === p.id
+          const navClass = (active: boolean) => cn(
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+            active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )
+          // Detect which sub-page is active
+          const path = location.pathname
+          const isIssues = isSelected && !path.includes('/llm-logs') && !path.includes('/analysis') && !path.includes('/settings') && !path.includes('/planner')
+          const isLlmLogs = isSelected && path.includes('/llm-logs')
+          const isAnalysis = isSelected && path.includes('/analysis')
+          const isSettings = isSelected && path.includes('/settings')
+
+          return (
+          <div key={p.id} className="mb-2">
             <button
-              onClick={() => { onSelectProject(p.id === selectedProjectId ? null : p.id); }}
+              onClick={() => { void navigate(`/project/${p.id}`); }}
               className={cn(
                 'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
                 'hover:bg-accent',
-                selectedProjectId === p.id && 'bg-accent font-medium',
+                isSelected && 'font-medium',
               )}
             >
               <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="truncate flex-1">{p.name}</span>
             </button>
-            {selectedProjectId === p.id && (
-              <div className="absolute left-0 top-0 bottom-0 -ml-[1px] w-[1px] bg-border" />
-            )}
-            {selectedProjectId === p.id && (
-              <div className="pl-6 space-y-0.5 mt-1">
-                <button
-                  onClick={() => navigate(`/project/${p.id}`)}
-                  className="w-full text-left px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors flex items-center gap-2"
-                >
-                  <FolderGit2 className="size-3" />
-                  Issues
-                </button>
-                <button
-                  onClick={() => navigate(`/project/${p.id}/llm-logs`)}
-                  className="w-full text-left px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors flex items-center gap-2"
-                >
-                  <Activity className="size-3" />
-                  LLM Logs
-                </button>
-                <button
-                  onClick={() => navigate(`/project/${p.id}/analysis`)}
-                  className="w-full text-left px-3 py-1.5 text-xs rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors flex items-center gap-2"
-                >
-                  <Activity className="size-3" />
-                  Analysis
-                </button>
-              </div>
-            )}
+            <div className="pl-5 space-y-0.5 mt-0.5">
+              <button onClick={() => { void navigate(`/project/${p.id}`); }} className={navClass(isIssues)}>
+                <FolderGit2 className="size-3" />
+                Issues
+              </button>
+              <button onClick={() => { void navigate(`/project/${p.id}/llm-logs`); }} className={navClass(isLlmLogs)}>
+                <Activity className="size-3" />
+                LLM Logs
+              </button>
+              <button onClick={() => { void navigate(`/project/${p.id}/analysis`); }} className={navClass(isAnalysis)}>
+                <Activity className="size-3" />
+                Analysis
+              </button>
+              <button onClick={() => { void navigate(`/project/${p.id}/settings`); }} className={navClass(isSettings)}>
+                <Activity className="size-3" />
+                Settings
+              </button>
+            </div>
           </div>
-        ))}
+          )
+        })}
       </nav>
 
       <div className="border-t border-border" />
