@@ -72,7 +72,7 @@ describe('Sidebar', () => {
     )
 
     expect(screen.getByText('Auto-SWE')).toBeInTheDocument()
-    expect(screen.getByText('Autonomous Coding Agents')).toBeInTheDocument()
+    expect(screen.getByText('Agentic Wrangling')).toBeInTheDocument()
   })
 
   it('renders Auto-SWE as a clickable button', () => {

@@ -201,10 +201,23 @@ export function AnalysisView({ projectId }: AnalysisViewProps) {
 
 // ─── Run Detail ──────────────────────────────────────────────────────────────
 
+interface StepData {
+  step: number
+  text?: string
+  toolCalls?: Array<{ tool: string; args: string }>
+  toolResults?: Array<{ tool: string; result: string }>
+  tokens: { prompt: number; completion: number }
+  durationMs: number
+}
+
 function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
   const label = LENS_INFO[run.lens_key]?.label ?? run.lens_key
   const findings: AnalysisFinding[] = run.findings ? JSON.parse(run.findings) : []
   const summary = run.summary ? JSON.parse(run.summary) as { total: number; critical: number; high: number; medium: number; low: number } : null
+
+  // Parse step output for the activity log
+  let steps: StepData[] = []
+  try { if (run.output) steps = JSON.parse(run.output) as StepData[] } catch { /* not JSON */ }
 
   const grouped = {
     critical: findings.filter(f => f.severity === 'critical'),
@@ -266,6 +279,18 @@ function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
           )
         })}
 
+        {/* Activity log — shows agent steps */}
+        {steps.length > 0 && (
+          <div className="mt-6">
+            <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Activity Log ({steps.length} steps)</h3>
+            <div className="space-y-1.5">
+              {steps.filter(s => s.durationMs > 0 || s.text).map((step, i) => (
+                <StepRow key={i} step={step} />
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="mt-8 pt-4 border-t border-border text-xs text-muted-foreground space-y-1">
           {run.started_at && <div>Started: {new Date(run.started_at).toLocaleString()}</div>}
           {run.completed_at && <div>Completed: {new Date(run.completed_at).toLocaleString()}</div>}
@@ -273,6 +298,48 @@ function RunDetail({ run, onBack }: { run: AnalysisRun; onBack: () => void }) {
           {run.prompt_tokens && <div>Tokens: {run.prompt_tokens.toLocaleString()} prompt, {(run.completion_tokens ?? 0).toLocaleString()} completion</div>}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Step Row ────────────────────────────────────────────────────────────────
+
+function StepRow({ step }: { step: StepData }) {
+  const [expanded, setExpanded] = useState(false)
+  const toolNames = step.toolCalls?.map(tc => tc.tool).join(', ') ?? ''
+  const duration = step.durationMs > 0 ? `${(step.durationMs / 1000).toFixed(1)}s` : ''
+
+  return (
+    <div className="text-xs border border-border/50 rounded-md">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full text-left px-3 py-1.5 flex items-center gap-2 hover:bg-accent/30 transition-colors"
+      >
+        <span className="text-muted-foreground/50 font-mono w-6 shrink-0">#{step.step}</span>
+        {toolNames && <span className="font-mono text-primary/80 truncate">{toolNames}</span>}
+        {step.text && !toolNames && <span className="text-muted-foreground truncate">{step.text.slice(0, 80)}</span>}
+        <span className="ml-auto text-muted-foreground/50 shrink-0">{duration}</span>
+        <ChevronRight className={cn("size-3 text-muted-foreground shrink-0 transition-transform", expanded && "rotate-90")} />
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 space-y-1.5">
+          {step.text && (
+            <pre className="text-[11px] text-muted-foreground whitespace-pre-wrap break-all bg-muted/30 p-2 rounded">{step.text}</pre>
+          )}
+          {step.toolCalls?.map((tc, i) => (
+            <div key={i} className="text-[11px]">
+              <span className="text-primary/80 font-mono">{tc.tool}</span>
+              <pre className="text-muted-foreground whitespace-pre-wrap break-all bg-muted/30 p-1.5 rounded mt-0.5 max-h-40 overflow-y-auto">{tc.args}</pre>
+            </div>
+          ))}
+          {step.toolResults?.map((tr, i) => (
+            <div key={i} className="text-[11px]">
+              <span className="text-emerald-400/80 font-mono">{tr.tool} →</span>
+              <pre className="text-muted-foreground whitespace-pre-wrap break-all bg-muted/30 p-1.5 rounded mt-0.5 max-h-40 overflow-y-auto">{tr.result.slice(0, 500)}{tr.result.length > 500 ? '...' : ''}</pre>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -336,7 +336,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           className="block text-left"
         >
           <h1 className="text-lg font-semibold tracking-tight hover:text-primary transition-colors cursor-pointer">Auto-SWE</h1>
-          <p className="text-xs text-muted-foreground">Autonomous Coding Agents</p>
+          <p className="text-xs text-muted-foreground">Agentic Wrangling</p>
         </button>
       </div>
 

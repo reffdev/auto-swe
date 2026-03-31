@@ -147,6 +147,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   // Detect text-only reasoning loops (no tool calls, repetitive output)
   let textOnlySteps = 0;
   let reasoningLoopDetected = false;
+
+  // Stream termination retry — transient connection drops
+  let streamRetryCount = 0;
+  const MAX_STREAM_RETRIES = 2;
   const MAX_TEXT_ONLY_STEPS = 3;
 
   const onStep = (step: StepResult<ToolSet>) => {
@@ -444,7 +448,18 @@ Continue from where you left off. Do not redo completed work. Focus on the remai
 
           continue; // restart the while loop with fresh context
         }
-        // Not a compaction — rethrow
+        // Stream terminated unexpectedly — retry if we haven't exhausted retries
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const isStreamError = errMsg === "terminated" || errMsg.includes("stream") || errMsg.includes("aborted due to timeout");
+        if (isStreamError && !abortSignal?.aborted && streamRetryCount < MAX_STREAM_RETRIES) {
+          streamRetryCount++;
+          const delay = streamRetryCount * 5000;
+          console.log(`Pipeline [${stageName}]: stream terminated — retrying in ${delay / 1000}s (attempt ${streamRetryCount + 1}/${MAX_STREAM_RETRIES + 1})`);
+          await new Promise(r => setTimeout(r, delay));
+          continue; // restart the while loop — same prompt, fresh stream
+        }
+
+        // Not retryable — rethrow
         throw err;
       } finally {
         abortSignal?.removeEventListener("abort", onExternalAbort);
