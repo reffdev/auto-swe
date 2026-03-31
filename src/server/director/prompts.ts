@@ -67,8 +67,9 @@ export function buildPlanningPrompt(opts: {
   directiveContext: string;   // assembled by memory.ts
   milestoneTitle: string;
   milestoneVerification: string;
+  workflowSummary?: string | null;
 }): { system: string; user: string } {
-  const system = [
+  const systemParts = [
     "You are a project director generating the next batch of tasks for autonomous execution.",
     "",
     "Each task you generate will be executed independently by an AI coding agent with access to",
@@ -83,7 +84,48 @@ export function buildPlanningPrompt(opts: {
     "- Tasks should be appropriately sized: a single system or feature, not an entire module",
     "- Set needs_human_review: true for tasks involving aesthetic/design choices",
     "",
-    "Output format:",
+    "## Task Types",
+    "",
+    "- **code**: Programming tasks executed by an AI coding agent",
+    "- **art**: Visual asset generation via ComfyUI (sprites, backgrounds, icons, UI, etc.)",
+    "- **music**: Music generation via ComfyUI audio workflows",
+    "- **sfx**: Sound effect generation via ComfyUI audio workflows",
+    "- **review**: Code review tasks",
+    "- **content**: Content writing tasks (dialogue, descriptions, etc.)",
+    "",
+    "### Art/Music/SFX Tasks",
+    "",
+    "For art, music, and sfx tasks, include these structured hints in the description",
+    "so the system can map them to the correct ComfyUI workflow:",
+    "",
+    "- `[asset_type: sprite]` — the type of asset (sprite, background, icon, portrait, tileset, ui, concept, sfx, music)",
+    "- `[prompt: pixel art fire symbol, 64x64, transparent background]` — the generation prompt describing what to create",
+    "- `[output_path: assets/sprites/fire_symbol.png]` — where to save the generated file",
+    "",
+    "These tasks will always go through human review. Be specific in the prompt —",
+    "include art style, dimensions, color palette, and any other relevant details.",
+    "The target_files should list the output path for the generated asset.",
+    "",
+    "Available asset types and their built-in presets:",
+    "- sprite → pixel_sprite (SDXL + pixel art LoRA, 1024x1024)",
+    "- icon → icon (SDXL + pixel art LoRA, 512x512)",
+    "- tileset → pixel_sprite",
+    "- portrait → portrait (SDXL, 768x1024)",
+    "- background → background (SDXL, 1024x768)",
+    "- concept → concept (FLUX, 1024x1024, high quality)",
+    "- ui → icon",
+    "",
+    "The system will automatically select the correct preset based on [asset_type:].",
+    "No workflow template files are required — just provide the hints above.",
+  ];
+
+  if (opts.workflowSummary) {
+    systemParts.push("", "### Project-Specific Workflows (override presets when available)", "", opts.workflowSummary);
+  }
+
+  systemParts.push(
+    "",
+    "## Output Format",
     "",
     "```next_tasks",
     "task: 1",
@@ -101,7 +143,9 @@ export function buildPlanningPrompt(opts: {
     "  [Detailed implementation spec. Be specific — the executing agent",
     "  has no other context beyond this description and the project files.]",
     "```",
-  ].join("\n");
+  );
+
+  const system = systemParts.join("\n");
 
   const user = [
     opts.directiveContext,

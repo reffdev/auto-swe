@@ -17,6 +17,7 @@ import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
+import { isComfyUITaskType, injectFeedbackIntoArtTask } from "../foreman/art-feedback";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -288,12 +289,21 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 
       case "retry_task":
         if (review.task_id) {
-          db.updateForemanTask(review.task_id, {
+          const retryTask = db.getForemanTask(review.task_id);
+          const updates: Record<string, unknown> = {
             status: "queued",
             retry_count: 0,
             error_message: null,
             next_retry_at: null,
-          });
+            machine_id: null,
+          };
+
+          // For art/music/sfx tasks, inject feedback into the prompt params
+          if (retryTask && isComfyUITaskType(retryTask.type) && review.response) {
+            updates.description = injectFeedbackIntoArtTask(retryTask.description, review.response);
+          }
+
+          db.updateForemanTask(review.task_id, updates);
           nudgeForeman(db);
         }
         shouldResume = true;
@@ -320,3 +330,4 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
     nudgeDirector(db);
   }
 }
+

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Play, XCircle, CheckCircle, RotateCcw, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { ArrowLeft, Play, XCircle, CheckCircle, RotateCcw, ExternalLink, ChevronDown, ChevronRight, Image, Volume2, MessageSquare } from 'lucide-react'
 import * as api from './api'
 import type { ForemanTask, ForemanRun, StepData } from './api'
 
@@ -14,6 +15,8 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
   const [task, setTask] = useState<ForemanTask | null>(null)
   const [runs, setRuns] = useState<ForemanRun[]>([])
   const [loading, setLoading] = useState(true)
+  const [showFeedback, setShowFeedback] = useState(false)
+  const [feedback, setFeedback] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -80,9 +83,16 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               </Button>
             )}
             {task.status === 'awaiting_review' && (
-              <Button size="sm" onClick={() => void api.completeForemanTask(task.id).then(refresh)}>
-                <CheckCircle className="size-3.5 mr-1.5" /> Complete
-              </Button>
+              <>
+                <Button size="sm" onClick={() => void api.completeForemanTask(task.id).then(refresh)}>
+                  <CheckCircle className="size-3.5 mr-1.5" /> Approve
+                </Button>
+                {isAssetTask(task) && (
+                  <Button variant="outline" size="sm" onClick={() => setShowFeedback(!showFeedback)}>
+                    <MessageSquare className="size-3.5 mr-1.5" /> Reject
+                  </Button>
+                )}
+              </>
             )}
             {task.status === 'failed' && (
               <Button variant="outline" size="sm" onClick={() => void api.retryForemanTask(task.id).then(refresh)}>
@@ -99,6 +109,37 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
         )}
       </div>
 
+      {/* Feedback bar for rejecting art tasks */}
+      {showFeedback && task.status === 'awaiting_review' && (
+        <div className="px-6 py-3 border-b border-border bg-muted/30">
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="What should be different? (e.g. 'too dark', 'wrong style', 'needs transparency')"
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && feedback.trim()) {
+                  void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); refresh() })
+                }
+              }}
+              className="flex-1"
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={!feedback.trim()}
+              onClick={() => void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); refresh() })}
+            >
+              Reject &amp; Retry
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setShowFeedback(false); setFeedback('') }}>
+              Cancel
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">Your feedback will be injected into the generation prompt for the next attempt.</p>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto">
         <div className="px-6 py-4 space-y-6">
           {/* Description */}
@@ -106,6 +147,11 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
             <h3 className="text-sm font-medium mb-2">Description</h3>
             <pre className="text-xs text-muted-foreground whitespace-pre-wrap bg-muted/50 rounded-md p-3 max-h-60 overflow-y-auto">{task.description || 'No description'}</pre>
           </section>
+
+          {/* Asset preview for art/music/sfx tasks */}
+          {isAssetTask(task) && (task.status === 'awaiting_review' || task.status === 'completed') && (
+            <AssetPreview taskId={task.id} taskType={task.type} />
+          )}
 
           {/* Target files */}
           {targetFiles.length > 0 && (
@@ -170,6 +216,59 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
         </div>
       </div>
     </div>
+  )
+}
+
+const ASSET_TYPES = new Set(['art', 'music', 'sfx'])
+
+function isAssetTask(task: ForemanTask): boolean {
+  return ASSET_TYPES.has(task.type)
+}
+
+function AssetPreview({ taskId, taskType }: { taskId: string; taskType: string }) {
+  const [error, setError] = useState(false)
+  const assetUrl = `/api/foreman/tasks/${taskId}/asset?t=${Date.now()}`
+  const isAudio = taskType === 'music' || taskType === 'sfx'
+
+  if (error) {
+    return (
+      <section>
+        <h3 className="text-sm font-medium mb-2 flex items-center gap-1.5">
+          {isAudio ? <Volume2 className="size-3.5" /> : <Image className="size-3.5" />}
+          Generated Asset
+        </h3>
+        <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-4 text-center">
+          Asset not yet available
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section>
+      <h3 className="text-sm font-medium mb-2 flex items-center gap-1.5">
+        {isAudio ? <Volume2 className="size-3.5" /> : <Image className="size-3.5" />}
+        Generated Asset
+      </h3>
+      <div className="bg-muted/50 rounded-md p-3">
+        {isAudio ? (
+          <audio
+            controls
+            src={assetUrl}
+            onError={() => setError(true)}
+            className="w-full"
+          />
+        ) : (
+          <img
+            src={assetUrl}
+            alt="Generated asset"
+            onError={() => setError(true)}
+            className="max-w-full max-h-96 rounded border border-border mx-auto block"
+            style={{ imageRendering: 'pixelated' }}
+          />
+        )}
+      </div>
+    </section>
   )
 }
 

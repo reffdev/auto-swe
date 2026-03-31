@@ -13,6 +13,8 @@ import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
 import { parseNextTasks } from "./parsers";
+import { postProcessArtTasks } from "./art-task-processor";
+import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
 import { selectPlannerMachine } from "../planner-llm";
 import { nudgeForeman } from "../foreman/scheduler";
 
@@ -41,11 +43,16 @@ export async function planNextTasks(
     maxRecentTasks: 10,
   });
 
+  // Check for ComfyUI workflow manifest
+  const workflowManifest = loadWorkflowManifest(project.workdir);
+  const workflowSummary = workflowManifest ? summarizeManifestForPrompt(workflowManifest) : null;
+
   // Build prompt
   const { system, user } = buildPlanningPrompt({
     directiveContext,
     milestoneTitle: milestone.title,
     milestoneVerification: milestone.verification ?? "Not specified",
+    workflowSummary,
   });
 
   // Call LLM (no streaming needed — planning is a single-shot call)
@@ -62,8 +69,9 @@ export async function planNextTasks(
     prompt: user,
   });
 
-  // Parse tasks from LLM output
-  const parsedTasks = parseNextTasks(result.text);
+  // Parse tasks from LLM output and post-process art tasks
+  const rawTasks = parseNextTasks(result.text);
+  const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
     console.log("Director planner: no tasks generated (milestone may be complete)");

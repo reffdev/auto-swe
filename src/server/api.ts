@@ -185,6 +185,22 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       return;
     }
     const machine = db.createMachine({ name, base_url, model_id: model_id || null, max_concurrent, api_key, machine_type });
+
+    // Auto-bootstrap ComfyUI workflows for the active project
+    if (machine_type === "comfyui") {
+      const config = db.getForemanConfig();
+      if (config?.project_id) {
+        const project = db.getProject(config.project_id);
+        if (project) {
+          import("./foreman/comfyui-bootstrap").then(({ bootstrapComfyUI }) => {
+            bootstrapComfyUI(base_url, project.workdir).catch(err =>
+              console.warn("ComfyUI bootstrap failed:", err),
+            );
+          });
+        }
+      }
+    }
+
     res.status(201).json(machine);
   });
 

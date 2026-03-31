@@ -3,12 +3,15 @@
  */
 
 import { Router } from "express";
+import { existsSync } from "fs";
+import { resolve, extname } from "path";
 import type { Db } from "../db";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
 import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
+import { isComfyUITaskType, injectFeedbackIntoArtTask } from "./art-feedback";
 
 export function createForemanRouter(db: Db): Router {
   const router = Router();
@@ -122,6 +125,36 @@ export function createForemanRouter(db: Db): Router {
     res.json(db.getForemanTask(task.id));
   });
 
+  router.post("/tasks/:id/reject", (req, res) => {
+    const task = db.getForemanTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (task.status !== "awaiting_review") {
+      return res.status(409).json({ error: `Cannot reject task with status "${task.status}"` });
+    }
+
+    const { feedback } = req.body;
+    if (!feedback || typeof feedback !== "string") {
+      return res.status(400).json({ error: "feedback is required" });
+    }
+
+    // For art/music/sfx tasks, inject feedback into the prompt
+    let description = task.description;
+    if (isComfyUITaskType(task.type)) {
+      description = injectFeedbackIntoArtTask(description, feedback);
+    }
+
+    db.updateForemanTask(task.id, {
+      status: "queued",
+      description,
+      retry_count: 0,
+      error_message: `Rejected: ${feedback}`,
+      next_retry_at: null,
+      machine_id: null,
+    });
+    nudgeForeman(db);
+    res.json(db.getForemanTask(task.id));
+  });
+
   router.post("/tasks/:id/complete", (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
@@ -201,6 +234,56 @@ export function createForemanRouter(db: Db): Router {
     const config = db.upsertForemanConfig(updates);
     nudgeForeman(db);
     res.json(config);
+  });
+
+  // ─── Asset Preview ───────────────────────────────────────────────────────
+
+  router.get("/tasks/:id/asset", (req, res) => {
+    const task = db.getForemanTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    // Extract output path from task description
+    const outputMatch = task.description.match(/\[output:\s*(.+?)\]/i);
+    if (!outputMatch) return res.status(404).json({ error: "No output path in task" });
+
+    const config = db.getForemanConfig();
+    const projectId = task.project_id || config?.project_id;
+    if (!projectId) return res.status(400).json({ error: "No project context" });
+
+    const project = db.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const assetPath = resolve(project.workdir, outputMatch[1].trim());
+
+    // Security: ensure the resolved path is within the project workdir
+    // Normalize separators for cross-platform compatibility
+    const normalizedAsset = assetPath.replace(/\\/g, "/");
+    const normalizedWorkdir = resolve(project.workdir).replace(/\\/g, "/");
+    if (!normalizedAsset.startsWith(normalizedWorkdir)) {
+      return res.status(403).json({ error: "Path traversal denied" });
+    }
+
+    if (!existsSync(assetPath)) {
+      return res.status(404).json({ error: "Asset file not found" });
+    }
+
+    // Set content type based on extension
+    const ext = extname(assetPath).toLowerCase();
+    const mimeMap: Record<string, string> = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".svg": "image/svg+xml",
+      ".wav": "audio/wav",
+      ".mp3": "audio/mpeg",
+      ".ogg": "audio/ogg",
+      ".mp4": "video/mp4",
+    };
+    const contentType = mimeMap[ext] ?? "application/octet-stream";
+    res.setHeader("Content-Type", contentType);
+    res.sendFile(assetPath);
   });
 
   return router;

@@ -18,6 +18,7 @@ import { resolve } from "path";
 import { spawnSync } from "child_process";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { executeComfyUIWorkflow, buildWorkflowFromTemplate } from "./comfyui";
+import { buildWorkflow, PRESETS, type PresetName } from "./comfyui-workflows";
 import { getBreaker } from "./circuit-breaker";
 import { nudgeDirector } from "../director/scheduler";
 import { registerActiveTask, unregisterActiveTask } from "./executor";
@@ -62,26 +63,39 @@ export async function executeComfyUITask(
   try {
     // Parse workflow info from task description
     const workflowFile = extractTag(task.description, "workflow");
+    const presetName = extractTag(task.description, "preset");
+    const promptText = extractTag(task.description, "prompt");
     const paramsStr = extractTag(task.description, "params");
     const outputPath = extractTag(task.description, "output");
 
-    if (!workflowFile) {
-      throw new Error("ComfyUI task missing [workflow: ...] tag in description");
-    }
     if (!outputPath) {
       throw new Error("ComfyUI task missing [output: ...] tag in description");
     }
 
-    // Load workflow template from project
-    const templatePath = resolve(project.workdir, "comfyui-workflows", workflowFile);
-    if (!existsSync(templatePath)) {
-      throw new Error(`Workflow template not found: ${templatePath}`);
-    }
-    const template = JSON.parse(readFileSync(templatePath, "utf-8"));
+    let workflow: Record<string, unknown>;
 
-    // Build workflow with parameter overrides
-    const params = paramsStr ? JSON.parse(paramsStr) : {};
-    const workflow = buildWorkflowFromTemplate(template, params);
+    if (presetName) {
+      // Preset-based workflow generation (no template files needed)
+      const preset = PRESETS[presetName as PresetName];
+      if (!preset) {
+        throw new Error(`Unknown ComfyUI preset: "${presetName}". Available: ${Object.keys(PRESETS).join(", ")}`);
+      }
+      if (!promptText) {
+        throw new Error("ComfyUI task with [preset:] must also have a [prompt:] tag");
+      }
+      workflow = buildWorkflow({ ...preset, prompt: promptText });
+    } else if (workflowFile) {
+      // Template-based workflow (load from project's comfyui-workflows/)
+      const templatePath = resolve(project.workdir, "comfyui-workflows", workflowFile);
+      if (!existsSync(templatePath)) {
+        throw new Error(`Workflow template not found: ${templatePath}`);
+      }
+      const template = JSON.parse(readFileSync(templatePath, "utf-8"));
+      const params = paramsStr ? JSON.parse(paramsStr) : {};
+      workflow = buildWorkflowFromTemplate(template, params);
+    } else {
+      throw new Error("ComfyUI task must have either [preset: ...] or [workflow: ...] tag in description");
+    }
 
     // Output to a temp directory, then copy to the right place
     const outputDir = resolve(project.workdir, ".comfyui-output");
