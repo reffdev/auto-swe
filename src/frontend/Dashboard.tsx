@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { usePoll } from './usePoll'
 import { Sidebar } from './Sidebar'
@@ -22,12 +22,32 @@ export function DashboardLayout({ view }: { view: ViewName }) {
     conversationId?: string
   }>()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const selectedProjectId = projectId ?? null
   const selectedIssueId = issueId ?? null
   const selectedMachineId = machineId ?? null
 
-  const [statusFilter, setStatusFilter] = useState('all')
+  // Sync statusFilter with URL query param
+  const urlStatus = searchParams.get('status')
+  const [statusFilter, setStatusFilter] = useState(() => urlStatus ?? 'all')
+
+  useEffect(() => {
+    const urlStatus = searchParams.get('status')
+    if (urlStatus !== statusFilter) {
+      setStatusFilter(urlStatus ?? 'all')
+    }
+  }, [searchParams])
+
+  useEffect(() => {
+    const newParams = new URLSearchParams(searchParams)
+    if (statusFilter === 'all') {
+      newParams.delete('status')
+    } else {
+      newParams.set('status', statusFilter)
+    }
+    setSearchParams(newParams, { replace: true })
+  }, [statusFilter])
   const { data, error, loading, refresh } = usePoll(selectedProjectId ?? undefined)
 
   const projects = data?.projects ?? []

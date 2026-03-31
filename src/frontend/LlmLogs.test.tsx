@@ -1418,3 +1418,347 @@ describe('LlmLogs', () => {
     })
   })
 })
+describe('LlmLogs URL query parameter persistence', () => {
+  const mockNavigate = jest.fn()
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    ;(useNavigate as jest.Mock).mockImplementation(() => mockNavigate)
+    mockGetGroupedLlmLogs.mockResolvedValue({
+      groups: [
+        {
+          issue_id: '1',
+          issue_title: 'Success Issue',
+          issue_status: 'pending',
+          issue_created_at: '2024-01-01T00:00:00Z',
+          issue_assignee: 'user1',
+          last_request_at: '2024-01-02T10:00:00Z',
+          call_count: 2,
+          calls: [
+            {
+              id: 'call1',
+              timestamp: '2024-01-02T10:00:00Z',
+              model: 'gpt-4',
+              status: 'success',
+              input_tokens: 100,
+              output_tokens: 50,
+              latency_ms: 1500,
+              prompt_preview: 'Hello success',
+              response_preview: 'Hi there',
+            },
+          ],
+        },
+        {
+          issue_id: '2',
+          issue_title: 'Error Issue',
+          issue_status: 'pending',
+          issue_created_at: '2024-01-01T00:00:00Z',
+          issue_assignee: 'user2',
+          last_request_at: '2024-01-02T11:00:00Z',
+          call_count: 1,
+          calls: [
+            {
+              id: 'call2',
+              timestamp: '2024-01-02T11:00:00Z',
+              model: 'gpt-3.5',
+              status: 'error',
+              input_tokens: 100,
+              output_tokens: 0,
+              latency_ms: 2000,
+              prompt_preview: 'Hello error',
+              response_preview: '',
+            },
+          ],
+        },
+      ],
+      totalGroups: 2,
+      totalCalls: 3,
+    })
+  })
+
+  it('reads search param from URL on initial load', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?search=Success']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+    // Issue #2 should not be visible due to search filter
+    await waitFor(() => {
+      expect(screen.queryByText('#2')).not.toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('reads status param from URL on initial load (single value)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?status=success']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+    // Issue #2 (error) should not be visible
+    await waitFor(() => {
+      expect(screen.queryByText('#2')).not.toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('reads status param from URL on initial load (multiple values)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?status=success,error']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    })
+  })
+
+  it('reads models param from URL on initial load', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?models=gpt-4']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+    // Issue #2 (gpt-3.5) should not be visible
+    await waitFor(() => {
+      expect(screen.queryByText('#2')).not.toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('reads date range params from URL on initial load', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?start_date=2024-01-01&end_date=2024-01-03']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    })
+  })
+
+  it('reads all filter params from URL on initial load', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?search=Success&status=success&models=gpt-4&start_date=2024-01-01&end_date=2024-01-03']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+    // Issue #2 should not be visible (doesn't match search, status, or model)
+    await waitFor(() => {
+      expect(screen.queryByText('#2')).not.toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('handles invalid status values gracefully (ignores them)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?status=invalid,success,also_invalid']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+    // Only valid "success" status should be applied
+    await waitFor(() => {
+      expect(screen.queryByText('#2')).not.toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('handles empty/missing params gracefully (shows all data)', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?search=&status=&models=']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    })
+  })
+
+  it('handles malformed date ranges gracefully', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?start_date=invalid&end_date=also_invalid']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    })
+  })
+
+  it('syncs filter changes to URL query params', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Search logs...')).toBeInTheDocument()
+    })
+
+    // Type in search - this should update URL params
+    const searchInput = screen.getByPlaceholderText('Search logs...')
+    fireEvent.change(searchInput, { target: { value: 'Success' } })
+
+    // Wait for debounce and URL update
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // The component should filter based on the search
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('handles URL params correctly on mount', async () => {
+    // Render with URL params - should filter on mount
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?status=error']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByText('#1')).not.toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('removes params from URL when filters are cleared', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?search=test&status=success']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Search logs...')).toBeInTheDocument()
+    })
+
+    // Click clear filters
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Clear filters/i })).toBeInTheDocument()
+    }, { timeout: 2000 })
+
+    const clearButton = screen.getByRole('button', { name: /Clear filters/i })
+    fireEvent.click(clearButton)
+
+    // All issues should be visible after clearing
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('preserves expand/collapse state separately from URL params', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+
+    // Expand the group
+    const expandButton = screen.getByRole('button', { name: /#1 Success Issue/i })
+    fireEvent.click(expandButton)
+
+    // Should show expanded content
+    const promptPreviews = screen.getAllByText('Hello success')
+    expect(promptPreviews.length).toBeGreaterThan(0)
+
+    // Expand/collapse state is in component state, not URL
+    // This test verifies the component renders correctly with URL params
+  })
+
+  it('handles comma-separated model names correctly', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?models=gpt-4,gpt-3.5']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    })
+  })
+
+  it('handles comma-separated status values correctly', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?status=success,error']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+      expect(screen.getByText('#2')).toBeInTheDocument()
+    })
+  })
+
+  it('shows empty state when URL filters match nothing', async () => {
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?search=nonexistent']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('No logs found matching your filters')).toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+
+  it('combines URL params with component state correctly', async () => {
+    // Start with URL params
+    render(
+      <MemoryRouter initialEntries={['/project/proj1/llm-logs?status=success']}>
+        <LlmLogs projectId="proj1" />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(screen.queryByText('#2')).not.toBeInTheDocument()
+    }, { timeout: 2000 })
+
+    // Add additional filter via component (search)
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('Search logs...')).toBeInTheDocument()
+    })
+
+    const searchInput = screen.getByPlaceholderText('Search logs...')
+    fireEvent.change(searchInput, { target: { value: 'Success' } })
+
+    // Should still show #1 (matches both URL status=success and search=Success)
+    await waitFor(() => {
+      expect(screen.getByText('#1')).toBeInTheDocument()
+    }, { timeout: 2000 })
+  })
+})

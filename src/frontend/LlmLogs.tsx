@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { 
   ChevronRight, 
@@ -613,11 +613,88 @@ interface LlmLogsProps {
 
 export function LlmLogs({ projectId }: LlmLogsProps) {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [groups, setGroups] = useState<GroupedLlmLog[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedGroups, setExpandedGroups] = useState(new Set())
-  const [filters, setFilters] = useState(DEFAULT_FILTER_STATE)
+
+  // Parse filter state from URL query params on initial load
+  const parseFiltersFromUrl = useCallback((): FilterState => {
+    const search = searchParams.get('search') ?? ''
+    const statusParam = searchParams.get('status')
+    const modelsParam = searchParams.get('models')
+    const startDate = searchParams.get('start_date') ?? ''
+    const endDate = searchParams.get('end_date') ?? ''
+
+    const status = new Set<'success' | 'error'>()
+    if (statusParam) {
+      for (const s of statusParam.split(',')) {
+        if (s === 'success' || s === 'error') {
+          status.add(s)
+        }
+      }
+    }
+
+    const models = new Set<string>()
+    if (modelsParam) {
+      for (const m of modelsParam.split(',')) {
+        if (m.trim()) {
+          models.add(m.trim())
+        }
+      }
+    }
+
+    return { search, status, models, startDate, endDate }
+  }, [searchParams])
+
+  const [filters, setFilters] = useState<FilterState>(() => parseFiltersFromUrl())
+
+  // Update filters when URL params change (for external navigation)
+  useEffect(() => {
+    setFilters(parseFiltersFromUrl())
+  }, [searchParams, parseFiltersFromUrl])
+
+  // Sync filter state to URL query params when filters change
+  useEffect(() => {
+    const newParams = new URLSearchParams(searchParams)
+    
+    // Search param
+    if (filters.search.trim()) {
+      newParams.set('search', filters.search)
+    } else {
+      newParams.delete('search')
+    }
+
+    // Status param (comma-separated)
+    if (filters.status.size > 0) {
+      newParams.set('status', Array.from(filters.status).join(','))
+    } else {
+      newParams.delete('status')
+    }
+
+    // Models param (comma-separated)
+    if (filters.models.size > 0) {
+      newParams.set('models', Array.from(filters.models).join(','))
+    } else {
+      newParams.delete('models')
+    }
+
+    // Date range params
+    if (filters.startDate) {
+      newParams.set('start_date', filters.startDate)
+    } else {
+      newParams.delete('start_date')
+    }
+
+    if (filters.endDate) {
+      newParams.set('end_date', filters.endDate)
+    } else {
+      newParams.delete('end_date')
+    }
+
+    setSearchParams(newParams, { replace: true })
+  }, [filters, searchParams, setSearchParams])
 
   // Extract distinct models from fetched data
   const availableModels = useMemo(() => extractDistinctModels(groups), [groups])
