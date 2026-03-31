@@ -6,6 +6,8 @@ import { Router } from "express";
 import type { Db } from "../db";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
 import { syncTasksFromDisk } from "./yaml-sync";
+import { nudgeForeman } from "./scheduler";
+import { nudgeDirector } from "../director/scheduler";
 
 export function createForemanRouter(db: Db): Router {
   const router = Router();
@@ -82,6 +84,7 @@ export function createForemanRouter(db: Db): Router {
       return res.status(409).json({ error: `Cannot queue task with status "${task.status}"` });
     }
     db.updateForemanTask(task.id, { status: "queued", error_message: null, retry_count: 0, next_retry_at: null });
+    nudgeForeman(db);
     res.json(db.getForemanTask(task.id));
   });
 
@@ -114,6 +117,7 @@ export function createForemanRouter(db: Db): Router {
       git_pr_url: null,
       git_pr_number: null,
     });
+    nudgeForeman(db);
     res.json(db.getForemanTask(task.id));
   });
 
@@ -124,6 +128,8 @@ export function createForemanRouter(db: Db): Router {
       return res.status(409).json({ error: `Cannot complete task with status "${task.status}"` });
     }
     db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
+    nudgeForeman(db); // may unblock dependent tasks
+    nudgeDirector(db); // may advance milestone
     res.json(db.getForemanTask(task.id));
   });
 
@@ -137,6 +143,7 @@ export function createForemanRouter(db: Db): Router {
       db.updateForemanTask(task.id, { status: "queued" });
       queued++;
     }
+    nudgeForeman(db);
     res.json({ queued });
   });
 
@@ -162,6 +169,7 @@ export function createForemanRouter(db: Db): Router {
     }
 
     const result = syncTasksFromDisk(db, config.tasks_dir, config.project_id);
+    nudgeForeman(db);
     res.json(result);
   });
 
@@ -179,6 +187,7 @@ export function createForemanRouter(db: Db): Router {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
     const config = db.upsertForemanConfig(updates);
+    nudgeForeman(db);
     res.json(config);
   });
 

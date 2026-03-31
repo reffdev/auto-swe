@@ -23,6 +23,7 @@ import { resolveModel } from "./routing";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 import { validateAcceptanceCriteria } from "./validator";
 import { getBreaker } from "./circuit-breaker";
+import { nudgeDirector } from "../director/scheduler";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
 
@@ -242,6 +243,9 @@ export async function executeForemanTask(
       duration_ms: durationMs,
     });
 
+    // Notify Director (if this is a Director-managed task, it will auto-verify)
+    if (task.directive_id) nudgeDirector(db);
+
     // Clean up worktree on success
     try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
 
@@ -258,6 +262,9 @@ export async function executeForemanTask(
     });
 
     handleFailure(db, task, foremanRun.id, durationMs, errorMsg, worktreePath);
+
+    // Notify Director of failure (may trigger corrective planning)
+    if (task.directive_id) nudgeDirector(db);
   } finally {
     unregisterActiveTask(task.id);
   }

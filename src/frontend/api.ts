@@ -555,3 +555,124 @@ export function getForemanConfig(): Promise<ForemanConfig | null> {
 export function updateForemanConfig(data: Partial<ForemanConfig>): Promise<ForemanConfig> {
   return json("/api/foreman/config", { method: "PATCH", body: JSON.stringify(data) });
 }
+
+// ─── Director ────────────────────────────────────────────────────────────────
+
+export interface DirectorDirective {
+  id: string;
+  project_id: string;
+  directive: string;
+  design_docs: string | null;
+  design_doc_path: string | null;
+  autonomy_level: string;
+  status: string;
+  conversation_id: string | null;
+  progress: string | null;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface DirectorMilestone {
+  id: string;
+  directive_id: string;
+  sequence: number;
+  title: string;
+  description: string;
+  verification: string | null;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface DirectorReview {
+  id: string;
+  directive_id: string;
+  task_id: string | null;
+  milestone_id: string | null;
+  review_type: string;
+  question: string;
+  context: string;
+  options: string | null;
+  response: string | null;
+  status: string;
+  created_at: string;
+  responded_at: string | null;
+}
+
+export interface DirectorMessage {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface DirectorPollResponse {
+  directive: DirectorDirective;
+  milestones: DirectorMilestone[];
+  tasks: ForemanTask[];
+  reviews: DirectorReview[];
+}
+
+export function getDirectorDirectives(projectId?: string): Promise<DirectorDirective[]> {
+  const qs = projectId ? `?project_id=${projectId}` : "";
+  return json(`/api/director/directives${qs}`);
+}
+
+export function createDirectorDirective(data: {
+  project_id: string; directive: string; design_docs?: string[]; autonomy_level?: string;
+}): Promise<DirectorDirective> {
+  return json("/api/director/directives", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function getDirectorDirective(id: string): Promise<{ directive: DirectorDirective; milestones: DirectorMilestone[]; pendingReviews: DirectorReview[] }> {
+  return json(`/api/director/directives/${id}`);
+}
+
+export function directorPoll(id: string): Promise<DirectorPollResponse> {
+  return json(`/api/director/directives/${id}/poll`);
+}
+
+export function pauseDirective(id: string): Promise<DirectorDirective> {
+  return json(`/api/director/directives/${id}/pause`, { method: "POST" });
+}
+
+export function resumeDirective(id: string): Promise<DirectorDirective> {
+  return json(`/api/director/directives/${id}/resume`, { method: "POST" });
+}
+
+export function createDirectorConversation(directiveId: string): Promise<{ conversation: { id: string }; messages: DirectorMessage[] }> {
+  return json(`/api/director/directives/${directiveId}/conversations`, { method: "POST" });
+}
+
+export function getDirectorConversation(id: string): Promise<{ conversation: { id: string; status: string }; messages: DirectorMessage[] }> {
+  return json(`/api/director/conversations/${id}`);
+}
+
+export function sendDirectorMessage(conversationId: string, content: string): Promise<{ message_id: string }> {
+  return json(`/api/director/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ content }) });
+}
+
+export function pollDirectorMessages(conversationId: string, afterId?: string): Promise<{ messages: DirectorMessage[]; generating: boolean; partialText?: string }> {
+  const qs = afterId ? `?after=${afterId}` : "";
+  return json(`/api/director/conversations/${conversationId}/messages${qs}`);
+}
+
+export function approveDirectorConversation(conversationId: string): Promise<{ directive: DirectorDirective; milestones: DirectorMilestone[] }> {
+  return json(`/api/director/conversations/${conversationId}/approve`, { method: "POST", timeoutMs: 120_000 });
+}
+
+export function getDirectorReviews(status?: string): Promise<DirectorReview[]> {
+  const qs = status ? `?status=${status}` : "";
+  return json(`/api/director/reviews${qs}`);
+}
+
+export function respondToReview(reviewId: string, response: string): Promise<DirectorReview> {
+  return json(`/api/director/reviews/${reviewId}/respond`, { method: "POST", body: JSON.stringify({ response }) });
+}
+
+export function dismissReview(reviewId: string): Promise<DirectorReview> {
+  return json(`/api/director/reviews/${reviewId}/dismiss`, { method: "POST" });
+}

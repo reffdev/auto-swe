@@ -14,6 +14,10 @@ export const ROUTE_PATHS = [
   '/foreman',
   '/foreman/task/:taskId',
   '/foreman/config',
+  '/director',
+  '/director/:directiveId',
+  '/director/:directiveId/conversation',
+  '/director/review/:reviewId',
 ] as const;
 
 /** Route names for view discrimination */
@@ -29,3 +33,7 @@ export type ViewName =
   | 'foreman-dashboard'
   | 'foreman-task-detail'
   | 'foreman-config'
+  | 'director-dashboard'
+  | 'director-detail'
+  | 'director-conversation'
+  | 'director-review'

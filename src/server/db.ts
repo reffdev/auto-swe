@@ -27,6 +27,11 @@ export type AnalysisRun = typeof schema.analysisRuns.$inferSelect;
 export type ForemanTask = typeof schema.foremanTasks.$inferSelect;
 export type ForemanRun = typeof schema.foremanRuns.$inferSelect;
 export type ForemanConfig = typeof schema.foremanConfig.$inferSelect;
+export type DirectorDirective = typeof schema.directorDirectives.$inferSelect;
+export type DirectorMilestone = typeof schema.directorMilestones.$inferSelect;
+export type DirectorReview = typeof schema.directorReviews.$inferSelect;
+export type DirectorConversation = typeof schema.directorConversations.$inferSelect;
+export type DirectorMessage = typeof schema.directorMessages.$inferSelect;
 
 // ─── Database class ───────────────────────────────────────────────────────────
 
@@ -149,6 +154,52 @@ export class Db {
         tick_interval_ms INTEGER NOT NULL DEFAULT 30000,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS director_directives (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        directive TEXT NOT NULL,
+        design_docs TEXT, design_doc_path TEXT,
+        autonomy_level TEXT NOT NULL DEFAULT 'standard',
+        status TEXT NOT NULL DEFAULT 'drafting',
+        conversation_id TEXT, progress TEXT, error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        completed_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS director_milestones (
+        id TEXT PRIMARY KEY,
+        directive_id TEXT NOT NULL REFERENCES director_directives(id),
+        sequence INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        verification TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        started_at TEXT, completed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS director_reviews (
+        id TEXT PRIMARY KEY,
+        directive_id TEXT NOT NULL REFERENCES director_directives(id),
+        task_id TEXT, milestone_id TEXT,
+        review_type TEXT NOT NULL,
+        question TEXT NOT NULL, context TEXT NOT NULL,
+        options TEXT, response TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        responded_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS director_conversations (
+        id TEXT PRIMARY KEY,
+        directive_id TEXT NOT NULL REFERENCES director_directives(id),
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS director_messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES director_conversations(id),
+        role TEXT NOT NULL, content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
 
     // Indexes for foreman query performance
@@ -184,6 +235,8 @@ export class Db {
       "ALTER TABLE projects ADD COLUMN test_command TEXT",
       "ALTER TABLE projects ADD COLUMN lint_command TEXT",
       "ALTER TABLE projects ADD COLUMN context_limit INTEGER", // unused — context_limit is per-machine only
+      "ALTER TABLE foreman_tasks ADD COLUMN directive_id TEXT",
+      "ALTER TABLE foreman_tasks ADD COLUMN milestone_id TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -196,7 +249,7 @@ export class Db {
 
   // ─── Crash recovery ──────────────────────────────────────────────────────
 
-  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanRuns: number } {
+  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanRuns: number; directorDirectives: number } {
     const db = this.drizzle;
     const m = db.update(schema.machines)
       .set({ status: "idle", current_run_id: null })
@@ -219,12 +272,18 @@ export class Db {
       .set({ status: "fail", completed_at: sql`datetime('now')` })
       .where(eq(schema.foremanRuns.status, "running"))
       .run();
+    // Reset planning directives back to active so the Director re-plans
+    const dd = db.update(schema.directorDirectives)
+      .set({ status: "active" })
+      .where(eq(schema.directorDirectives.status, "planning"))
+      .run();
     return {
       machines: m.changes,
       runs: r.changes,
       issues: i.changes,
       foremanTasks: ft.changes,
       foremanRuns: fr.changes,
+      directorDirectives: dd.changes,
     };
   }
 
@@ -916,6 +975,237 @@ export class Db {
       tick_interval_ms: data.tick_interval_ms ?? 30000,
     }).run();
     return this.getForemanConfig()!;
+  }
+
+  // ─── Director Directives ────────────────────────────────────────────────
+
+  getDirectorDirectives(projectId?: string): DirectorDirective[] {
+    if (projectId) {
+      return this.drizzle.select().from(schema.directorDirectives)
+        .where(eq(schema.directorDirectives.project_id, projectId))
+        .orderBy(desc(schema.directorDirectives.created_at)).all();
+    }
+    return this.drizzle.select().from(schema.directorDirectives)
+      .orderBy(desc(schema.directorDirectives.created_at)).all();
+  }
+
+  getDirectorDirective(id: string): DirectorDirective | null {
+    return this.drizzle.select().from(schema.directorDirectives)
+      .where(eq(schema.directorDirectives.id, id)).get() ?? null;
+  }
+
+  createDirectorDirective(data: {
+    project_id: string; directive: string;
+    design_docs?: string[]; autonomy_level?: string;
+  }): DirectorDirective {
+    const id = randomUUID();
+    this.drizzle.insert(schema.directorDirectives).values({
+      id,
+      project_id: data.project_id,
+      directive: data.directive,
+      design_docs: data.design_docs ? JSON.stringify(data.design_docs) : null,
+      autonomy_level: data.autonomy_level ?? "standard",
+    }).run();
+    return this.getDirectorDirective(id)!;
+  }
+
+  updateDirectorDirective(id: string, data: Partial<Omit<DirectorDirective, "id" | "created_at">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.directorDirectives).set(clean).where(eq(schema.directorDirectives.id, id)).run();
+  }
+
+  getActiveDirectives(): DirectorDirective[] {
+    return this.drizzle.select().from(schema.directorDirectives)
+      .where(or(eq(schema.directorDirectives.status, "active"), eq(schema.directorDirectives.status, "paused")))
+      .all();
+  }
+
+  // ─── Director Milestones ──────────────────────────────────────────────────
+
+  getDirectorMilestones(directiveId: string): DirectorMilestone[] {
+    return this.drizzle.select().from(schema.directorMilestones)
+      .where(eq(schema.directorMilestones.directive_id, directiveId))
+      .orderBy(schema.directorMilestones.sequence).all();
+  }
+
+  getDirectorMilestone(id: string): DirectorMilestone | null {
+    return this.drizzle.select().from(schema.directorMilestones)
+      .where(eq(schema.directorMilestones.id, id)).get() ?? null;
+  }
+
+  createDirectorMilestone(data: {
+    directive_id: string; sequence: number; title: string;
+    description?: string; verification?: string;
+  }): DirectorMilestone {
+    const id = randomUUID();
+    this.drizzle.insert(schema.directorMilestones).values({
+      id,
+      directive_id: data.directive_id,
+      sequence: data.sequence,
+      title: data.title,
+      description: data.description ?? "",
+      verification: data.verification ?? null,
+    }).run();
+    return this.getDirectorMilestone(id)!;
+  }
+
+  updateDirectorMilestone(id: string, data: Partial<Omit<DirectorMilestone, "id" | "created_at">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.directorMilestones).set(clean).where(eq(schema.directorMilestones.id, id)).run();
+  }
+
+  getActiveMilestone(directiveId: string): DirectorMilestone | null {
+    return this.drizzle.select().from(schema.directorMilestones)
+      .where(and(eq(schema.directorMilestones.directive_id, directiveId), eq(schema.directorMilestones.status, "active")))
+      .get() ?? null;
+  }
+
+  // ─── Director Reviews ─────────────────────────────────────────────────────
+
+  getDirectorReviews(directiveId?: string, status?: string): DirectorReview[] {
+    if (directiveId && status) {
+      return this.drizzle.select().from(schema.directorReviews)
+        .where(and(eq(schema.directorReviews.directive_id, directiveId), eq(schema.directorReviews.status, status)))
+        .orderBy(desc(schema.directorReviews.created_at)).all();
+    }
+    if (directiveId) {
+      return this.drizzle.select().from(schema.directorReviews)
+        .where(eq(schema.directorReviews.directive_id, directiveId))
+        .orderBy(desc(schema.directorReviews.created_at)).all();
+    }
+    if (status) {
+      return this.drizzle.select().from(schema.directorReviews)
+        .where(eq(schema.directorReviews.status, status))
+        .orderBy(desc(schema.directorReviews.created_at)).all();
+    }
+    return this.drizzle.select().from(schema.directorReviews)
+      .orderBy(desc(schema.directorReviews.created_at)).all();
+  }
+
+  getDirectorReview(id: string): DirectorReview | null {
+    return this.drizzle.select().from(schema.directorReviews)
+      .where(eq(schema.directorReviews.id, id)).get() ?? null;
+  }
+
+  createDirectorReview(data: {
+    directive_id: string; task_id?: string; milestone_id?: string;
+    review_type: string; question: string; context: string;
+    options?: string[];
+  }): DirectorReview {
+    const id = randomUUID();
+    this.drizzle.insert(schema.directorReviews).values({
+      id,
+      directive_id: data.directive_id,
+      task_id: data.task_id ?? null,
+      milestone_id: data.milestone_id ?? null,
+      review_type: data.review_type,
+      question: data.question,
+      context: data.context,
+      options: data.options ? JSON.stringify(data.options) : null,
+    }).run();
+    return this.getDirectorReview(id)!;
+  }
+
+  updateDirectorReview(id: string, data: Partial<Omit<DirectorReview, "id" | "created_at">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.directorReviews).set(clean).where(eq(schema.directorReviews.id, id)).run();
+  }
+
+  getPendingReviewsForDirective(directiveId: string): DirectorReview[] {
+    return this.drizzle.select().from(schema.directorReviews)
+      .where(and(eq(schema.directorReviews.directive_id, directiveId), eq(schema.directorReviews.status, "pending")))
+      .all();
+  }
+
+  // ─── Director Conversations ───────────────────────────────────────────────
+
+  createDirectorConversation(data: { directive_id: string }): DirectorConversation {
+    const id = randomUUID();
+    this.drizzle.insert(schema.directorConversations).values({
+      id,
+      directive_id: data.directive_id,
+    }).run();
+    return this.drizzle.select().from(schema.directorConversations)
+      .where(eq(schema.directorConversations.id, id)).get()!;
+  }
+
+  getDirectorConversation(id: string): DirectorConversation | null {
+    return this.drizzle.select().from(schema.directorConversations)
+      .where(eq(schema.directorConversations.id, id)).get() ?? null;
+  }
+
+  updateDirectorConversation(id: string, data: Partial<Pick<DirectorConversation, "status" | "updated_at">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.directorConversations).set(clean)
+      .where(eq(schema.directorConversations.id, id)).run();
+  }
+
+  // ─── Director Messages ────────────────────────────────────────────────────
+
+  createDirectorMessage(data: { conversation_id: string; role: string; content: string }): DirectorMessage {
+    const id = randomUUID();
+    this.drizzle.insert(schema.directorMessages).values({
+      id,
+      conversation_id: data.conversation_id,
+      role: data.role,
+      content: data.content,
+    }).run();
+    this.drizzle.update(schema.directorConversations)
+      .set({ updated_at: new Date().toISOString() })
+      .where(eq(schema.directorConversations.id, data.conversation_id)).run();
+    return this.drizzle.select().from(schema.directorMessages)
+      .where(eq(schema.directorMessages.id, id)).get()!;
+  }
+
+  getDirectorMessages(conversationId: string, afterId?: string): DirectorMessage[] {
+    if (afterId) {
+      const after = this.drizzle.select().from(schema.directorMessages)
+        .where(eq(schema.directorMessages.id, afterId)).get();
+      if (after) {
+        return (this.sqlite
+          .prepare("SELECT * FROM director_messages WHERE conversation_id = ? AND rowid > (SELECT rowid FROM director_messages WHERE id = ?) ORDER BY rowid ASC")
+          .all(conversationId, afterId) as DirectorMessage[]);
+      }
+    }
+    return this.drizzle.select().from(schema.directorMessages)
+      .where(eq(schema.directorMessages.conversation_id, conversationId))
+      .orderBy(schema.directorMessages.created_at).all();
+  }
+
+  // ─── Director Task Queries ────────────────────────────────────────────────
+
+  /** Get foreman tasks for a specific directive */
+  getDirectiveTasks(directiveId: string, milestoneId?: string): ForemanTask[] {
+    if (milestoneId) {
+      return this.drizzle.select().from(schema.foremanTasks)
+        .where(and(eq(schema.foremanTasks.directive_id, directiveId), eq(schema.foremanTasks.milestone_id, milestoneId)))
+        .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at).all();
+    }
+    return this.drizzle.select().from(schema.foremanTasks)
+      .where(eq(schema.foremanTasks.directive_id, directiveId))
+      .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at).all();
+  }
+
+  /** Get tasks awaiting Director verification */
+  getDirectiveTasksAwaitingReview(directiveId: string): ForemanTask[] {
+    return this.drizzle.select().from(schema.foremanTasks)
+      .where(and(
+        eq(schema.foremanTasks.directive_id, directiveId),
+        eq(schema.foremanTasks.status, "awaiting_review"),
+      )).all();
+  }
+
+  /** Get failed tasks for a directive (after all Foreman retries exhausted) */
+  getDirectiveFailedTasks(directiveId: string): ForemanTask[] {
+    return this.drizzle.select().from(schema.foremanTasks)
+      .where(and(
+        eq(schema.foremanTasks.directive_id, directiveId),
+        eq(schema.foremanTasks.status, "failed"),
+      )).all();
   }
 
   // ─── Planner Conversations ────────────────────────────────────────────────

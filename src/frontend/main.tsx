@@ -18,6 +18,10 @@ const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/foreman', view: 'foreman-dashboard' },
   { path: '/foreman/task/:taskId', view: 'foreman-task-detail' },
   { path: '/foreman/config', view: 'foreman-config' },
+  { path: '/director', view: 'director-dashboard' },
+  { path: '/director/review/:reviewId', view: 'director-review' },
+  { path: '/director/:directiveId/conversation', view: 'director-conversation' },
+  { path: '/director/:directiveId', view: 'director-detail' },
 ]
 
 const router = createHashRouter(

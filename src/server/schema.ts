@@ -145,6 +145,73 @@ export const llmRequests = sqliteTable("llm_requests", {
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// ─── Director Directives ─────────────────────────────────────────────────────
+
+export const directorDirectives = sqliteTable("director_directives", {
+  id: text("id").primaryKey(),
+  project_id: text("project_id").notNull().references(() => projects.id),
+  directive: text("directive").notNull(),
+  design_docs: text("design_docs"),                                // JSON string[] of input file paths
+  design_doc_path: text("design_doc_path"),                        // path to generated design doc in repo
+  autonomy_level: text("autonomy_level").notNull().default("standard"), // conservative|standard|aggressive
+  status: text("status").notNull().default("drafting"),            // drafting|conversing|planning|active|paused|completed|failed
+  conversation_id: text("conversation_id"),
+  progress: text("progress"),                                      // JSON: milestones, decisions, counts
+  error_message: text("error_message"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+  completed_at: text("completed_at"),
+});
+
+// ─── Director Milestones ─────────────────────────────────────────────────────
+
+export const directorMilestones = sqliteTable("director_milestones", {
+  id: text("id").primaryKey(),
+  directive_id: text("directive_id").notNull().references(() => directorDirectives.id),
+  sequence: integer("sequence").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  verification: text("verification"),                              // what must be true for completion
+  status: text("status").notNull().default("pending"),             // pending|active|verifying|completed|failed
+  started_at: text("started_at"),
+  completed_at: text("completed_at"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ─── Director Reviews ────────────────────────────────────────────────────────
+
+export const directorReviews = sqliteTable("director_reviews", {
+  id: text("id").primaryKey(),
+  directive_id: text("directive_id").notNull().references(() => directorDirectives.id),
+  task_id: text("task_id"),
+  milestone_id: text("milestone_id"),
+  review_type: text("review_type").notNull(),                      // task_verify|design_choice|milestone_gate|failure_escalation
+  question: text("question").notNull(),
+  context: text("context").notNull(),                              // JSON
+  options: text("options"),                                        // JSON string[] or null
+  response: text("response"),
+  status: text("status").notNull().default("pending"),             // pending|responded|dismissed
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+  responded_at: text("responded_at"),
+});
+
+// ─── Director Conversations ──────────────────────────────────────────────────
+
+export const directorConversations = sqliteTable("director_conversations", {
+  id: text("id").primaryKey(),
+  directive_id: text("directive_id").notNull().references(() => directorDirectives.id),
+  status: text("status").notNull().default("active"),              // active|approved|abandoned
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+  updated_at: text("updated_at").notNull().default(sql`(datetime('now'))`),
+});
+
+export const directorMessages = sqliteTable("director_messages", {
+  id: text("id").primaryKey(),
+  conversation_id: text("conversation_id").notNull().references(() => directorConversations.id),
+  role: text("role").notNull(),                                    // user | assistant
+  content: text("content").notNull(),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // ─── Foreman Tasks ───────────────────────────────────────────────────────────
 
 export const foremanTasks = sqliteTable("foreman_tasks", {
@@ -175,6 +242,8 @@ export const foremanTasks = sqliteTable("foreman_tasks", {
   duration_ms: integer("duration_ms"),
   prompt_tokens: integer("prompt_tokens"),
   completion_tokens: integer("completion_tokens"),
+  directive_id: text("directive_id"),                               // links to director_directives (null for manual tasks)
+  milestone_id: text("milestone_id"),                               // links to director_milestones
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   yaml_synced_at: text("yaml_synced_at"),
 });

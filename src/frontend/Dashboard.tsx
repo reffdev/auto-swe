@@ -14,16 +14,21 @@ import { AnalysisView } from './AnalysisView'
 import { ForemanDashboard } from './ForemanDashboard'
 import { ForemanTaskDetail } from './ForemanTaskDetail'
 import { ForemanConfig } from './ForemanConfig'
+import { DirectorDashboard } from './DirectorDashboard'
+import { DirectorConversation } from './DirectorConversation'
+import { DirectorReview } from './DirectorReview'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
 
 export function DashboardLayout({ view }: { view: ViewName }) {
-  const { projectId, issueId, machineId, conversationId, taskId } = useParams<{
+  const { projectId, issueId, machineId, conversationId, taskId, directiveId, reviewId } = useParams<{
     projectId?: string
     issueId?: string
     machineId?: string
     conversationId?: string
     taskId?: string
+    directiveId?: string
+    reviewId?: string
   }>()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -126,6 +131,16 @@ export function DashboardLayout({ view }: { view: ViewName }) {
               return taskId ? <ForemanTaskDetail taskId={taskId} onBack={() => navigate('/foreman')} /> : null
             case 'foreman-config':
               return <ForemanConfig />
+            case 'director-dashboard':
+              return <DirectorDashboard />
+            case 'director-detail':
+              // For now, director detail shows the dashboard with the directive selected
+              // TODO: dedicated directive detail view with milestone timeline
+              return <DirectorDashboard />
+            case 'director-conversation':
+              return directiveId ? <DirectorConversation directiveId={directiveId} onBack={() => navigate('/director')} /> : null
+            case 'director-review':
+              return reviewId ? <DirectorReview reviewId={reviewId} onBack={() => navigate('/director')} /> : null
           }
         })() : null}
       </main>
