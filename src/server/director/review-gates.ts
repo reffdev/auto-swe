@@ -5,7 +5,7 @@
  * responses to resume autonomous operation.
  */
 
-import type { Db, DirectorDirective, DirectorReview, ForemanTask } from "../db";
+import type { Db, DirectorDirective, DirectorReview } from "../db";
 
 export type ReviewType = "task_verify" | "design_choice" | "milestone_gate" | "failure_escalation";
 

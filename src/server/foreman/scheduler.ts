@@ -8,7 +8,7 @@
 
 import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
-import { executeForemanTask, getActiveForemanTaskCount, registerActiveTask, unregisterActiveTask } from "./executor";
+import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { getBreaker } from "./circuit-breaker";
 
 // ─── Module state ────────────────────────────────────────────────────────────
@@ -70,66 +70,67 @@ async function schedulerTick(db: Db): Promise<void> {
     if (running.length > 0) return;
   }
 
-  // Only one task at a time
-  if (getActiveForemanTaskCount() > 0) return;
-
-  // Get tasks ready for dispatch (dependencies met, past backoff)
-  const ready = db.getForemanTasksReadyToRun();
-  if (ready.length === 0) {
-    // Nothing ready now — schedule a wake-up for the nearest retry backoff
-    scheduleRetryWakeup(db);
-    return;
-  }
-
-  // Sort by model affinity then priority
-  const sorted = sortByModelAffinity(ready, lastOllamaModel);
-  const task = sorted[0];
-  const route = resolveModel(task);
-
-  // MVP: only support Ollama tasks
-  if (route.machineType !== "ollama") {
-    console.log(`Foreman: task ${task.id} type "${task.type}" not supported in MVP`);
-    db.updateForemanTask(task.id, {
-      status: "failed",
-      error_message: `Task type "${task.type}" (machine type: ${route.machineType}) is not yet supported in MVP`,
-    });
-    // Nudge again — there may be more tasks to process
-    nudgeForeman(db);
-    return;
-  }
-
-  // Check machine availability (shared concurrency)
-  const machine = db.getAvailableMachine();
-  if (!machine) return; // backpressure — will be nudged when a machine frees up
-
-  // Check circuit breaker
-  const breaker = getBreaker(machine.id);
-  if (!breaker.canExecute()) return;
-
-  // Get the project
   const project = db.getProject(config.project_id);
   if (!project) {
     console.error(`Foreman: project ${config.project_id} not found`);
     return;
   }
 
-  // Reserve task BEFORE dispatching to prevent double-dispatch
-  db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });
+  // Dispatch loop — fill all available machine slots
+  let dispatched = 0;
+  for (;;) {
+    // Get tasks ready for dispatch (re-query each iteration since we change status)
+    const ready = db.getForemanTasksReadyToRun();
+    if (ready.length === 0) break;
 
-  // Fire and forget
-  const controller = new AbortController();
-  registerActiveTask(task.id, controller);
+    // Check machine availability (shared concurrency across all work types)
+    const machine = db.getAvailableMachine();
+    if (!machine) break; // all machines at capacity
 
-  executeForemanTask({ db }, machine, task, project)
-    .catch(err => console.error(`Foreman task ${task.id} error:`, err))
-    .finally(() => {
-      unregisterActiveTask(task.id);
-      const resolved = task.resolved_model;
-      if (resolved) lastOllamaModel = resolved;
+    // Check circuit breaker for this machine
+    const breaker = getBreaker(machine.id);
+    if (!breaker.canExecute()) break;
 
-      // Task finished — nudge to pick up the next one
-      nudgeForeman(db);
-    });
+    // Sort by model affinity then priority
+    const sorted = sortByModelAffinity(ready, lastOllamaModel);
+    const task = sorted[0];
+    const route = resolveModel(task);
+
+    // MVP: only support Ollama tasks
+    if (route.machineType !== "ollama") {
+      console.log(`Foreman: task ${task.id} type "${task.type}" not supported in MVP`);
+      db.updateForemanTask(task.id, {
+        status: "failed",
+        error_message: `Task type "${task.type}" (machine type: ${route.machineType}) is not yet supported in MVP`,
+      });
+      continue; // try next task
+    }
+
+    // Reserve task BEFORE dispatching to prevent double-dispatch
+    db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });
+
+    // Fire and forget
+    const controller = new AbortController();
+    registerActiveTask(task.id, controller);
+
+    executeForemanTask({ db }, machine, task, project)
+      .catch(err => console.error(`Foreman task ${task.id} error:`, err))
+      .finally(() => {
+        unregisterActiveTask(task.id);
+        const resolved = task.resolved_model;
+        if (resolved) lastOllamaModel = resolved;
+
+        // Task finished — nudge to fill the freed slot
+        nudgeForeman(db);
+      });
+
+    dispatched++;
+  }
+
+  if (dispatched === 0) {
+    // Nothing dispatched — schedule a wake-up for the nearest retry backoff
+    scheduleRetryWakeup(db);
+  }
 }
 
 // ─── Retry backoff timer ─────────────────────────────────────────────────────

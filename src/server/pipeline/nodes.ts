@@ -69,7 +69,7 @@ const AUTO_READ_FILES = [
  * Read key project files from the worktree and build a context section.
  * Returns the context string and the total chars injected.
  */
-function gatherProjectContext(worktreePath: string): { context: string; fileCount: number; totalChars: number; loadedFiles: string[] } {
+export function gatherProjectContext(worktreePath: string): { context: string; fileCount: number; totalChars: number; loadedFiles: string[] } {
   const sections: string[] = [];
   let totalChars = 0;
   const loadedFiles: string[] = [];

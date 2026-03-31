@@ -457,6 +457,8 @@ export interface ForemanTask {
   duration_ms: number | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
+  directive_id: string | null;
+  milestone_id: string | null;
   created_at: string;
   yaml_synced_at: string | null;
 }
@@ -546,6 +548,10 @@ export function getForemanRun(runId: string): Promise<ForemanRun> {
 
 export function syncForemanYaml(): Promise<{ imported: number; updated: number; errors: string[] }> {
   return json("/api/foreman/sync", { method: "POST" });
+}
+
+export function cleanupWorktrees(): Promise<{ cleaned: number; errors: string[] }> {
+  return json("/api/foreman/cleanup-worktrees", { method: "POST" });
 }
 
 export function getForemanConfig(): Promise<ForemanConfig | null> {

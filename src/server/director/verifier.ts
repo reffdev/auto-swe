@@ -11,9 +11,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import type { Db, ForemanTask, Machine, Project } from "../db";
+import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
-import { parseVerdict, type ParsedVerdict } from "./parsers";
+import { parseVerdict } from "./parsers";
 import { selectPlannerMachine } from "../planner-llm";
 
 export interface VerificationResult {
@@ -42,7 +42,7 @@ export async function verifyTask(
   const { machine, modelId } = machineInfo;
 
   // Get git diff for the task's branch
-  const gitDiff = getTaskDiff(project.workdir, task.git_branch);
+  const gitDiff = getTaskDiff(project.workdir, task.git_branch, project.git_default_branch);
 
   // Read modified files
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
@@ -187,11 +187,12 @@ export async function verifyMilestone(
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function getTaskDiff(workdir: string, branch: string | null): string {
+function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "main"): string {
   if (!branch) return "(no branch)";
   try {
-    const result = spawnSync("git", ["diff", "main..." + branch, "--stat"], { cwd: workdir, timeout: 10_000 });
-    const fullDiff = spawnSync("git", ["diff", "main..." + branch], { cwd: workdir, timeout: 10_000 });
+    const base = defaultBranch;
+    const result = spawnSync("git", ["diff", `${base}...${branch}`, "--stat"], { cwd: workdir, timeout: 10_000 });
+    const fullDiff = spawnSync("git", ["diff", `${base}...${branch}`], { cwd: workdir, timeout: 10_000 });
     return (result.stdout?.toString() ?? "") + "\n\n" + (fullDiff.stdout?.toString() ?? "").slice(0, 10000);
   } catch {
     return "(could not generate diff)";

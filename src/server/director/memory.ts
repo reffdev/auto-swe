@@ -9,7 +9,8 @@
 
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } from "../db";
+import type { Db, DirectorDirective, Project } from "../db";
+import { gatherProjectContext } from "../pipeline/nodes";
 
 // ─── Progress JSON ──────────────────────────────────────────────────────────
 
@@ -159,7 +160,15 @@ export function assembleDirectorContext(
     }
   }
 
-  // 7. Pending review gates
+  // 7. Project filesystem state (directory listing, key files)
+  try {
+    const projectState = gatherProjectContext(project.workdir);
+    if (projectState.context) {
+      parts.push("# Project Filesystem State\n\n" + projectState.context);
+    }
+  } catch { /* non-fatal — project dir may not exist yet */ }
+
+  // 8. Pending review gates
   const pendingReviews = db.getPendingReviewsForDirective(directive.id);
   if (pendingReviews.length > 0) {
     parts.push("# Pending Human Reviews\n\n" + pendingReviews.map(r =>

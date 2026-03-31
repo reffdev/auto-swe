@@ -9,7 +9,7 @@
 
 import { generateText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import type { Db, DirectorDirective, DirectorMilestone, Machine, Project } from "../db";
+import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
 import { parseNextTasks } from "./parsers";
@@ -82,29 +82,26 @@ export async function planNextTasks(
       continue;
     }
 
+    // Tag description with human review flag so the Director scheduler can check it
+    const description = parsed.needs_human_review
+      ? parsed.description + "\n\n[needs_human_review]"
+      : parsed.description;
+
     db.createForemanTask({
       project_id: project.id,
       title: parsed.title,
-      description: parsed.description,
+      description,
       priority: parsed.priority,
       type: parsed.type,
       model: "auto",
       target_files: parsed.target_files,
-      depends_on: [], // TODO: resolve internal depends_on references
+      depends_on: [],
       acceptance_criteria: parsed.acceptance_criteria,
       max_retries: 3,
       status: "queued",
+      directive_id: directive.id,
+      milestone_id: milestone.id,
     });
-
-    // Set directive_id and milestone_id via update (since createForemanTask doesn't accept them directly yet)
-    const tasks = db.getForemanTasks(project.id, "queued");
-    const justCreated = tasks.find(t => t.title === parsed.title && !t.directive_id);
-    if (justCreated) {
-      db.updateForemanTask(justCreated.id, {
-        directive_id: directive.id,
-        milestone_id: milestone.id,
-      });
-    }
 
     created++;
   }

@@ -157,7 +157,7 @@ describe("Directive Task Queries", () => {
     const t1 = db.createForemanTask({ project_id: projectId, title: "T1" });
     db.updateForemanTask(t1.id, { directive_id: d.id, milestone_id: m.id });
 
-    const t2 = db.createForemanTask({ project_id: projectId, title: "T2 (unrelated)" });
+    db.createForemanTask({ project_id: projectId, title: "T2 (unrelated)" });
 
     const tasks = db.getDirectiveTasks(d.id);
     expect(tasks).toHaveLength(1);

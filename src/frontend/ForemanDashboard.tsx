@@ -51,8 +51,8 @@ export function ForemanDashboard() {
   }, [])
 
   useEffect(() => {
-    refresh()
-    const interval = setInterval(refresh, 5000)
+    void refresh()
+    const interval = setInterval(() => void refresh(), 5000)
     return () => clearInterval(interval)
   }, [refresh])
 
@@ -76,7 +76,7 @@ export function ForemanDashboard() {
     try {
       const result = await api.syncForemanYaml()
       setSyncResult(`Imported: ${result.imported}, Updated: ${result.updated}${result.errors.length ? `, Errors: ${result.errors.length}` : ''}`)
-      refresh()
+      void refresh()
     } catch (e) {
       setSyncResult(`Error: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
@@ -88,7 +88,7 @@ export function ForemanDashboard() {
     try {
       const result = await api.queueAllForemanTasks()
       setSyncResult(`Queued ${result.queued} task(s)`)
-      refresh()
+      void refresh()
     } catch (e) {
       setSyncResult(`Error: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -191,7 +191,7 @@ export function ForemanDashboard() {
   )
 }
 
-function TaskRow({ task, isActive, onNavigate, onRefresh }: {
+function TaskRow({ task, isActive: _isActive, onNavigate, onRefresh }: {
   task: ForemanTask; isActive: boolean; onNavigate: () => void; onRefresh: () => void
 }) {
   const prio = PRIORITY_LABELS[task.priority] ?? PRIORITY_LABELS[3]

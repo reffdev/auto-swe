@@ -81,6 +81,24 @@ export function createDirectorRouter(db: Db): Router {
       content: directive.directive,
     });
 
+    // Auto-trigger Director LLM response to the initial directive
+    const project = db.getProject(directive.project_id);
+    if (project) {
+      const machineInfo = selectPlannerMachine(db, project);
+      if (machineInfo) {
+        const allMessages = db.getDirectorMessages(conversation.id);
+        void generateDirectorResponse({
+          db,
+          conversationId: conversation.id,
+          directiveId: directive.id,
+          machine: machineInfo.machine,
+          modelId: machineInfo.modelId,
+          projectName: project.name,
+          messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+        }).catch(err => console.error("Director initial response error:", err));
+      }
+    }
+
     res.status(201).json({ conversation, messages: db.getDirectorMessages(conversation.id) });
   });
 

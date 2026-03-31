@@ -4,9 +4,9 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { RefreshCw, Plus, Play, Pause, CheckCircle, Clock, AlertTriangle, MessageSquare } from 'lucide-react'
+import { RefreshCw, Plus, AlertTriangle } from 'lucide-react'
 import * as api from './api'
-import type { DirectorDirective, DirectorMilestone, DirectorReview, ForemanTask } from './api'
+import type { DirectorDirective, DirectorReview } from './api'
 
 const STATUS_COLORS: Record<string, string> = {
   drafting: 'text-muted-foreground',
@@ -30,17 +30,17 @@ export function DirectorDashboard() {
   }, [])
 
   useEffect(() => {
-    refresh()
-    const interval = setInterval(refresh, 5000)
+    void refresh()
+    const interval = setInterval(() => void refresh(), 5000)
     return () => clearInterval(interval)
   }, [refresh])
 
   // Pending reviews across all directives
   const [pendingReviews, setPendingReviews] = useState<DirectorReview[]>([])
   useEffect(() => {
-    api.getDirectorReviews('pending').then(setPendingReviews).catch(() => {})
+    void api.getDirectorReviews('pending').then(setPendingReviews).catch(() => {})
     const interval = setInterval(() => {
-      api.getDirectorReviews('pending').then(setPendingReviews).catch(() => {})
+      void api.getDirectorReviews('pending').then(setPendingReviews).catch(() => {})
     }, 10000)
     return () => clearInterval(interval)
   }, [])
@@ -98,9 +98,9 @@ export function DirectorDashboard() {
             {directives.map(d => (
               <DirectiveCard key={d.id} directive={d} onClick={() => {
                 if (d.status === 'drafting' || d.status === 'conversing') {
-                  navigate(`/director/${d.id}/conversation`)
+                  void navigate(`/director/${d.id}/conversation`)
                 } else {
-                  navigate(`/director/${d.id}`)
+                  void navigate(`/director/${d.id}`)
                 }
               }} onRefresh={refresh} />
             ))}
@@ -110,14 +110,14 @@ export function DirectorDashboard() {
 
       <NewDirectiveDialog open={showNew} onClose={() => setShowNew(false)} onCreated={(id) => {
         setShowNew(false)
-        refresh()
-        navigate(`/director/${id}/conversation`)
+        void refresh()
+        void navigate(`/director/${id}/conversation`)
       }} />
     </div>
   )
 }
 
-function DirectiveCard({ directive: d, onClick, onRefresh }: { directive: DirectorDirective; onClick: () => void; onRefresh: () => void }) {
+function DirectiveCard({ directive: d, onClick, onRefresh: _onRefresh }: { directive: DirectorDirective; onClick: () => void; onRefresh: () => void }) {
   let progress: { milestones?: Array<{ title: string; status: string; tasks_completed: number; tasks_generated: number }> } = {}
   try { if (d.progress) progress = JSON.parse(d.progress) } catch { /* ignore */ }
 
@@ -127,7 +127,7 @@ function DirectiveCard({ directive: d, onClick, onRefresh }: { directive: Direct
   const pct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0
 
   return (
-    <div onClick={onClick} className="px-6 py-4 hover:bg-accent/30 cursor-pointer transition-colors">
+    <div role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()} className="px-6 py-4 hover:bg-accent/30 cursor-pointer transition-colors">
       <div className="flex items-center justify-between mb-1">
         <h3 className="font-medium text-sm truncate flex-1">{d.directive}</h3>
         <span className={cn('text-xs font-medium ml-3', STATUS_COLORS[d.status] ?? 'text-muted-foreground')}>

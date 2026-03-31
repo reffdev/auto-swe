@@ -18,7 +18,6 @@ export function ForemanConfig() {
   const [projectId, setProjectId] = useState('')
   const [tasksDir, setTasksDir] = useState('')
   const [priorityMode, setPriorityMode] = useState('parallel')
-  const [tickInterval, setTickInterval] = useState(30)
 
   const load = useCallback(async () => {
     try {
@@ -33,13 +32,12 @@ export function ForemanConfig() {
         setProjectId(c.project_id ?? '')
         setTasksDir(c.tasks_dir ?? '')
         setPriorityMode(c.priority_mode)
-        setTickInterval(c.tick_interval_ms / 1000)
       }
     } catch { /* ignore */ }
     finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { void load() }, [load])
 
   const handleSave = async () => {
     setSaving(true)
@@ -50,7 +48,6 @@ export function ForemanConfig() {
         project_id: projectId || null,
         tasks_dir: tasksDir || null,
         priority_mode: priorityMode,
-        tick_interval_ms: tickInterval * 1000,
       })
       setConfig(updated)
       setMessage('Configuration saved')
@@ -81,7 +78,7 @@ export function ForemanConfig() {
         <div className="px-6 py-6 max-w-xl space-y-6">
           {/* Enable/disable */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Scheduler</label>
+            <span className="text-sm font-medium block">Scheduler</span>
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setEnabled(!enabled)}
@@ -105,7 +102,7 @@ export function ForemanConfig() {
 
           {/* Project */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Target Project</label>
+            <span className="text-sm font-medium block">Target Project</span>
             <select
               value={projectId}
               onChange={(e) => setProjectId(e.target.value)}
@@ -121,7 +118,7 @@ export function ForemanConfig() {
 
           {/* Tasks directory */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Tasks Directory</label>
+            <span className="text-sm font-medium block">Tasks Directory</span>
             <Input
               placeholder="/path/to/tasks/backlog"
               value={tasksDir}
@@ -132,7 +129,7 @@ export function ForemanConfig() {
 
           {/* Priority mode */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Priority Mode</label>
+            <span className="text-sm font-medium block">Priority Mode</span>
             <div className="flex gap-2">
               {[
                 { value: 'parallel', label: 'Parallel', desc: 'Run alongside issue pipelines' },
@@ -153,22 +150,6 @@ export function ForemanConfig() {
                   <div className="text-[10px] mt-0.5 text-muted-foreground">{opt.desc}</div>
                 </button>
               ))}
-            </div>
-          </div>
-
-          {/* Tick interval */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Scheduler Interval</label>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                min={5}
-                max={300}
-                value={tickInterval}
-                onChange={(e) => setTickInterval(parseInt(e.target.value) || 30)}
-                className="w-24"
-              />
-              <span className="text-sm text-muted-foreground">seconds</span>
             </div>
           </div>
 
@@ -198,8 +179,8 @@ export function ForemanConfig() {
                 <span>{projects.find(p => p.id === config.project_id)?.name ?? 'None'}</span>
                 <span className="text-muted-foreground">Mode:</span>
                 <span>{config.priority_mode}</span>
-                <span className="text-muted-foreground">Interval:</span>
-                <span>{config.tick_interval_ms / 1000}s</span>
+                <span className="text-muted-foreground">Scheduler:</span>
+                <span>Event-driven</span>
               </div>
             </div>
           )}

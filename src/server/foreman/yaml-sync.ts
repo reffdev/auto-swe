@@ -2,7 +2,7 @@
  * Sync Foreman tasks between YAML files on disk and the database.
  */
 
-import { readdirSync, readFileSync, statSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 import { resolve, extname } from "path";
 import { parse as parseYaml } from "yaml";
 import type { Db } from "../db";
@@ -128,7 +128,7 @@ export function syncTasksFromDisk(
 
     const resolvedDeps: string[] = [];
     for (const depYamlId of data.depends_on) {
-      const dep = db.getForemanTaskByYamlId(String(depYamlId), projectId);
+      const dep = db.getForemanTaskByYamlId(depYamlId, projectId);
       if (dep) {
         resolvedDeps.push(dep.id);
       } else {
@@ -166,7 +166,7 @@ function detectCycles(tasks: Array<{ id: string; depends_on: string[] }>): strin
     const task = taskMap.get(id);
     if (task) {
       for (const dep of task.depends_on) {
-        if (dfs(String(dep), [...path, id])) return true;
+        if (dfs(dep, [...path, id])) return true;
       }
     }
 

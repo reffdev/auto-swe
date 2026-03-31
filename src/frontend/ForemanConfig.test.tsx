@@ -51,13 +51,11 @@ describe('ForemanConfig', () => {
       created_at: '2026-01-01',
     })
     renderConfig()
-    await waitFor(() => {
-      expect(screen.getByText('Foreman Configuration')).toBeInTheDocument()
-      expect(screen.getByText('Scheduler')).toBeInTheDocument()
-      expect(screen.getByText('Target Project')).toBeInTheDocument()
-      expect(screen.getByText('Tasks Directory')).toBeInTheDocument()
-      expect(screen.getByText('Priority Mode')).toBeInTheDocument()
-    })
+    expect(await screen.findByText('Foreman Configuration')).toBeInTheDocument()
+    expect(screen.getByText('Scheduler')).toBeInTheDocument()
+    expect(screen.getByText('Target Project')).toBeInTheDocument()
+    expect(screen.getByText('Tasks Directory')).toBeInTheDocument()
+    expect(screen.getByText('Priority Mode')).toBeInTheDocument()
   })
 
   it('renders with null config', async () => {
@@ -76,8 +74,7 @@ describe('ForemanConfig', () => {
     })
 
     renderConfig()
-    await waitFor(() => screen.getByText('Save Configuration'))
-    fireEvent.click(screen.getByText('Save Configuration'))
+    fireEvent.click(await screen.findByText('Save Configuration'))
 
     await waitFor(() => {
       expect(mockUpdateForemanConfig).toHaveBeenCalledWith(expect.objectContaining({

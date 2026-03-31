@@ -86,10 +86,23 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
       const result = await verifyTask(db, task, project);
 
       if (result.verdict === "pass") {
-        // Auto-complete the task
-        db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
-        console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
-        nudgeForeman(db); // unblock dependents
+        // Check if task was flagged for human review
+        const needsHumanReview = task.description.includes("[needs_human_review]");
+        if (needsHumanReview && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
+          createReviewGate(db, {
+            directive_id: directive.id,
+            task_id: task.id,
+            review_type: "task_verify",
+            question: `Task "${task.title}" passed automated verification but was flagged for human review. Please confirm the output is acceptable.`,
+            context: { issues: result.issues, reasoning: result.reasoning, confidence: result.confidence },
+          });
+          console.log(`Director: task "${task.title}" passed but flagged for human review`);
+        } else {
+          // Auto-complete the task
+          db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
+          console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
+          nudgeForeman(db); // unblock dependents
+        }
       } else if (result.verdict === "fail") {
         // Create a corrective note and re-queue
         db.updateForemanTask(task.id, {

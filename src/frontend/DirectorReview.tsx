@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, Send, X, CheckCircle } from 'lucide-react'
 import * as api from './api'
@@ -90,22 +89,19 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
           {Object.keys(context).length > 0 && (
             <div>
               <h3 className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">Context</h3>
-              {context.issues && Array.isArray(context.issues) && (
+              {context.issues && context.issues.length > 0 && (
                 <ul className="space-y-1 mb-3">
-                  {(context.issues as string[]).map((issue, i) => {
-                    const text = String(issue)
-                    return <li key={i} className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">- {text}</li>
-                  })}
+                  {context.issues.map((issue, i) => (
+                    <li key={i} className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">- {issue}</li>
+                  ))}
                 </ul>
               )}
-              {context.reasoning != null && (() => {
-                const text = String(context.reasoning)
-                return <p className="text-xs text-muted-foreground bg-muted p-2 rounded">{text}</p>
-              })()}
-              {context.error != null && (() => {
-                const text = String(context.error).slice(0, 2000)
-                return <pre className="text-xs text-destructive bg-destructive/10 p-2 rounded whitespace-pre-wrap">{text}</pre>
-              })()}
+              {context.reasoning && (
+                <p className="text-xs text-muted-foreground bg-muted p-2 rounded">{context.reasoning}</p>
+              )}
+              {context.error && (
+                <pre className="text-xs text-destructive bg-destructive/10 p-2 rounded whitespace-pre-wrap">{context.error.slice(0, 2000)}</pre>
+              )}
             </div>
           )}
 

@@ -644,8 +644,10 @@ export class Db {
         OR lr.input_text LIKE ?
         OR lr.output_text LIKE ?
         OR EXISTS (SELECT 1 FROM issues i WHERE i.id = lr.issue_id AND i.title LIKE ?)
+        OR EXISTS (SELECT 1 FROM foreman_tasks ft WHERE 'foreman:' || ft.id = lr.issue_id AND ft.title LIKE ?)
+        OR EXISTS (SELECT 1 FROM director_directives dd WHERE 'director:' || dd.id = lr.issue_id AND dd.directive LIKE ?)
       )`);
-      whereParams.push(pattern, pattern, pattern, pattern);
+      whereParams.push(pattern, pattern, pattern, pattern, pattern, pattern);
     }
 
     const whereSQL = whereParts.length > 0 ? "WHERE " + whereParts.join(" AND ") : "";
@@ -665,13 +667,15 @@ export class Db {
       SELECT
         COALESCE(lr.issue_id, '__UNASSIGNED__') as group_key,
         lr.issue_id,
-        i.title as issue_title,
-        i.status as issue_status,
-        i.created_at as issue_created_at,
+        COALESCE(i.title, ft.title, dd.directive, NULL) as issue_title,
+        COALESCE(i.status, ft.status, dd.status, NULL) as issue_status,
+        COALESCE(i.created_at, ft.created_at, dd.created_at, NULL) as issue_created_at,
         MAX(lr.created_at) as last_request_at,
         COUNT(*) as call_count
       FROM llm_requests lr
       LEFT JOIN issues i ON lr.issue_id = i.id
+      LEFT JOIN foreman_tasks ft ON lr.issue_id = 'foreman:' || ft.id
+      LEFT JOIN director_directives dd ON lr.issue_id = 'director:' || dd.id
       ${whereSQL}
       GROUP BY group_key
       ORDER BY last_request_at DESC
@@ -860,6 +864,7 @@ export class Db {
     yaml_id?: string; priority?: number; type?: string; model?: string;
     target_files?: string[]; depends_on?: string[]; acceptance_criteria?: string[];
     max_retries?: number; status?: string;
+    directive_id?: string; milestone_id?: string;
   }): ForemanTask {
     const id = randomUUID();
     this.drizzle.insert(schema.foremanTasks).values({
@@ -876,6 +881,8 @@ export class Db {
       acceptance_criteria: data.acceptance_criteria ? JSON.stringify(data.acceptance_criteria) : null,
       max_retries: data.max_retries ?? 3,
       status: data.status ?? "backlog",
+      directive_id: data.directive_id ?? null,
+      milestone_id: data.milestone_id ?? null,
     }).run();
     return this.getForemanTask(id)!;
   }

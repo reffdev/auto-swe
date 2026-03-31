@@ -27,8 +27,8 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
   }, [taskId])
 
   useEffect(() => {
-    refresh()
-    const interval = setInterval(refresh, 3000)
+    void refresh()
+    const interval = setInterval(() => void refresh(), 3000)
     return () => clearInterval(interval)
   }, [refresh])
 
@@ -70,22 +70,22 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
           </div>
           <div className="flex items-center gap-2">
             {(task.status === 'backlog' || task.status === 'failed') && (
-              <Button size="sm" onClick={async () => { await api.queueForemanTask(task.id); refresh() }}>
+              <Button size="sm" onClick={() => void api.queueForemanTask(task.id).then(refresh)}>
                 <Play className="size-3.5 mr-1.5" /> Queue
               </Button>
             )}
             {task.status === 'running' && (
-              <Button variant="destructive" size="sm" onClick={async () => { await api.cancelForemanTask(task.id); refresh() }}>
+              <Button variant="destructive" size="sm" onClick={() => void api.cancelForemanTask(task.id).then(refresh)}>
                 <XCircle className="size-3.5 mr-1.5" /> Cancel
               </Button>
             )}
             {task.status === 'awaiting_review' && (
-              <Button size="sm" onClick={async () => { await api.completeForemanTask(task.id); refresh() }}>
+              <Button size="sm" onClick={() => void api.completeForemanTask(task.id).then(refresh)}>
                 <CheckCircle className="size-3.5 mr-1.5" /> Complete
               </Button>
             )}
             {task.status === 'failed' && (
-              <Button variant="outline" size="sm" onClick={async () => { await api.retryForemanTask(task.id); refresh() }}>
+              <Button variant="outline" size="sm" onClick={() => void api.retryForemanTask(task.id).then(refresh)}>
                 <RotateCcw className="size-3.5 mr-1.5" /> Retry
               </Button>
             )}

@@ -24,20 +24,24 @@ export async function decomposeDirective(
   }
 
   const messages = db.getDirectorMessages(directive.conversation_id);
-  const lastAssistant = [...messages].reverse().find(m => m.role === "assistant");
+  // Search backwards through assistant messages for one containing structured blocks
+  const assistantMessages = [...messages].reverse().filter(m => m.role === "assistant");
+  const planMessage = assistantMessages.find(m =>
+    m.content.includes("```design_doc") && m.content.includes("```milestones")
+  ) ?? assistantMessages[0]; // fallback to most recent
 
-  if (!lastAssistant) {
+  if (!planMessage) {
     throw new Error("No assistant message found in conversation");
   }
 
   // Parse design doc from the conversation
-  const designDocContent = parseDesignDoc(lastAssistant.content);
+  const designDocContent = parseDesignDoc(planMessage.content);
   if (!designDocContent) {
     throw new Error("No design document found in the approved conversation. The assistant should have produced a ```design_doc block.");
   }
 
   // Parse milestones
-  const parsedMilestones = parseMilestones(lastAssistant.content);
+  const parsedMilestones = parseMilestones(planMessage.content);
   if (parsedMilestones.length === 0) {
     throw new Error("No milestones found in the approved conversation. The assistant should have produced a ```milestones block.");
   }

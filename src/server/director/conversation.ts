@@ -58,6 +58,21 @@ export async function generateDirectorResponse(opts: {
 
   if (directive && project) {
     projectContext = assembleDirectorContext(db, directive, project, { includeTaskSummaries: false });
+
+    // Read input design docs referenced by the directive
+    if (directive.design_docs) {
+      const { readFileSync, existsSync } = await import("fs");
+      const { resolve } = await import("path");
+      const docPaths: string[] = JSON.parse(directive.design_docs);
+      const docs: string[] = [];
+      for (const p of docPaths) {
+        const fullPath = resolve(project.workdir, p);
+        if (existsSync(fullPath)) {
+          docs.push(`## ${p}\n\n${readFileSync(fullPath, "utf-8")}`);
+        }
+      }
+      if (docs.length > 0) designDocsContent = docs.join("\n\n---\n\n");
+    }
   }
 
   const systemPrompt = buildConversationSystemPrompt({

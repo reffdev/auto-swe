@@ -8,6 +8,7 @@ import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
 import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
+import { cleanupWorktrees } from "./cleanup";
 
 export function createForemanRouter(db: Db): Router {
   const router = Router();
@@ -171,6 +172,17 @@ export function createForemanRouter(db: Db): Router {
     const result = syncTasksFromDisk(db, config.tasks_dir, config.project_id);
     nudgeForeman(db);
     res.json(result);
+  });
+
+  // ─── Cleanup ─────────────────────────────────────────────────────────────
+
+  router.post("/cleanup-worktrees", async (_req, res) => {
+    try {
+      const result = await cleanupWorktrees(db);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ─── Config ──────────────────────────────────────────────────────────────

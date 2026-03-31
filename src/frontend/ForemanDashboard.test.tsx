@@ -102,8 +102,7 @@ describe('ForemanDashboard', () => {
   it('calls sync API when Sync YAML clicked', async () => {
     mockSyncForemanYaml.mockResolvedValue({ imported: 3, updated: 1, errors: [] })
     renderDashboard()
-    await waitFor(() => screen.getByText('Sync YAML'))
-    fireEvent.click(screen.getByText('Sync YAML'))
+    fireEvent.click(await screen.findByText('Sync YAML'))
     await waitFor(() => {
       expect(mockSyncForemanYaml).toHaveBeenCalled()
       expect(screen.getByText(/Imported: 3/)).toBeInTheDocument()
@@ -113,8 +112,7 @@ describe('ForemanDashboard', () => {
   it('calls queue all API', async () => {
     mockQueueAllForemanTasks.mockResolvedValue({ queued: 5 })
     renderDashboard()
-    await waitFor(() => screen.getByText('Queue All'))
-    fireEvent.click(screen.getByText('Queue All'))
+    fireEvent.click(await screen.findByText('Queue All'))
     await waitFor(() => {
       expect(mockQueueAllForemanTasks).toHaveBeenCalled()
     })
@@ -124,15 +122,16 @@ describe('ForemanDashboard', () => {
     mockForemanPoll.mockResolvedValue({
       ...basePollResponse,
       tasks: [
-        { ...basePollResponse.tasks[0]!, id: 't1', title: 'Backlog Task', status: 'backlog', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model: 'auto', target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
-        { ...basePollResponse.tasks[0]!, id: 't2', title: 'Completed Task', status: 'completed', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model: 'auto', target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
+        { ...basePollResponse.tasks[0], id: 't1', title: 'Backlog Task', status: 'backlog', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model: 'auto', target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
+        { ...basePollResponse.tasks[0], id: 't2', title: 'Completed Task', status: 'completed', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model: 'auto', target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
       ],
     })
     renderDashboard()
-    await waitFor(() => screen.getByText('Backlog Task'))
+    await screen.findByText('Backlog Task')
 
     // Click "completed" filter button (has count in parens)
-    const completedButton = screen.getAllByText(/completed/i).find(el => el.tagName === 'BUTTON')!
+    const completedButton = screen.getAllByText(/completed/i).find(el => el.tagName === 'BUTTON')
+    expect(completedButton).toBeTruthy()
     fireEvent.click(completedButton)
     await waitFor(() => {
       expect(screen.getByText('Completed Task')).toBeInTheDocument()
