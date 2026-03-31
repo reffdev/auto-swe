@@ -3,7 +3,7 @@
  * and milestones. Called once when the user approves the directive plan.
  */
 
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { spawnSync } from "child_process";
 import type { Db, DirectorDirective, Project } from "../db";
@@ -52,12 +52,13 @@ export async function decomposeDirective(
   mkdirSync(dirname(fullPath), { recursive: true });
   writeFileSync(fullPath, designDocContent, "utf-8");
 
-  // Commit the design doc
-  try {
-    spawnSync("git", ["add", designDocPath], { cwd: project.workdir });
-    spawnSync("git", ["commit", "-m", `[Director] Add design document for: ${directive.directive.slice(0, 50)}`], { cwd: project.workdir });
-  } catch {
-    // Non-fatal — file is written even if git commit fails
+  // Commit the design doc (non-fatal — file is written regardless)
+  if (existsSync(resolve(project.workdir, ".git"))) {
+    const addResult = spawnSync("git", ["add", designDocPath], { cwd: project.workdir });
+    if (addResult.status === 0) {
+      // Only commit if there are staged changes (avoids "nothing to commit" error)
+      spawnSync("git", ["commit", "-m", `[Director] Add design document for: ${directive.directive.slice(0, 50)}`], { cwd: project.workdir });
+    }
   }
 
   // Create milestone records

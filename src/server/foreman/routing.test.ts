@@ -41,7 +41,7 @@ describe("resolveModel", () => {
     const task = makeTask({ model: "qwen3-coder:30b" });
     const result = resolveModel(task);
     expect(result.modelId).toBe("qwen3-coder:30b");
-    expect(result.machineType).toBe("ollama");
+    expect(result.machineType).toBe("inference");
   });
 
   it("routes art tasks to comfyui", () => {
@@ -49,25 +49,25 @@ describe("resolveModel", () => {
     expect(result.machineType).toBe("comfyui");
   });
 
-  it("routes music tasks to asset-api", () => {
+  it("routes music tasks to comfyui", () => {
     const result = resolveModel(makeTask({ type: "music" }));
-    expect(result.machineType).toBe("asset-api");
+    expect(result.machineType).toBe("comfyui");
   });
 
-  it("routes sfx tasks to asset-api", () => {
+  it("routes sfx tasks to comfyui", () => {
     const result = resolveModel(makeTask({ type: "sfx" }));
-    expect(result.machineType).toBe("asset-api");
+    expect(result.machineType).toBe("comfyui");
   });
 
-  it("routes claude tasks to claude", () => {
+  it("routes unknown type tasks to inference", () => {
     const result = resolveModel(makeTask({ type: "claude" }));
-    expect(result.machineType).toBe("claude");
+    expect(result.machineType).toBe("inference");
   });
 
   it("routes content tasks to small model", () => {
     const result = resolveModel(makeTask({ type: "content" }));
     expect(result.modelId).toBe("qwen3.5:9b");
-    expect(result.machineType).toBe("ollama");
+    expect(result.machineType).toBe("inference");
   });
 
   it("routes review tasks to medium model", () => {
@@ -109,9 +109,9 @@ describe("resolveModel", () => {
     expect(result.machineType).toBe("comfyui");
   });
 
-  it("detects claude from explicit model name", () => {
+  it("routes explicit non-comfyui models to inference", () => {
     const result = resolveModel(makeTask({ model: "claude-sonnet-4-6" }));
-    expect(result.machineType).toBe("claude");
+    expect(result.machineType).toBe("inference");
   });
 });
 

@@ -11,6 +11,7 @@
  */
 
 import type { Db, DirectorDirective } from "../db";
+import { removeWorktree } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
 import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
@@ -22,6 +23,14 @@ import { nudgeForeman } from "../foreman/scheduler";
 let schedulerDb: Db | null = null;
 let pendingNudge = false;
 let processing = false;
+
+// Track machines actively used by Director LLM calls so Foreman doesn't double-book them.
+// Exposed via getDirectorActiveMachineIds() for the concurrency query.
+const directorActiveMachines = new Set<string>();
+
+export function getDirectorActiveMachineIds(): string[] {
+  return [...directorActiveMachines];
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -79,6 +88,20 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
+  // Director LLM calls (verification, planning) must respect machine concurrency.
+  // Reserve a slot so Foreman doesn't double-book the machine while Director is thinking.
+  const machine = db.getAvailableMachine();
+  if (!machine) return;
+  directorActiveMachines.add(machine.id);
+  try {
+    await processDirectiveWork(db, directive, project);
+  } finally {
+    directorActiveMachines.delete(machine.id);
+  }
+}
+
+async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
+
   // 1. Handle tasks awaiting review (auto-verify)
   const awaitingReview = db.getDirectiveTasksAwaitingReview(directive.id);
   for (const task of awaitingReview) {
@@ -100,6 +123,11 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
         } else {
           // Auto-complete the task
           db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
+          // Clean up worktree now that verification is done
+          if (task.git_worktree) {
+            try { await removeWorktree(project.workdir, task.git_worktree); } catch { /* best effort */ }
+            db.updateForemanTask(task.id, { git_worktree: null });
+          }
           console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
           nudgeForeman(db); // unblock dependents
         }

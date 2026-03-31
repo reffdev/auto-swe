@@ -41,15 +41,19 @@ export async function verifyTask(
 
   const { machine, modelId } = machineInfo;
 
+  // Use the task's worktree if it still exists (kept alive for Director verification),
+  // otherwise fall back to the main project workdir.
+  const workdir = task.git_worktree && existsSync(task.git_worktree) ? task.git_worktree : project.workdir;
+
   // Get git diff for the task's branch
-  const gitDiff = getTaskDiff(project.workdir, task.git_branch, project.git_default_branch);
+  const gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch);
 
   // Read modified files
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
-  const fileContents = readTargetFiles(project.workdir, targetFiles);
+  const fileContents = readTargetFiles(workdir, targetFiles);
 
   // Read project conventions
-  const claudeMdPath = resolve(project.workdir, "CLAUDE.md");
+  const claudeMdPath = resolve(workdir, "CLAUDE.md");
   const conventions = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, "utf-8") : undefined;
 
   // Parse acceptance criteria

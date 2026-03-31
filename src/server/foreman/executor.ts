@@ -24,6 +24,7 @@ import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 import { validateAcceptanceCriteria } from "./validator";
 import { getBreaker } from "./circuit-breaker";
 import { nudgeDirector } from "../director/scheduler";
+import { executeComfyUITask } from "./comfyui-executor";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
 
@@ -61,6 +62,11 @@ export async function executeForemanTask(
   task: ForemanTask,
   project: Project,
 ): Promise<void> {
+  // Dispatch to ComfyUI executor for generation tasks
+  if (machine.machine_type === "comfyui") {
+    return executeComfyUITask(ctx, machine, task, project);
+  }
+
   const { db } = ctx;
   const route = resolveModel(task);
   const modelId = machine.model_id || route.modelId;
@@ -244,10 +250,14 @@ export async function executeForemanTask(
     });
 
     // Notify Director (if this is a Director-managed task, it will auto-verify)
-    if (task.directive_id) nudgeDirector(db);
-
-    // Clean up worktree on success
-    try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
+    if (task.directive_id) {
+      // Keep worktree alive — the Director verifier needs to read the files.
+      // Worktree is cleaned up by the Director after verification passes.
+      nudgeDirector(db);
+    } else {
+      // Manual Foreman task — no verifier, clean up immediately
+      try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
+    }
 
   } catch (err) {
     const durationMs = Date.now() - startTime;

@@ -12,6 +12,7 @@ export const machines = sqliteTable("machines", {
   name: text("name").notNull().default(""),
   base_url: text("base_url").notNull(),
   model_id: text("model_id"),  // optional — fallback if project doesn't specify
+  machine_type: text("machine_type").notNull().default("inference"), // inference | comfyui
   enabled: integer("enabled").notNull().default(1),
   status: text("status").notNull().default("idle"),  // derived from active run count
   current_run_id: text("current_run_id"),  // legacy — kept for migration, not used

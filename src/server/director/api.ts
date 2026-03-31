@@ -34,6 +34,12 @@ export function createDirectorRouter(db: Db): Router {
     if (!project_id || !directive) {
       return res.status(400).json({ error: "project_id and directive are required" });
     }
+    // Prevent concurrent active directives on the same project
+    const existing = db.getDirectorDirectives(project_id);
+    const active = existing.find(d => ["conversing", "planning", "active", "paused"].includes(d.status));
+    if (active) {
+      return res.status(409).json({ error: `Project already has an active directive: "${active.directive.slice(0, 80)}"` });
+    }
     const created = db.createDirectorDirective({ project_id, directive, design_docs, autonomy_level });
     res.status(201).json(created);
   });
@@ -202,11 +208,19 @@ export function createDirectorRouter(db: Db): Router {
         milestoneCount: result.milestoneCount,
       });
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Revert to conversing so the user can send another message to fix the plan format
       db.updateDirectorDirective(directive.id, {
-        status: "failed",
-        error_message: err instanceof Error ? err.message : String(err),
+        status: "conversing",
+        error_message: msg,
       });
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      // Add an assistant message explaining what went wrong
+      db.createDirectorMessage({
+        conversation_id: conversation.id,
+        role: "assistant",
+        content: `Plan approval failed: ${msg}\n\nPlease make sure your plan includes both a \`\`\`design_doc and \`\`\`milestones block. You can send another message to ask me to reformulate.`,
+      });
+      res.status(422).json({ error: msg });
     }
   });
 

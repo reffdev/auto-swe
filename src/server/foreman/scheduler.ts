@@ -10,6 +10,7 @@ import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { getBreaker } from "./circuit-breaker";
+import { getDirectorActiveMachineIds } from "../director/scheduler";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -83,28 +84,23 @@ async function schedulerTick(db: Db): Promise<void> {
     const ready = db.getForemanTasksReadyToRun();
     if (ready.length === 0) break;
 
-    // Check machine availability (shared concurrency across all work types)
-    const machine = db.getAvailableMachine();
-    if (!machine) break; // all machines at capacity
-
-    // Check circuit breaker for this machine
-    const breaker = getBreaker(machine.id);
-    if (!breaker.canExecute()) break;
-
     // Sort by model affinity then priority
     const sorted = sortByModelAffinity(ready, lastOllamaModel);
-    const task = sorted[0];
-    const route = resolveModel(task);
+    const directorExclude = getDirectorActiveMachineIds();
 
-    // MVP: only support Ollama tasks
-    if (route.machineType !== "ollama") {
-      console.log(`Foreman: task ${task.id} type "${task.type}" not supported in MVP`);
-      db.updateForemanTask(task.id, {
-        status: "failed",
-        error_message: `Task type "${task.type}" (machine type: ${route.machineType}) is not yet supported in MVP`,
-      });
-      continue; // try next task
+    // Find the first task that has an available machine of the right type
+    let task = null;
+    let machine = null;
+    for (const candidate of sorted) {
+      const route = resolveModel(candidate);
+      const m = db.getAvailableMachine(directorExclude, route.machineType);
+      if (m && getBreaker(m.id).canExecute()) {
+        task = candidate;
+        machine = m;
+        break;
+      }
     }
+    if (!task || !machine) break; // no dispatchable task+machine pair
 
     // Reserve task BEFORE dispatching to prevent double-dispatch
     db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });

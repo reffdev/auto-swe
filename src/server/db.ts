@@ -50,7 +50,8 @@ export class Db {
     this.sqlite.exec(`
       CREATE TABLE IF NOT EXISTS machines (
         id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', base_url TEXT NOT NULL,
-        model_id TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+        model_id TEXT, machine_type TEXT NOT NULL DEFAULT 'inference',
+        enabled INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'idle', current_run_id TEXT,
         max_concurrent INTEGER NOT NULL DEFAULT 1,
         context_limit INTEGER, api_key TEXT,
@@ -237,6 +238,7 @@ export class Db {
       "ALTER TABLE projects ADD COLUMN context_limit INTEGER", // unused — context_limit is per-machine only
       "ALTER TABLE foreman_tasks ADD COLUMN directive_id TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN milestone_id TEXT",
+      "ALTER TABLE machines ADD COLUMN machine_type TEXT NOT NULL DEFAULT 'inference'",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -297,20 +299,21 @@ export class Db {
     return this.drizzle.select().from(schema.machines).where(eq(schema.machines.id, id)).get() ?? null;
   }
 
-  createMachine(data: { name?: string; base_url: string; model_id?: string | null; max_concurrent?: number; api_key?: string | null }): Machine {
+  createMachine(data: { name?: string; base_url: string; model_id?: string | null; machine_type?: string; max_concurrent?: number; api_key?: string | null }): Machine {
     const id = randomUUID();
     this.drizzle.insert(schema.machines).values({
       id,
       name: data.name ?? "",
       base_url: data.base_url,
       model_id: data.model_id ?? null,
+      machine_type: data.machine_type ?? "inference",
       max_concurrent: data.max_concurrent ?? 1,
       api_key: data.api_key ?? null,
     }).run();
     return this.getMachine(id)!;
   }
 
-  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "enabled" | "status" | "current_run_id" | "context_limit" | "api_key" | "max_concurrent">>): void {
+  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "machine_type" | "enabled" | "status" | "current_run_id" | "context_limit" | "api_key" | "max_concurrent">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.machines).set(clean).where(eq(schema.machines.id, id)).run();
@@ -326,10 +329,12 @@ export class Db {
     return this.getAvailableMachine();
   }
 
-  /** Find a machine with capacity for another concurrent job */
-  getAvailableMachine(): Machine | null {
+  /** Find a machine with capacity for another concurrent job.
+   *  @param excludeIds — machine IDs to skip (e.g. machines reserved by the Director)
+   *  @param machineType — filter by machine type (default: any) */
+  getAvailableMachine(excludeIds?: string[], machineType?: string): Machine | null {
     // Count active work per machine: running issues + approved issues + running analyses + foreman runs
-    const row = this.sqlite.prepare(`
+    const rows = this.sqlite.prepare(`
       SELECT m.*
       FROM machines m
       WHERE m.enabled = 1
@@ -352,9 +357,13 @@ export class Db {
              AND fr.status = 'running')
         ) < m.max_concurrent
       ORDER BY m.created_at
-      LIMIT 1
-    `).get() as Machine | undefined;
-    return row ?? null;
+    `).all() as Machine[];
+
+    const excluded = new Set(excludeIds ?? []);
+    return rows.find(m =>
+      !excluded.has(m.id) &&
+      (!machineType || m.machine_type === machineType)
+    ) ?? null;
   }
 
   /** Get active issue IDs for a machine */

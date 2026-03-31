@@ -11,6 +11,7 @@ export interface Machine {
   name: string;
   base_url: string;
   model_id: string | null;
+  machine_type: string;
   enabled: number;
   status: "idle" | "working";
   current_run_id: string | null;
