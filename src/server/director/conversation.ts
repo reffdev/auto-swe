@@ -10,6 +10,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Db, Machine } from "../db";
 import { buildConversationSystemPrompt } from "./prompts";
 import { assembleDirectorContext } from "./memory";
+import { webSearchTool } from "../tools/web-search";
+import { fetchUrlTool } from "../tools/fetch";
+import { lookupDocs } from "../tools/context7";
 
 // ─── In-memory streaming state ──────────────────────────────────────────────
 
@@ -89,6 +92,8 @@ export async function generateDirectorResponse(opts: {
       model,
       system: systemPrompt,
       messages: opts.messages.map(m => ({ role: m.role, content: m.content })),
+      tools: { webSearch: webSearchTool, fetchUrl: fetchUrlTool, lookupDocs },
+      maxSteps: 50,
     });
 
     let fullText = "";

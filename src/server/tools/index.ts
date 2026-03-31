@@ -14,6 +14,7 @@ export {
 export { fetchUrlTool } from "./fetch";
 export { makeTodoTool } from "./todo";
 export { lookupDocs } from "./context7";
+export { webSearchTool } from "./web-search";
 export { makeBuildCheckTools, makeReviewVerdictTool, makeImplementResultTool, makeTestWriteResultTool, makeAnalysisGroupsTool, makeAnalysisFindingsTool, runAndExtractErrors } from "./build-check";
 export { makePackageCheckTool } from "./package-check";
 export { makeStoryContextTool } from "./story-context";

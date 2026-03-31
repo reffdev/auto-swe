@@ -13,6 +13,9 @@ import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
 import { parseNextTasks } from "./parsers";
+import { webSearchTool } from "../tools/web-search";
+import { fetchUrlTool } from "../tools/fetch";
+import { lookupDocs } from "../tools/context7";
 import { postProcessArtTasks } from "./art-task-processor";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
 import { selectPlannerMachine } from "../planner-llm";
@@ -67,6 +70,8 @@ export async function planNextTasks(
     model,
     system,
     prompt: user,
+    tools: { webSearch: webSearchTool, fetchUrl: fetchUrlTool, lookupDocs },
+    maxSteps: 50,
   });
 
   // Parse tasks from LLM output and post-process art tasks
