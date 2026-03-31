@@ -27,6 +27,8 @@ export function startForemanScheduler(db: Db): void {
   console.log("Foreman scheduler ready (event-driven)");
   // Initial nudge in case there are queued tasks from before restart
   nudgeForeman(db);
+  // Auto-bootstrap ComfyUI if a machine exists but no manifest is set up
+  tryComfyUIBootstrap(db);
 }
 
 export function stopForemanScheduler(): void {
@@ -160,4 +162,35 @@ function scheduleRetryWakeup(db: Db): void {
     retryTimer = null;
     nudgeForeman(db);
   }, delayMs);
+}
+
+// ─── ComfyUI auto-bootstrap ─────────────────────────────────────────────────
+
+/**
+ * On startup, if a ComfyUI machine exists and the project doesn't have
+ * a workflow manifest yet, auto-bootstrap one.
+ */
+function tryComfyUIBootstrap(db: Db): void {
+  const config = db.getForemanConfig();
+  if (!config?.project_id) return;
+
+  const project = db.getProject(config.project_id);
+  if (!project) return;
+
+  const machines = db.getMachines();
+  const comfyMachine = machines.find(m => m.machine_type === "comfyui" && m.enabled);
+  if (!comfyMachine) return;
+
+  // Check if manifest already exists
+  const { existsSync } = require("fs") as typeof import("fs");
+  const { resolve } = require("path") as typeof import("path");
+  const manifestPath = resolve(project.workdir, "comfyui-workflows", "manifest.json");
+  if (existsSync(manifestPath)) return;
+
+  // Bootstrap in background — don't block scheduler startup
+  import("./comfyui-bootstrap").then(({ bootstrapComfyUI }) => {
+    bootstrapComfyUI(comfyMachine.base_url, project.workdir).catch(err =>
+      console.warn("ComfyUI auto-bootstrap failed:", err),
+    );
+  });
 }
