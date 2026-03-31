@@ -24,6 +24,9 @@ export type PlannerConversation = typeof schema.plannerConversations.$inferSelec
 export type PlannerMessage = typeof schema.plannerMessages.$inferSelect;
 export type AnalysisConfig = typeof schema.analysisConfigs.$inferSelect;
 export type AnalysisRun = typeof schema.analysisRuns.$inferSelect;
+export type ForemanTask = typeof schema.foremanTasks.$inferSelect;
+export type ForemanRun = typeof schema.foremanRuns.$inferSelect;
+export type ForemanConfig = typeof schema.foremanConfig.$inferSelect;
 
 // ─── Database class ───────────────────────────────────────────────────────────
 
@@ -107,7 +110,56 @@ export class Db {
         cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
         duration_ms INTEGER, created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS foreman_tasks (
+        id TEXT PRIMARY KEY, yaml_id TEXT,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+        priority INTEGER NOT NULL DEFAULT 3,
+        type TEXT NOT NULL DEFAULT 'code',
+        model TEXT NOT NULL DEFAULT 'auto',
+        target_files TEXT, depends_on TEXT, acceptance_criteria TEXT,
+        status TEXT NOT NULL DEFAULT 'backlog',
+        machine_id TEXT, resolved_model TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 3,
+        error_message TEXT,
+        git_branch TEXT, git_worktree TEXT, git_pr_url TEXT, git_pr_number INTEGER,
+        next_retry_at TEXT,
+        started_at TEXT, completed_at TEXT, duration_ms INTEGER,
+        prompt_tokens INTEGER, completion_tokens INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        yaml_synced_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS foreman_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES foreman_tasks(id),
+        machine_id TEXT, attempt INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'pending',
+        model_id TEXT, output TEXT, validation_output TEXT, error_message TEXT,
+        started_at TEXT, completed_at TEXT, duration_ms INTEGER,
+        prompt_tokens INTEGER, completion_tokens INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS foreman_config (
+        id TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        project_id TEXT REFERENCES projects(id),
+        tasks_dir TEXT,
+        priority_mode TEXT NOT NULL DEFAULT 'parallel',
+        tick_interval_ms INTEGER NOT NULL DEFAULT 30000,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `);
+
+    // Indexes for foreman query performance
+    try {
+      this.sqlite.exec(`
+        CREATE INDEX IF NOT EXISTS idx_foreman_tasks_status ON foreman_tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_foreman_tasks_project_status ON foreman_tasks(project_id, status);
+        CREATE INDEX IF NOT EXISTS idx_foreman_runs_task ON foreman_runs(task_id);
+        CREATE INDEX IF NOT EXISTS idx_foreman_runs_machine_status ON foreman_runs(machine_id, status);
+      `);
+    } catch { /* indexes may already exist */ }
 
     // Migrations for existing databases
     this.migrate();
@@ -144,7 +196,7 @@ export class Db {
 
   // ─── Crash recovery ──────────────────────────────────────────────────────
 
-  recoverFromCrash(): { machines: number; runs: number; issues: number } {
+  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanRuns: number } {
     const db = this.drizzle;
     const m = db.update(schema.machines)
       .set({ status: "idle", current_run_id: null })
@@ -158,10 +210,21 @@ export class Db {
       .set({ status: "failed" })
       .where(or(eq(schema.issues.status, "running"), eq(schema.issues.status, "approved")))
       .run();
+    // Reset stuck foreman tasks back to queued so the scheduler picks them up
+    const ft = db.update(schema.foremanTasks)
+      .set({ status: "queued", machine_id: null })
+      .where(eq(schema.foremanTasks.status, "running"))
+      .run();
+    const fr = db.update(schema.foremanRuns)
+      .set({ status: "fail", completed_at: sql`datetime('now')` })
+      .where(eq(schema.foremanRuns.status, "running"))
+      .run();
     return {
       machines: m.changes,
       runs: r.changes,
       issues: i.changes,
+      foremanTasks: ft.changes,
+      foremanRuns: fr.changes,
     };
   }
 
@@ -206,7 +269,7 @@ export class Db {
 
   /** Find a machine with capacity for another concurrent job */
   getAvailableMachine(): Machine | null {
-    // Count active work per machine: running issues + approved issues + running analyses
+    // Count active work per machine: running issues + approved issues + running analyses + foreman runs
     const row = this.sqlite.prepare(`
       SELECT m.*
       FROM machines m
@@ -224,6 +287,10 @@ export class Db {
           (SELECT COUNT(*) FROM analysis_runs ar
            WHERE ar.machine_id = m.id
              AND ar.status = 'running')
+          +
+          (SELECT COUNT(*) FROM foreman_runs fr
+           WHERE fr.machine_id = m.id
+             AND fr.status = 'running')
         ) < m.max_concurrent
       ORDER BY m.created_at
       LIMIT 1
@@ -699,6 +766,156 @@ export class Db {
     duration_ms: number; prompt_tokens: number; completion_tokens: number;
   }>): void {
     this.drizzle.update(schema.analysisRuns).set(data).where(eq(schema.analysisRuns.id, id)).run();
+  }
+
+  // ─── Foreman Tasks ─────────────────────────────────────────────────────────
+
+  getForemanTasks(projectId?: string, status?: string): ForemanTask[] {
+    if (projectId && status) {
+      return this.drizzle.select().from(schema.foremanTasks)
+        .where(and(eq(schema.foremanTasks.project_id, projectId), eq(schema.foremanTasks.status, status)))
+        .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at).all();
+    }
+    if (projectId) {
+      return this.drizzle.select().from(schema.foremanTasks)
+        .where(eq(schema.foremanTasks.project_id, projectId))
+        .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at).all();
+    }
+    return this.drizzle.select().from(schema.foremanTasks)
+      .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at).all();
+  }
+
+  getForemanTask(id: string): ForemanTask | null {
+    return this.drizzle.select().from(schema.foremanTasks)
+      .where(eq(schema.foremanTasks.id, id)).get() ?? null;
+  }
+
+  getForemanTaskByYamlId(yamlId: string, projectId: string): ForemanTask | null {
+    return this.drizzle.select().from(schema.foremanTasks)
+      .where(and(eq(schema.foremanTasks.yaml_id, yamlId), eq(schema.foremanTasks.project_id, projectId)))
+      .get() ?? null;
+  }
+
+  createForemanTask(data: {
+    project_id: string; title: string; description?: string;
+    yaml_id?: string; priority?: number; type?: string; model?: string;
+    target_files?: string[]; depends_on?: string[]; acceptance_criteria?: string[];
+    max_retries?: number; status?: string;
+  }): ForemanTask {
+    const id = randomUUID();
+    this.drizzle.insert(schema.foremanTasks).values({
+      id,
+      yaml_id: data.yaml_id ?? null,
+      project_id: data.project_id,
+      title: data.title,
+      description: data.description ?? "",
+      priority: data.priority ?? 3,
+      type: data.type ?? "code",
+      model: data.model ?? "auto",
+      target_files: data.target_files ? JSON.stringify(data.target_files) : null,
+      depends_on: data.depends_on?.length ? JSON.stringify(data.depends_on) : null,
+      acceptance_criteria: data.acceptance_criteria ? JSON.stringify(data.acceptance_criteria) : null,
+      max_retries: data.max_retries ?? 3,
+      status: data.status ?? "backlog",
+    }).run();
+    return this.getForemanTask(id)!;
+  }
+
+  updateForemanTask(id: string, data: Partial<Omit<ForemanTask, "id" | "created_at">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.foremanTasks).set(clean).where(eq(schema.foremanTasks.id, id)).run();
+  }
+
+  deleteForemanTask(id: string): boolean {
+    this.sqlite.prepare("DELETE FROM foreman_runs WHERE task_id = ?").run(id);
+    this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(`foreman:${id}`);
+    const result = this.drizzle.delete(schema.foremanTasks).where(eq(schema.foremanTasks.id, id)).run();
+    return result.changes > 0;
+  }
+
+  /** Get tasks ready for dispatch: queued, dependencies met, not in backoff */
+  getForemanTasksReadyToRun(): ForemanTask[] {
+    const now = new Date().toISOString();
+    const queued = this.drizzle.select().from(schema.foremanTasks)
+      .where(eq(schema.foremanTasks.status, "queued"))
+      .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at)
+      .all();
+
+    return queued.filter(task => {
+      // Check backoff
+      if (task.next_retry_at && task.next_retry_at > now) return false;
+      // Check dependencies
+      if (!task.depends_on) return true;
+      let deps: string[];
+      try { deps = JSON.parse(task.depends_on); } catch { return false; }
+      if (deps.length === 0) return true;
+      return deps.every(depId => {
+        const dep = this.getForemanTask(depId);
+        if (!dep) {
+          console.warn(`Foreman: task ${task.id} depends on non-existent task ${depId}`);
+          return false;
+        }
+        return dep.status === "completed";
+      });
+    });
+  }
+
+  // ─── Foreman Runs ─────────────────────────────────────────────────────────
+
+  getForemanRun(id: string): ForemanRun | null {
+    return this.drizzle.select().from(schema.foremanRuns)
+      .where(eq(schema.foremanRuns.id, id)).get() ?? null;
+  }
+
+  getForemanRunsForTask(taskId: string): ForemanRun[] {
+    return this.drizzle.select().from(schema.foremanRuns)
+      .where(eq(schema.foremanRuns.task_id, taskId))
+      .orderBy(schema.foremanRuns.attempt).all();
+  }
+
+  createForemanRun(data: { task_id: string; machine_id?: string; attempt?: number; model_id?: string }): ForemanRun {
+    const id = randomUUID();
+    this.drizzle.insert(schema.foremanRuns).values({
+      id,
+      task_id: data.task_id,
+      machine_id: data.machine_id ?? null,
+      attempt: data.attempt ?? 1,
+      model_id: data.model_id ?? null,
+    }).run();
+    return this.getForemanRun(id)!;
+  }
+
+  updateForemanRun(id: string, data: Partial<Omit<ForemanRun, "id" | "created_at">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.foremanRuns).set(clean).where(eq(schema.foremanRuns.id, id)).run();
+  }
+
+  // ─── Foreman Config ───────────────────────────────────────────────────────
+
+  getForemanConfig(): ForemanConfig | null {
+    return this.drizzle.select().from(schema.foremanConfig).get() ?? null;
+  }
+
+  upsertForemanConfig(data: Partial<Omit<ForemanConfig, "id" | "created_at">>): ForemanConfig {
+    const existing = this.getForemanConfig();
+    if (existing) {
+      const clean = stripUndefined(data);
+      if (Object.keys(clean).length > 0) {
+        this.drizzle.update(schema.foremanConfig).set(clean).where(eq(schema.foremanConfig.id, existing.id)).run();
+      }
+      return this.getForemanConfig()!;
+    }
+    this.drizzle.insert(schema.foremanConfig).values({
+      id: "default",
+      enabled: data.enabled ?? 0,
+      project_id: data.project_id ?? null,
+      tasks_dir: data.tasks_dir ?? null,
+      priority_mode: data.priority_mode ?? "parallel",
+      tick_interval_ms: data.tick_interval_ms ?? 30000,
+    }).run();
+    return this.getForemanConfig()!;
   }
 
   // ─── Planner Conversations ────────────────────────────────────────────────

@@ -277,7 +277,7 @@ export function hasCheckpoint(issueId: string): boolean {
 
 const projectGitLocks = new Map<string, Promise<void>>();
 
-async function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+export async function withProjectLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
   // Wait for any existing operation on this project to finish
   const existing = projectGitLocks.get(projectId);
   if (existing) await existing.catch(() => {});

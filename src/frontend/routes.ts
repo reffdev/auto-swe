@@ -11,6 +11,9 @@ export const ROUTE_PATHS = [
   '/project/:projectId/llm-logs',
   '/project/:projectId/analysis',
   '/machine/:machineId',
+  '/foreman',
+  '/foreman/task/:taskId',
+  '/foreman/config',
 ] as const;
 
 /** Route names for view discrimination */
@@ -23,3 +26,6 @@ export type ViewName =
   | 'llm-logs'
   | 'analysis'
   | 'machine-detail'
+  | 'foreman-dashboard'
+  | 'foreman-task-detail'
+  | 'foreman-config'

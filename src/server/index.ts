@@ -17,6 +17,8 @@ import { createApiRouter } from "./api";
 import { createPlannerRouter } from "./planner-api";
 import { startStatsCollector } from "./stats";
 import { startAnalysisScheduler } from "./analysis";
+import { createForemanRouter } from "./foreman/api";
+import { startForemanScheduler } from "./foreman/scheduler";
 import { createVoiceRouter } from "./voice";
 import { LlamaCppStt } from "./voice/stt-llamacpp";
 import { LlamaCppLlm } from "./voice/llm-llamacpp";
@@ -31,8 +33,8 @@ const db = new Db();
 
 // 2. Crash recovery — reset stuck machines/runs from prior crashes
 const recovered = db.recoverFromCrash();
-if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0) {
-  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s)`);
+if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0 || recovered.foremanTasks > 0 || recovered.foremanRuns > 0) {
+  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s), ${recovered.foremanTasks} foreman task(s), ${recovered.foremanRuns} foreman run(s)`);
 }
 
 // 3. Create Express app
@@ -69,6 +71,7 @@ app.use(express.json());
 // 4. Mount API routes (with runner context for approve/retry)
 app.use("/api", createApiRouter(db, { pipelineCtx: { db } }));
 app.use("/api/planner", createPlannerRouter(db));
+app.use("/api/foreman", createForemanRouter(db));
 
 // 5. Health check
 app.get("/health", (_req, res) => {
@@ -89,6 +92,7 @@ if (existsSync(clientDir)) {
 // 7. Start background services
 startStatsCollector(db);
 startAnalysisScheduler(db);
+startForemanScheduler(db);
 
 // 8. Start server
 const server = app.listen(PORT, () => {
@@ -124,7 +128,7 @@ process.on("SIGINT", () => { shutdown("SIGINT"); });
 
 // Re-export for consumers
 export { Db } from "./db";
-export type { Machine, Project, Issue, Run } from "./db";
+export type { Machine, Project, Issue, Run, ForemanTask, ForemanRun, ForemanConfig } from "./db";
 export {
   ContextBudget,
   makeFilesystemTools,

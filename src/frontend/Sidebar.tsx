@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -477,6 +477,36 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
             </div>
           )
         })}
+      </nav>
+
+      <div className="border-t border-border" />
+
+      {/* Foreman */}
+      <div className="px-3 pt-3 pb-1">
+        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Foreman</span>
+      </div>
+      <nav className="px-1 pb-2">
+        {(() => {
+          const path = location.pathname
+          const isForeman = path === '/foreman' || path.startsWith('/foreman/task')
+          const isForemanConfig = path === '/foreman/config'
+          const navClass = (active: boolean) => cn(
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+            active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )
+          return (
+            <>
+              <button onClick={() => { void navigate('/foreman'); }} className={navClass(isForeman)}>
+                <Hammer className="size-3" />
+                Task Queue
+              </button>
+              <button onClick={() => { void navigate('/foreman/config'); }} className={navClass(isForemanConfig)}>
+                <Settings className="size-3" />
+                Config
+              </button>
+            </>
+          )
+        })()}
       </nav>
 
       {/* Stats */}

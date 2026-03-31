@@ -144,3 +144,69 @@ export const llmRequests = sqliteTable("llm_requests", {
   duration_ms: integer("duration_ms"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
+
+// ─── Foreman Tasks ───────────────────────────────────────────────────────────
+
+export const foremanTasks = sqliteTable("foreman_tasks", {
+  id: text("id").primaryKey(),
+  yaml_id: text("yaml_id"),                                    // original YAML ID e.g. "001"
+  project_id: text("project_id").notNull().references(() => projects.id),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  priority: integer("priority").notNull().default(3),           // 1=highest, 5=lowest
+  type: text("type").notNull().default("code"),                 // code | art | music | sfx | review | claude | content
+  model: text("model").notNull().default("auto"),               // auto | specific model
+  target_files: text("target_files"),                           // JSON string[]
+  depends_on: text("depends_on"),                               // JSON string[] of foreman_task IDs
+  acceptance_criteria: text("acceptance_criteria"),              // JSON string[]
+  status: text("status").notNull().default("backlog"),          // backlog|queued|running|validating|awaiting_review|completed|failed
+  machine_id: text("machine_id"),
+  resolved_model: text("resolved_model"),
+  retry_count: integer("retry_count").notNull().default(0),
+  max_retries: integer("max_retries").notNull().default(3),
+  error_message: text("error_message"),
+  git_branch: text("git_branch"),
+  git_worktree: text("git_worktree"),
+  git_pr_url: text("git_pr_url"),
+  git_pr_number: integer("git_pr_number"),
+  next_retry_at: text("next_retry_at"),                         // ISO timestamp for backoff
+  started_at: text("started_at"),
+  completed_at: text("completed_at"),
+  duration_ms: integer("duration_ms"),
+  prompt_tokens: integer("prompt_tokens"),
+  completion_tokens: integer("completion_tokens"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+  yaml_synced_at: text("yaml_synced_at"),
+});
+
+// ─── Foreman Runs ────────────────────────────────────────────────────────────
+
+export const foremanRuns = sqliteTable("foreman_runs", {
+  id: text("id").primaryKey(),
+  task_id: text("task_id").notNull().references(() => foremanTasks.id),
+  machine_id: text("machine_id"),
+  attempt: integer("attempt").notNull().default(1),
+  status: text("status").notNull().default("pending"),          // pending|running|validating|pass|fail
+  model_id: text("model_id"),
+  output: text("output"),                                       // JSON StepData[]
+  validation_output: text("validation_output"),                 // JSON ValidationResult[]
+  error_message: text("error_message"),
+  started_at: text("started_at"),
+  completed_at: text("completed_at"),
+  duration_ms: integer("duration_ms"),
+  prompt_tokens: integer("prompt_tokens"),
+  completion_tokens: integer("completion_tokens"),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ─── Foreman Config ──────────────────────────────────────────────────────────
+
+export const foremanConfig = sqliteTable("foreman_config", {
+  id: text("id").primaryKey(),
+  enabled: integer("enabled").notNull().default(0),             // 0|1 — persisted toggle
+  project_id: text("project_id").references(() => projects.id),
+  tasks_dir: text("tasks_dir"),                                 // abs path to tasks/backlog/
+  priority_mode: text("priority_mode").notNull().default("parallel"), // yield|parallel|exclusive
+  tick_interval_ms: integer("tick_interval_ms").notNull().default(30000),
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});

@@ -11,15 +11,19 @@ import { Planner } from './Planner'
 import { ProjectSettings } from './ProjectSettings'
 import { LlmLogs } from './LlmLogs'
 import { AnalysisView } from './AnalysisView'
+import { ForemanDashboard } from './ForemanDashboard'
+import { ForemanTaskDetail } from './ForemanTaskDetail'
+import { ForemanConfig } from './ForemanConfig'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
 
 export function DashboardLayout({ view }: { view: ViewName }) {
-  const { projectId, issueId, machineId, conversationId } = useParams<{
+  const { projectId, issueId, machineId, conversationId, taskId } = useParams<{
     projectId?: string
     issueId?: string
     machineId?: string
     conversationId?: string
+    taskId?: string
   }>()
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -116,6 +120,12 @@ export function DashboardLayout({ view }: { view: ViewName }) {
               return selectedProjectId ? <AnalysisView projectId={selectedProjectId} /> : null
             case 'machine-detail':
               return selectedMachine ? <MachineDetail machine={selectedMachine} onBack={() => navigate('/')} onDataChange={refresh} /> : null
+            case 'foreman-dashboard':
+              return <ForemanDashboard />
+            case 'foreman-task-detail':
+              return taskId ? <ForemanTaskDetail taskId={taskId} onBack={() => navigate('/foreman')} /> : null
+            case 'foreman-config':
+              return <ForemanConfig />
           }
         })() : null}
       </main>

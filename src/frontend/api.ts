@@ -426,3 +426,132 @@ export function abandonPlannerConversation(id: string): Promise<void> {
 export function updateAndRestart(): Promise<{ ok: boolean }> {
   return json("/api/update-restart", { method: "POST" });
 }
+
+// ─── Foreman ─────────────────────────────────────────────────────────────────
+
+export interface ForemanTask {
+  id: string;
+  yaml_id: string | null;
+  project_id: string;
+  title: string;
+  description: string;
+  priority: number;
+  type: string;
+  model: string;
+  target_files: string | null;
+  depends_on: string | null;
+  acceptance_criteria: string | null;
+  status: string;
+  machine_id: string | null;
+  resolved_model: string | null;
+  retry_count: number;
+  max_retries: number;
+  error_message: string | null;
+  git_branch: string | null;
+  git_worktree: string | null;
+  git_pr_url: string | null;
+  git_pr_number: number | null;
+  next_retry_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  created_at: string;
+  yaml_synced_at: string | null;
+}
+
+export interface ForemanRun {
+  id: string;
+  task_id: string;
+  machine_id: string | null;
+  attempt: number;
+  status: string;
+  model_id: string | null;
+  output: string | null;
+  validation_output: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  created_at: string;
+}
+
+export interface ForemanConfig {
+  id: string;
+  enabled: number;
+  project_id: string | null;
+  tasks_dir: string | null;
+  priority_mode: string;
+  tick_interval_ms: number;
+  created_at: string;
+}
+
+export interface ForemanPollResponse {
+  config: ForemanConfig | null;
+  tasks: ForemanTask[];
+  activeIds: string[];
+}
+
+export function foremanPoll(): Promise<ForemanPollResponse> {
+  return json("/api/foreman/poll");
+}
+
+export function createForemanTask(data: {
+  project_id: string; title: string; description?: string;
+  priority?: number; type?: string; model?: string;
+  target_files?: string[]; depends_on?: string[]; acceptance_criteria?: string[];
+  max_retries?: number;
+}): Promise<ForemanTask> {
+  return json("/api/foreman/tasks", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function updateForemanTask(id: string, data: Record<string, unknown>): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+
+export function deleteForemanTask(id: string): Promise<void> {
+  return json(`/api/foreman/tasks/${id}`, { method: "DELETE" });
+}
+
+export function queueForemanTask(id: string): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${id}/queue`, { method: "POST" });
+}
+
+export function cancelForemanTask(id: string): Promise<{ cancelled: boolean; task: ForemanTask }> {
+  return json(`/api/foreman/tasks/${id}/cancel`, { method: "POST" });
+}
+
+export function retryForemanTask(id: string): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${id}/retry`, { method: "POST" });
+}
+
+export function completeForemanTask(id: string): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${id}/complete`, { method: "POST" });
+}
+
+export function queueAllForemanTasks(): Promise<{ queued: number }> {
+  return json("/api/foreman/queue-all", { method: "POST" });
+}
+
+export function getForemanTaskRuns(taskId: string): Promise<ForemanRun[]> {
+  return json(`/api/foreman/tasks/${taskId}/runs`);
+}
+
+export function getForemanRun(runId: string): Promise<ForemanRun> {
+  return json(`/api/foreman/runs/${runId}`);
+}
+
+export function syncForemanYaml(): Promise<{ imported: number; updated: number; errors: string[] }> {
+  return json("/api/foreman/sync", { method: "POST" });
+}
+
+export function getForemanConfig(): Promise<ForemanConfig | null> {
+  return json("/api/foreman/config");
+}
+
+export function updateForemanConfig(data: Partial<ForemanConfig>): Promise<ForemanConfig> {
+  return json("/api/foreman/config", { method: "PATCH", body: JSON.stringify(data) });
+}
