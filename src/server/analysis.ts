@@ -5,13 +5,13 @@
  * Runs when machines are idle. Lower priority than issue pipelines.
  */
 
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ToolSet } from "ai";
 import type { Db, Machine, Project, AnalysisConfig } from "./db";
 import { ANALYSIS_LENSES, constructAnalysisScoutPrompt, constructAnalysisGroupPrompt } from "./prompts/analysis";
 import { makeReadOnlyTools } from "./tools/filesystem";
 import { makeBuildCheckTools, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./tools/build-check";
 import { runStage } from "./pipeline/run-stage";
+import { createModelProvider } from "./pipeline/index";
 import { runStaticScan } from "./analysis-scan";
 
 // ─── Frequency helpers ───────────────────────────────────────────────────────
@@ -68,26 +68,6 @@ function summarize(findings: Finding[]): FindingsSummary {
     medium: findings.filter(f => f.severity === "medium").length,
     low: findings.filter(f => f.severity === "low").length,
   };
-}
-
-// ─── Model provider ─────────────────────────────────────────────────────────
-
-function createModelProvider(machine: Machine) {
-  return createOpenAICompatible({
-    name: `analysis-${machine.id}`,
-    baseURL: machine.base_url,
-    apiKey: machine.api_key || undefined,
-    fetch: async (url, init) => {
-      if (machine.api_key) {
-        const headers = new Headers((init as RequestInit)?.headers);
-        if (!headers.has("Authorization")) {
-          headers.set("Authorization", `Bearer ${machine.api_key}`);
-        }
-        init = { ...init, headers };
-      }
-      return fetch(url as string, init as RequestInit);
-    },
-  });
 }
 
 // ─── Active analysis tracking ───────────────────────────────────────────────
@@ -172,6 +152,9 @@ export async function executeAnalysis(
       abortSignal: abortController.signal,
       contextLimit: machine.context_limit ?? undefined,
       worktreePath: project.workdir,
+      onStepsUpdate: (stepsJson) => {
+        try { db.updateAnalysisRun(run.id, { output: stepsJson }); } catch { /* non-critical */ }
+      },
     });
 
     const groups = parseGroups(scoutOutput);
@@ -207,7 +190,7 @@ export async function executeAnalysis(
       try {
         const groupOutput = await runStage({
           db,
-          runId: "",  // skip pipeline run updates
+          runId: "",
           issueId: `analysis:${config.id}`,
           stageName: `analysis:${config.lens_key}:${group.name}`,
           model,
@@ -225,6 +208,9 @@ export async function executeAnalysis(
           abortSignal: abortController.signal,
           contextLimit: machine.context_limit ?? undefined,
           worktreePath: project.workdir,
+          onStepsUpdate: (stepsJson) => {
+            try { db.updateAnalysisRun(run.id, { output: stepsJson }); } catch { /* non-critical */ }
+          },
         });
 
         const groupFindings = parseFindings(groupOutput);

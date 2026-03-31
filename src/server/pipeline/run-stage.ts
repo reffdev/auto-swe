@@ -52,6 +52,8 @@ export interface RunStageOpts {
   contextLimit?: number;
   /** Working directory for git diff during compaction */
   worktreePath?: string;
+  /** Optional callback for step updates (used by analysis to store output externally) */
+  onStepsUpdate?: (stepsJson: string) => void;
 }
 
 const MAX_COMPACTIONS = 3;
@@ -107,8 +109,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     abortSignal, initialSteps, contextLimit, worktreePath,
   } = opts;
 
+  const { onStepsUpdate } = opts;
   const updateRun = (data: Parameters<typeof db.updateRun>[1]) => {
     if (runId) db.updateRun(runId, data);
+    if (onStepsUpdate && data.output) onStepsUpdate(data.output as string);
   };
   updateRun({ status: "running", started_at: new Date().toISOString() });
 
