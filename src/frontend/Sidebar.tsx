@@ -255,17 +255,18 @@ function NewMachineDialog({ open, onClose, onCreated }: {
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [modelId, setModelId] = useState('')
+  const [machineType, setMachineType] = useState<'inference' | 'comfyui'>('inference')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const resetForm = () => { setName(''); setBaseUrl(''); setModelId(''); setError('') }
+  const resetForm = () => { setName(''); setBaseUrl(''); setModelId(''); setMachineType('inference'); setError('') }
   const handleClose = () => { resetForm(); onClose() }
 
   const handleSubmit = async () => {
     setError('')
     setSubmitting(true)
     try {
-      await api.createMachine({ name: name || undefined, base_url: baseUrl, model_id: modelId })
+      await api.createMachine({ name: name || undefined, base_url: baseUrl, model_id: modelId || undefined, machine_type: machineType })
       onCreated()
       handleClose()
     } catch (e: unknown) {
@@ -283,12 +284,25 @@ function NewMachineDialog({ open, onClose, onCreated }: {
         </DialogHeader>
         <div className="grid gap-3">
           <Input placeholder="Name (optional)" value={name} onChange={(e) => { setName(e.target.value); }} />
+          <div>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Type</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setMachineType('inference'); }}
+                className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'inference' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+              >Inference</button>
+              <button
+                onClick={() => { setMachineType('comfyui'); }}
+                className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'comfyui' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+              >ComfyUI</button>
+            </div>
+          </div>
           <Input placeholder="Base URL (e.g. http://192.168.1.50:8080/v1)" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} />
-          <Input placeholder="Model ID (e.g. qwen2.5-coder-32b)" value={modelId} onChange={(e) => { setModelId(e.target.value); }} />
+          <Input placeholder={machineType === 'comfyui' ? 'Model ID (optional for ComfyUI)' : 'Model ID (e.g. qwen2.5-coder-32b)'} value={modelId} onChange={(e) => { setModelId(e.target.value); }} />
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
-          <Button onClick={handleSubmit} disabled={!baseUrl || !modelId || submitting}>
+          <Button onClick={handleSubmit} disabled={!baseUrl || (machineType === 'inference' && !modelId) || submitting}>
             {submitting ? 'Adding...' : 'Add Machine'}
           </Button>
         </DialogFooter>

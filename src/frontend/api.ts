@@ -225,6 +225,7 @@ export function createMachine(data: {
   model_id?: string;
   max_concurrent?: number;
   api_key?: string;
+  machine_type?: string;
 }): Promise<Machine> {
   return json("/api/machines", { method: "POST", body: JSON.stringify(data) });
 }

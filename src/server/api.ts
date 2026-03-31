@@ -179,12 +179,12 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   });
 
   router.post("/machines", (req, res) => {
-    const { base_url, model_id, name, max_concurrent, api_key } = req.body;
+    const { base_url, model_id, name, max_concurrent, api_key, machine_type } = req.body;
     if (!base_url || typeof base_url !== "string") {
       res.status(400).json({ error: "base_url is required" });
       return;
     }
-    const machine = db.createMachine({ name, base_url, model_id: model_id || null, max_concurrent, api_key });
+    const machine = db.createMachine({ name, base_url, model_id: model_id || null, max_concurrent, api_key, machine_type });
     res.status(201).json(machine);
   });
 
@@ -194,8 +194,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "machine not found" });
       return;
     }
-    const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent } = req.body;
-    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent });
+    const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type } = req.body;
+    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type });
     res.json(db.getMachine(req.params.id));
   });
 

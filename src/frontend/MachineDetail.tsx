@@ -16,6 +16,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   const [name, setName] = useState(machine.name)
   const [baseUrl, setBaseUrl] = useState(machine.base_url)
   const [modelId, setModelId] = useState(machine.model_id ?? '')
+  const [machineType, setMachineType] = useState<'inference' | 'comfyui'>(machine.machine_type as 'inference' | 'comfyui' ?? 'inference')
   const [enabled, setEnabled] = useState(!!machine.enabled)
   const [contextLimit, setContextLimit] = useState(machine.context_limit?.toString() ?? '')
   const [maxConcurrent, setMaxConcurrent] = useState(machine.max_concurrent?.toString() ?? '1')
@@ -30,11 +31,12 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     setName(machine.name)
     setBaseUrl(machine.base_url)
     setModelId(machine.model_id ?? '')
+    setMachineType(machine.machine_type as 'inference' | 'comfyui' ?? 'inference')
     setEnabled(!!machine.enabled)
     setContextLimit(machine.context_limit?.toString() ?? '')
     setMaxConcurrent(machine.max_concurrent?.toString() ?? '1')
     setApiKey(machine.api_key ?? '')
-  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key])
+  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.machine_type, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key])
 
   const parsedContextLimit = contextLimit ? parseInt(contextLimit, 10) || null : null
   const parsedMaxConcurrent = parseInt(maxConcurrent, 10) || 1
@@ -42,6 +44,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     name !== machine.name ||
     baseUrl !== machine.base_url ||
     (modelId || null) !== (machine.model_id ?? null) ||
+    machineType !== (machine.machine_type ?? 'inference') ||
     parsedContextLimit !== (machine.context_limit ?? null) ||
     parsedMaxConcurrent !== (machine.max_concurrent ?? 1) ||
     (apiKey || null) !== (machine.api_key ?? null) ||
@@ -56,6 +59,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
         name,
         base_url: baseUrl,
         model_id: modelId || null,
+        machine_type: machineType,
         enabled: enabled ? 1 : 0,
         context_limit: parsedContextLimit,
         max_concurrent: parsedMaxConcurrent,
@@ -115,6 +119,21 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
           <div>
             <label htmlFor="machine-name" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Name</label>
             <Input id="machine-name" value={name} onChange={(e) => { setName(e.target.value); }} placeholder="e.g. local-gpu" />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Type</label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setMachineType('inference'); }}
+                className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'inference' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+              >Inference</button>
+              <button
+                onClick={() => { setMachineType('comfyui'); }}
+                className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'comfyui' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+              >ComfyUI</button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">Inference machines run LLM tasks. ComfyUI machines run art/music/sfx generation.</p>
           </div>
 
           <div>
@@ -189,7 +208,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
 
       {/* Actions */}
       <div className="px-6 py-4 border-t border-border flex items-center gap-3">
-        <Button onClick={handleSave} disabled={!hasChanges || !baseUrl || !modelId || saving}>
+        <Button onClick={handleSave} disabled={!hasChanges || !baseUrl || (machineType === 'inference' && !modelId) || saving}>
           <Save className="size-3.5 mr-1.5" />
           {saving ? 'Saving...' : 'Save Changes'}
         </Button>
