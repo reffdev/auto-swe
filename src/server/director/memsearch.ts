@@ -73,6 +73,7 @@ export async function indexMemories(projectWorkdir: string): Promise<boolean> {
 
   return new Promise((resolve) => {
     const proc = spawn("memsearch", ["index", ...paths], {
+      cwd: projectWorkdir,
       encoding: "utf-8",
       timeout: 30_000,
       shell: true,
@@ -110,6 +111,7 @@ export async function searchMemories(
       "memsearch",
       ["search", query, "--top-k", String(topK), "--json"],
       {
+        cwd: projectWorkdir,
         encoding: "utf-8",
         timeout: SEARCH_TIMEOUT_MS,
         shell: true,
@@ -162,6 +164,7 @@ export function startMemsearchWatch(projectWorkdir: string): void {
   const paths = getMemoryPaths(projectWorkdir);
 
   watchProcess = spawn("memsearch", ["watch", ...paths], {
+    cwd: projectWorkdir,
     shell: true,
     stdio: "ignore",
     detached: true,
