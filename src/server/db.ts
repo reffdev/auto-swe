@@ -239,6 +239,8 @@ export class Db {
       "ALTER TABLE foreman_tasks ADD COLUMN directive_id TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN milestone_id TEXT",
       "ALTER TABLE machines ADD COLUMN machine_type TEXT NOT NULL DEFAULT 'inference'",
+      "ALTER TABLE foreman_config ADD COLUMN director_machine_id TEXT",
+      "ALTER TABLE foreman_config ADD COLUMN director_model_id TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
