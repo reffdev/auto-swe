@@ -69,12 +69,15 @@ export function acquireLease(
   const machineType = opts?.machineType ?? "inference";
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_LEASE_TIMEOUT_MS[consumer];
 
-  // Try preferred machine first
+  // Try preferred machine first (skip enabled check — Director can use disabled machines)
   if (opts?.preferredMachineId) {
     const preferred = machines.find(m => m.id === opts.preferredMachineId);
-    if (preferred && hasCapacity(preferred) && getBreaker(preferred.id).canExecute()) {
-      const lease = createLease(preferred.id, consumer, label, timeoutMs);
-      return { lease, machine: preferred };
+    if (preferred) {
+      if (hasCapacity(preferred) && getBreaker(preferred.id).canExecute()) {
+        const lease = createLease(preferred.id, consumer, label, timeoutMs);
+        return { lease, machine: preferred };
+      }
+      console.log(`Machine manager: preferred machine ${preferred.name || preferred.id} busy (leases: ${getLeaseCount(preferred.id)}/${preferred.max_concurrent}, breaker: ${getBreaker(preferred.id).canExecute() ? 'ok' : 'open'})`);
     }
   }
 
@@ -86,7 +89,11 @@ export function acquireLease(
     getBreaker(m.id).canExecute()
   );
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    const allOfType = machines.filter(m => m.machine_type === machineType);
+    console.log(`Machine manager: no ${machineType} machine available for ${consumer}/${label}. Total: ${allOfType.length}, enabled: ${allOfType.filter(m => m.enabled).length}, with capacity: ${allOfType.filter(m => hasCapacity(m)).length}, breaker ok: ${allOfType.filter(m => getBreaker(m.id).canExecute()).length}`);
+    return null;
+  }
 
   // Pick the machine with the fewest active leases
   candidates.sort((a, b) => getLeaseCount(a.id) - getLeaseCount(b.id));
