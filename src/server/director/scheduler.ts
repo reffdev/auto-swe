@@ -22,7 +22,7 @@ import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
 // style-lock imported dynamically in lock_style handler
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
-import { hasCapacity, acquireLease, releaseLease } from "../machine-manager";
+import { hasCapacity } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -30,6 +30,10 @@ let schedulerDb: Db | null = null;
 let pendingNudge = false;
 let processing = false;
 let planningInProgress = false;
+
+/** When true, the Foreman scheduler pauses dispatch until the Director finishes. */
+let directorBusy = false;
+export function isDirectorBusy(): boolean { return directorBusy; }
 const zeroTaskCounts = new Map<string, number>(); // milestoneId → consecutive zero-task plan attempts
 let lastPlanError: { timestamp: number; message: string } | null = null;
 
@@ -105,29 +109,27 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  // No longer holds a lease for the entire processing cycle.
-  // Individual LLM calls (planner, verifier) acquire their own short-lived leases.
-  await processDirectiveWork(db, directive, project);
+  // Signal the Foreman to pause new dispatches while Director is thinking
+  directorBusy = true;
+  try {
+    await processDirectiveWork(db, directive, project);
+  } finally {
+    directorBusy = false;
+  }
 }
 
-/** Plan tasks with a machine lease. Returns number created, or 0 on failure. */
+/**
+ * Plan tasks. Director doesn't compete for machine leases — its LLM calls
+ * are short bursts (10-30s) that piggyback on the same endpoint. Ollama
+ * queues them internally. This prevents the Director from being blocked
+ * for the entire duration of a long Foreman task (5-30min).
+ */
 async function planWithLease(
   db: Db, directive: DirectorDirective, project: import("../db").Project,
-  milestone: import("../db").DirectorMilestone, preferredMachine?: string,
+  milestone: import("../db").DirectorMilestone, _preferredMachine?: string,
   idleTypes?: string[],
 ): Promise<number> {
-  const lease = acquireLease(db, "director", `plan: ${milestone.title.slice(0, 30)}`, {
-    preferredMachineId: preferredMachine,
-  });
-  if (!lease) {
-    console.log(`Director: no machine available for planning "${milestone.title}"`);
-    return -1; // -1 = no machine, distinct from 0 = planner generated nothing
-  }
-  try {
-    return await planNextTasks(db, directive, project, milestone, idleTypes);
-  } finally {
-    releaseLease(lease.lease.id);
-  }
+  return await planNextTasks(db, directive, project, milestone, idleTypes);
 }
 
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
@@ -159,16 +161,9 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
         continue;
       }
 
-      const verifyLease = acquireLease(db, "director", `verify: ${task.title.slice(0, 30)}`, {
-        preferredMachineId: preferredMachine,
-      });
-      if (!verifyLease) continue; // no machine, skip this task for now
-      let result;
-      try {
-        result = await verifyTask(db, task, project);
-      } finally {
-        releaseLease(verifyLease.lease.id);
-      }
+      // Director verification piggybacks on the inference endpoint without a lease —
+      // llama.cpp/Ollama queues short requests alongside running foreman tasks
+      const result = await verifyTask(db, task, project);
 
       if (result.verdict === "pass") {
         // Check if task was flagged for human review

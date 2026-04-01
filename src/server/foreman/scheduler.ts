@@ -65,6 +65,10 @@ async function schedulerTick(db: Db): Promise<void> {
   if (!config?.enabled) return;
   if (!config.project_id) return;
 
+  // Wait for Director to finish before dispatching new tasks
+  const { isDirectorBusy } = require("../director/scheduler") as typeof import("../director/scheduler");
+  if (isDirectorBusy()) return;
+
   // Priority mode check
   if (config.priority_mode === "yield") {
     const issues = db.getIssues();
