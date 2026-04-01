@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { RefreshCw, Plus, AlertTriangle, Cpu } from 'lucide-react'
+import { RefreshCw, Plus, AlertTriangle, Cpu, Trash2 } from 'lucide-react'
 import * as api from './api'
 import type { DirectorDirective, DirectorReview } from './api'
 
@@ -164,7 +164,7 @@ export function DirectorDashboard() {
   )
 }
 
-function DirectiveCard({ directive: d, onClick, onRefresh: _onRefresh }: { directive: DirectorDirective; onClick: () => void; onRefresh: () => void }) {
+function DirectiveCard({ directive: d, onClick, onRefresh }: { directive: DirectorDirective; onClick: () => void; onRefresh: () => void }) {
   let progress: { milestones?: Array<{ title: string; status: string; tasks_completed: number; tasks_generated: number }> } = {}
   try { if (d.progress) progress = JSON.parse(d.progress) } catch { /* ignore */ }
 
@@ -177,9 +177,25 @@ function DirectiveCard({ directive: d, onClick, onRefresh: _onRefresh }: { direc
     <div role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()} className="px-6 py-4 hover:bg-accent/30 cursor-pointer transition-colors">
       <div className="flex items-center justify-between mb-1">
         <h3 className="font-medium text-sm truncate flex-1">{d.directive}</h3>
-        <span className={cn('text-xs font-medium ml-3', STATUS_COLORS[d.status] ?? 'text-muted-foreground')}>
-          {d.status}
-        </span>
+        <div className="flex items-center gap-2 ml-3">
+          <span className={cn('text-xs font-medium', STATUS_COLORS[d.status] ?? 'text-muted-foreground')}>
+            {d.status}
+          </span>
+          {!['active', 'planning'].includes(d.status) && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                if (confirm(`Delete directive "${d.directive.slice(0, 60)}"?`)) {
+                  void api.deleteDirectorDirective(d.id).then(onRefresh)
+                }
+              }}
+              className="text-muted-foreground hover:text-destructive transition-colors"
+              title="Delete directive"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {milestones.length > 0 && (

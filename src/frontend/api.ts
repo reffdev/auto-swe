@@ -641,6 +641,10 @@ export function getDirectorDirectives(projectId?: string): Promise<DirectorDirec
   return json(`/api/director/directives${qs}`);
 }
 
+export function deleteDirectorDirective(id: string): Promise<void> {
+  return json(`/api/director/directives/${id}`, { method: "DELETE" });
+}
+
 export function createDirectorDirective(data: {
   project_id: string; directive: string; design_docs?: string[]; autonomy_level?: string;
 }): Promise<DirectorDirective> {

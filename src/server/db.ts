@@ -1042,6 +1042,23 @@ export class Db {
     this.drizzle.update(schema.directorDirectives).set(clean).where(eq(schema.directorDirectives.id, id)).run();
   }
 
+  deleteDirectorDirective(id: string): void {
+    // Cascade: delete related foreman tasks, milestones, reviews, conversations, messages
+    const tasks = this.getDirectiveTasks(id);
+    for (const task of tasks) {
+      this.deleteForemanTask(task.id);
+    }
+    this.drizzle.delete(schema.directorReviews).where(eq(schema.directorReviews.directive_id, id)).run();
+    this.drizzle.delete(schema.directorMilestones).where(eq(schema.directorMilestones.directive_id, id)).run();
+    // Delete conversations and their messages
+    const conversations = this.sqlite.prepare("SELECT id FROM director_conversations WHERE directive_id = ?").all(id) as Array<{ id: string }>;
+    for (const conv of conversations) {
+      this.drizzle.delete(schema.directorMessages).where(eq(schema.directorMessages.conversation_id, conv.id)).run();
+    }
+    this.drizzle.delete(schema.directorConversations).where(eq(schema.directorConversations.directive_id, id)).run();
+    this.drizzle.delete(schema.directorDirectives).where(eq(schema.directorDirectives.id, id)).run();
+  }
+
   getActiveDirectives(): DirectorDirective[] {
     return this.drizzle.select().from(schema.directorDirectives)
       .where(or(eq(schema.directorDirectives.status, "active"), eq(schema.directorDirectives.status, "paused")))

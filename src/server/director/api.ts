@@ -44,6 +44,19 @@ export function createDirectorRouter(db: Db): Router {
     res.status(201).json(created);
   });
 
+  router.delete("/directives/:id", (req, res) => {
+    const directive = db.getDirectorDirective(req.params.id);
+    if (!directive) return res.status(404).json({ error: "Directive not found" });
+
+    // Don't delete actively running directives
+    if (directive.status === "active" || directive.status === "planning") {
+      return res.status(409).json({ error: `Cannot delete directive with status "${directive.status}". Pause or complete it first.` });
+    }
+
+    db.deleteDirectorDirective(directive.id);
+    res.status(204).end();
+  });
+
   router.get("/directives/:id/poll", (req, res) => {
     const directive = db.getDirectorDirective(req.params.id);
     if (!directive) return res.status(404).json({ error: "Directive not found" });
