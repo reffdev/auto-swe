@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Send, X, CheckCircle } from 'lucide-react'
+import { ArrowLeft, Send, X, CheckCircle, Lock } from 'lucide-react'
 import * as api from './api'
 import type { DirectorReview as DirectorReviewType } from './api'
 
@@ -22,7 +23,7 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
   }
 
   const options: string[] = review.options ? JSON.parse(review.options) : []
-  let context: { issues?: string[]; reasoning?: string; error?: string; [key: string]: unknown } = {}
+  let context: Record<string, unknown> & { issues?: string[]; reasoning?: string; error?: string; task_id?: string } = {}
   try { context = JSON.parse(review.context) } catch { /* ignore */ }
 
   const handleRespond = async (text: string) => {
@@ -118,8 +119,18 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
             </div>
           )}
 
+          {/* Style selection UI */}
+          {review.review_type === 'style_selection' && context.task_id && (
+            <StyleSelectionPanel
+              taskId={context.task_id ?? ""}
+              onLock={(selectedIndex, feedback) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback }))}
+              onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }))}
+              submitting={submitting}
+            />
+          )}
+
           {/* Free-text response */}
-          <div className="space-y-2">
+          {review.review_type !== 'style_selection' && <div className="space-y-2">
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               {options.length > 0 ? 'Or provide custom response' : 'Your response'}
             </h3>
@@ -139,10 +150,92 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
                 <X className="size-3.5 mr-1.5" /> Dismiss
               </Button>
             </div>
-          </div>
+          </div>}
 
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Style Selection Panel ──────────────────────────────────────────────────
+
+function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
+  taskId: string
+  onLock: (selectedIndex: number, feedback: string) => void
+  onRefine: (feedback: string) => void
+  submitting: boolean
+}) {
+  const [files, setFiles] = useState<string[]>([])
+  const [selected, setSelected] = useState<number | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [cacheKey] = useState(() => Date.now())
+
+  useEffect(() => {
+    fetch(`/api/foreman/tasks/${taskId}/assets`)
+      .then(r => r.json())
+      .then(data => { setFiles(data.files ?? []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [taskId])
+
+  if (loading) return <p className="text-xs text-muted-foreground">Loading style variations...</p>
+  if (files.length === 0) return <p className="text-xs text-muted-foreground">No variations available</p>
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Select a Style</h3>
+
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        {files.map((_, i) => (
+          <button
+            key={i}
+            onClick={() => setSelected(selected === i ? null : i)}
+            className={cn(
+              'relative rounded-lg border-2 overflow-hidden transition-colors',
+              selected === i ? 'border-primary ring-2 ring-primary/30' : 'border-border hover:border-primary/50',
+            )}
+          >
+            <img
+              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}`}
+              alt={`Variation ${i + 1}`}
+              className="w-full aspect-square object-contain bg-muted/30"
+              style={{ imageRendering: 'pixelated' }}
+            />
+            <span className={cn(
+              'absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded font-medium',
+              selected === i ? 'bg-primary text-primary-foreground' : 'bg-black/60 text-white',
+            )}>
+              #{i + 1}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      <textarea
+        value={feedback}
+        onChange={(e) => setFeedback(e.target.value)}
+        placeholder="Optional feedback (e.g., 'I like the palette of #2 but the line weight of #4')"
+        rows={2}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+      />
+
+      <div className="flex gap-2">
+        <Button
+          onClick={() => selected !== null && onLock(selected, feedback)}
+          disabled={selected === null || submitting}
+        >
+          <Lock className="size-3.5 mr-1.5" />
+          Lock Style #{selected !== null ? selected + 1 : '?'}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => onRefine(feedback || 'Generate new variations')}
+          disabled={submitting}
+        >
+          Refine & Try Again
+        </Button>
       </div>
     </div>
   )

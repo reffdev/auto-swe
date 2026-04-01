@@ -76,4 +76,33 @@ describe("processReviewResponse", () => {
     expect(result.action).toBe("generate_tasks");
     expect(result.context).toContain("simpler approach");
   });
+
+  it("style_selection with lock action returns lock_style", () => {
+    const result = processReviewResponse(makeReview({
+      review_type: "style_selection",
+      response: JSON.stringify({ action: "lock", selected: [2] }),
+    }));
+    expect(result.action).toBe("lock_style");
+    const parsed = JSON.parse(result.context);
+    expect(parsed.action).toBe("lock");
+    expect(parsed.selected).toEqual([2]);
+  });
+
+  it("style_selection with refine action retries task", () => {
+    const result = processReviewResponse(makeReview({
+      review_type: "style_selection",
+      response: JSON.stringify({ action: "refine", feedback: "more purple tones" }),
+    }));
+    expect(result.action).toBe("retry_task");
+    expect(result.context).toContain("more purple tones");
+  });
+
+  it("style_selection with plain text feedback retries task", () => {
+    const result = processReviewResponse(makeReview({
+      review_type: "style_selection",
+      response: "I want brighter colors",
+    }));
+    expect(result.action).toBe("retry_task");
+    expect(result.context).toContain("brighter colors");
+  });
 });

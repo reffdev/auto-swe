@@ -18,8 +18,10 @@ import { resolve } from "path";
 import { spawnSync } from "child_process";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { executeComfyUIWorkflow, buildWorkflowFromTemplate } from "./comfyui";
-import { buildWorkflow, buildAudioWorkflow, PRESETS, AUDIO_PRESETS, type PresetName } from "./comfyui-workflows";
+import { buildWorkflow, buildAudioWorkflow, applyIPAdapter, PRESETS, AUDIO_PRESETS, type PresetName } from "./comfyui-workflows";
 import { getWorkflowDir } from "./workflow-manifest";
+import { getStyleLock, getStyleReferencePath } from "../director/style-lock";
+import { postProcessImage } from "./post-process";
 import { getBreaker } from "./circuit-breaker";
 import { nudgeDirector } from "../director/scheduler";
 import { registerActiveTask, unregisterActiveTask } from "./executor";
@@ -69,7 +71,7 @@ export async function executeComfyUITask(
     const paramsStr = extractTag(task.description, "params");
     const outputPath = extractTag(task.description, "output");
 
-    if (!outputPath) {
+    if (!outputPath && task.type !== "style_exploration") {
       throw new Error("ComfyUI task missing [output: ...] tag in description");
     }
 
@@ -120,51 +122,141 @@ export async function executeComfyUITask(
       throw new Error("ComfyUI task must have either [preset: ...] or [workflow: ...] tag in description");
     }
 
-    // Output to a task-specific temp directory to avoid conflicts between concurrent tasks
-    const outputDir = resolve(project.workdir, ".comfyui-output", task.id);
+    // Check for style lock — inject IP-Adapter if locked
+    const styleLockTag = extractTag(task.description, "style_lock");
+    if (styleLockTag === "true" && typeof workflow === "object") {
+      const styleLock = getStyleLock(project.workdir);
+      const refPath = getStyleReferencePath(project.workdir);
+      if (styleLock && refPath) {
+        // Upload reference image to ComfyUI input directory
+        const refFilename = `style_ref_${task.id.slice(0, 8)}.png`;
+        try {
+          const { readFileSync: readFile } = await import("fs");
+          const comfyBase = machine.base_url.replace(/\/v1\/?$/, "").replace(/\/$/, "");
+          const formData = new FormData();
+          const blob = new Blob([readFile(refPath)], { type: "image/png" });
+          formData.append("image", blob, refFilename);
+          const uploadRes = await fetch(`${comfyBase}/upload/image`, {
+            method: "POST",
+            body: formData,
+          });
+          if (!uploadRes.ok) {
+            const errText = await uploadRes.text().catch(() => "");
+            console.warn(`ComfyUI: reference image upload failed (${uploadRes.status}): ${errText.slice(0, 200)}`);
+          } else {
+            console.log(`ComfyUI: uploaded reference image as ${refFilename}`);
+          }
+        } catch (err) {
+          console.warn(`ComfyUI: failed to upload reference image:`, err instanceof Error ? err.message : err);
+        }
 
-    // Execute
-    const result = await executeComfyUIWorkflow(
-      machine.base_url,
-      workflow,
-      outputDir,
-      controller.signal,
-    );
+        // Apply IP-Adapter to workflow
+        workflow = applyIPAdapter(workflow as Record<string, { class_type: string; inputs: Record<string, unknown> }>, {
+          referenceImage: refFilename,
+          ipAdapterModel: styleLock.ip_adapter_model,
+          weight: styleLock.ip_adapter_weight,
+        });
+        console.log(`ComfyUI: applied IP-Adapter (weight: ${styleLock.ip_adapter_weight})`);
+      }
+    }
+
+    // Style exploration: generate multiple variations
+    const variationCountTag = extractTag(task.description, "variation_count");
+    const variationCount = variationCountTag ? parseInt(variationCountTag, 10) : 1;
+    const isStyleExploration = task.type === "style_exploration" || variationCount > 1;
+
+    const outputDir = resolve(project.workdir, ".comfyui-output", task.id);
+    const allOutputFiles: Array<{ filename: string; localPath: string }> = [];
+
+    for (let vi = 0; vi < variationCount; vi++) {
+      // For variations, use different seeds
+      if (vi > 0 && typeof workflow === "object") {
+        const wf = workflow as Record<string, { inputs?: Record<string, unknown> }>;
+        for (const node of Object.values(wf)) {
+          if (node.inputs && typeof node.inputs.seed === "number") {
+            node.inputs.seed = Math.floor(Math.random() * 2147483647);
+          }
+        }
+      }
+
+      const varOutputDir = variationCount > 1 ? resolve(outputDir, `var_${vi}`) : outputDir;
+      try {
+        const result = await executeComfyUIWorkflow(
+          machine.base_url,
+          workflow as Record<string, unknown>,
+          varOutputDir,
+          controller.signal,
+        );
+        allOutputFiles.push(...result.outputFiles);
+      } catch (varErr) {
+        console.warn(`ComfyUI: variation ${vi + 1}/${variationCount} failed: ${varErr instanceof Error ? varErr.message : varErr}`);
+        // Continue with remaining variations
+      }
+      if (vi < variationCount - 1) {
+        console.log(`ComfyUI: variation ${vi + 1}/${variationCount} complete (${allOutputFiles.length} total files)`);
+      }
+    }
 
     const durationMs = Date.now() - startTime;
     breaker.recordSuccess();
 
-    if (result.outputFiles.length === 0) {
+    if (allOutputFiles.length === 0) {
       throw new Error("ComfyUI workflow produced no output files");
     }
 
-    // Copy the first output file to the target path
-    const targetPath = resolve(project.workdir, outputPath);
     const { mkdirSync, copyFileSync } = await import("fs");
     const { dirname } = await import("path");
-    mkdirSync(dirname(targetPath), { recursive: true });
-    copyFileSync(result.outputFiles[0].localPath, targetPath);
 
-    // Clean up task-specific temp dir
+    // For style exploration: copy ALL outputs to a gallery directory
+    // For normal art: copy first output to target path
+    const savedPaths: string[] = [];
+
+    if (isStyleExploration) {
+      const galleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+      mkdirSync(galleryDir, { recursive: true });
+      for (let i = 0; i < allOutputFiles.length; i++) {
+        const dest = resolve(galleryDir, `variation_${i + 1}.png`);
+        copyFileSync(allOutputFiles[i].localPath, dest);
+        savedPaths.push(dest);
+      }
+      console.log(`ComfyUI: style exploration — saved ${allOutputFiles.length} variations to ${galleryDir}`);
+    } else {
+      if (!outputPath) throw new Error("ComfyUI task missing [output: ...] tag");
+      const targetPath = resolve(project.workdir, outputPath);
+      mkdirSync(dirname(targetPath), { recursive: true });
+      copyFileSync(allOutputFiles[0].localPath, targetPath);
+      savedPaths.push(targetPath);
+
+      // Post-process if style lock has config
+      const styleLock = getStyleLock(project.workdir);
+      if (styleLock?.post_process) {
+        await postProcessImage(targetPath, styleLock.post_process);
+      }
+
+      console.log(`ComfyUI: output saved to ${targetPath} (${allOutputFiles[0].filename})`);
+    }
+
+    // Clean up temp dir
     try { const { rmSync } = await import("fs"); rmSync(outputDir, { recursive: true, force: true }); } catch { /* best effort */ }
 
-    // Verify the file was copied
-    if (!existsSync(targetPath)) {
-      throw new Error(`Failed to copy output file to ${targetPath}`);
+    // Verify files
+    for (const p of savedPaths) {
+      if (!existsSync(p)) {
+        throw new Error(`Failed to copy output file to ${p}`);
+      }
     }
-    console.log(`ComfyUI: output saved to ${targetPath} (${result.outputFiles[0].filename})`);
 
-    // Git add and commit the new file
+    // Git add and commit
     if (existsSync(resolve(project.workdir, ".git"))) {
-      const addResult = spawnSync("git", ["add", outputPath], { cwd: project.workdir, encoding: "utf-8" });
-      if (addResult.status !== 0) {
-        console.warn(`ComfyUI: git add failed: ${addResult.stderr}`);
+      for (const p of savedPaths) {
+        const relPath = p.replace(project.workdir + "/", "").replace(project.workdir + "\\", "");
+        spawnSync("git", ["add", relPath], { cwd: project.workdir, encoding: "utf-8" });
       }
       const commitResult = spawnSync("git", ["commit", "-m", `[Foreman] ${task.title} - Generated by ComfyUI`], { cwd: project.workdir, encoding: "utf-8" });
       if (commitResult.status !== 0) {
         console.warn(`ComfyUI: git commit failed: ${commitResult.stderr}`);
       } else {
-        console.log(`ComfyUI: committed ${outputPath}`);
+        console.log(`ComfyUI: committed ${savedPaths.length} file(s)`);
       }
     }
 
@@ -172,9 +264,10 @@ export async function executeComfyUITask(
       status: "pass",
       output: JSON.stringify([{
         step: 1,
-        text: `Generated ${result.outputFiles.length} file(s): ${result.outputFiles.map(f => f.filename).join(", ")}`,
+        text: `Generated ${allOutputFiles.length} file(s): ${allOutputFiles.map(f => f.filename).join(", ")}`,
         tokens: { prompt: 0, completion: 0 },
         durationMs,
+        savedPaths: savedPaths.map(p => p.replace(project.workdir + "/", "").replace(project.workdir + "\\", "")),
       }]),
       completed_at: new Date().toISOString(),
       duration_ms: durationMs,

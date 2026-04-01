@@ -10,6 +10,7 @@
  * Same nudge pattern as the Foreman scheduler.
  */
 
+import { resolve } from "path";
 import type { Db, DirectorDirective } from "../db";
 import { removeWorktree } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
@@ -18,6 +19,7 @@ import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
+// style-lock imported dynamically in lock_style handler
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
 import { hasCapacity, acquireLease, releaseLease } from "../machine-manager";
@@ -142,14 +144,17 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           r => r.task_id === task.id && r.status === "pending"
         );
         if (existingReviews.length === 0) {
+          const isStyleExploration = task.type === "style_exploration";
           createReviewGate(db, {
             directive_id: directive.id,
             task_id: task.id,
-            review_type: "task_verify",
-            question: `Art task "${task.title}" is ready for review. Please check the generated asset.`,
-            context: { type: task.type },
+            review_type: isStyleExploration ? "style_selection" : "task_verify",
+            question: isStyleExploration
+              ? `Style exploration "${task.title}" is ready. Review the variations and select your preferred style.`
+              : `Art task "${task.title}" is ready for review. Please check the generated asset.`,
+            context: { type: task.type, task_id: task.id },
           });
-          console.log(`Director: art task "${task.title}" sent to human review (skipping automated verification)`);
+          console.log(`Director: ${isStyleExploration ? "style exploration" : "art task"} "${task.title}" sent to human review`);
         }
         continue;
       }
@@ -272,6 +277,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
       const verification = await verifyMilestone(db, activeMilestone, directive.id, project);
 
       if (verification.passed) {
+        zeroTaskCounts.delete(activeMilestone.id); // clean up
         db.updateDirectorMilestone(activeMilestone.id, {
           status: "completed",
           completed_at: new Date().toISOString(),
@@ -442,6 +448,52 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
         }
         break;
       }
+
+      case "lock_style": {
+        shouldResume = true;
+        if (review.task_id) {
+          try {
+            const parsed = JSON.parse(result.context) as { selected?: number[] };
+            const selectedIndex = parsed.selected?.[0] ?? 0;
+
+            // Find the generated variation image
+            const task2 = db.getForemanTask(review.task_id);
+            if (task2) {
+              const { readdirSync } = await import("fs");
+              const galleryDir = resolve(project.workdir, "assets", "style_exploration", task2.id.slice(0, 8));
+              const files = readdirSync(galleryDir).filter(f => f.endsWith(".png")).sort();
+              const selectedFile = files[selectedIndex] ?? files[0];
+
+              if (selectedFile) {
+                const { lockStyle } = await import("./style-lock");
+                const taskPreset = extractTag(task2.description, "preset") ?? "pixel_sprite";
+                const { PRESETS } = await import("../foreman/comfyui-workflows");
+                const presetConfig = PRESETS[taskPreset as keyof typeof PRESETS];
+                lockStyle(project.workdir, {
+                  checkpoint: presetConfig?.checkpoint ?? "sd_xl_base_1.0.safetensors",
+                  preset: taskPreset,
+                  prompt_style_prefix: extractTag(task2.description, "prompt") ?? "",
+                  reference_image: "",
+                  ip_adapter_model: "ip-adapter-plus_sdxl_vit-h.safetensors",
+                  ip_adapter_weight: 0.75,
+                  locked_at: new Date().toISOString(),
+                  locked_by_review_id: review.id,
+                }, resolve(galleryDir, selectedFile));
+
+                addKeyDecision(db, directive, `Art style locked from variation ${selectedIndex + 1}`);
+                logEpisodic(project.workdir, `Art style locked`, `Selected variation ${selectedIndex + 1} from "${task2.title}"`);
+                console.log(`Director: art style locked from variation ${selectedIndex + 1}`);
+              }
+            }
+          } catch (err) {
+            console.error("Director: style lock failed:", err instanceof Error ? err.message : err);
+          }
+
+          // Complete the style exploration task
+          db.updateForemanTask(review.task_id, { status: "completed", completed_at: new Date().toISOString() });
+        }
+        break;
+      }
     }
   }
 
@@ -460,7 +512,7 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 /** Task types that route to each machine type */
 const MACHINE_TYPE_TASK_TYPES: Record<string, Set<string>> = {
   inference: new Set(["code", "review", "content", "claude"]),
-  comfyui: new Set(["art", "music", "sfx"]),
+  comfyui: new Set(["art", "music", "sfx", "style_exploration"]),
 };
 
 /**
@@ -493,5 +545,11 @@ function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): 
   }
 
   return idleTypes;
+}
+
+/** Extract a [tag: value] from a task description */
+function extractTag(description: string, tag: string): string | null {
+  const match = description.match(new RegExp(`\\[${tag}:\\s*(.+?)\\]`, "i"));
+  return match ? match[1].trim() : null;
 }
 

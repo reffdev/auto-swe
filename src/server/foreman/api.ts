@@ -3,7 +3,7 @@
  */
 
 import { Router } from "express";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { resolve, extname } from "path";
 import type { Db } from "../db";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
@@ -237,6 +237,66 @@ export function createForemanRouter(db: Db): Router {
     const config = db.upsertForemanConfig(updates);
     nudgeForeman(db);
     res.json(config);
+  });
+
+  // ─── Multi-Asset List (for style exploration) ──────────────────────────
+
+  router.get("/tasks/:id/assets", (req, res) => {
+    const task = db.getForemanTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const config = db.getForemanConfig();
+    const projectId = task.project_id || config?.project_id;
+    if (!projectId) return res.status(400).json({ error: "No project context" });
+
+    const project = db.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    // Check gallery directory for style exploration
+    const galleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+    try {
+            if (existsSync(galleryDir)) {
+        const files = readdirSync(galleryDir)
+          .filter((f: string) => f.endsWith(".png") || f.endsWith(".jpg"))
+          .sort();
+        res.json({ files, basePath: `assets/style_exploration/${task.id.slice(0, 8)}` });
+        return;
+      }
+    } catch { /* fall through */ }
+
+    // Fall back to single asset
+    const outputMatch = task.description.match(/\[output:\s*(.+?)\]/i);
+    if (outputMatch) {
+      res.json({ files: [outputMatch[1].trim().split("/").pop()!], basePath: outputMatch[1].trim().replace(/\/[^/]+$/, "") });
+    } else {
+      res.json({ files: [] });
+    }
+  });
+
+  router.get("/tasks/:id/asset/:index", (req, res) => {
+    const task = db.getForemanTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const config = db.getForemanConfig();
+    const projectId = task.project_id || config?.project_id;
+    if (!projectId) return res.status(400).json({ error: "No project context" });
+
+    const project = db.getProject(projectId);
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const galleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+    try {
+      const files = readdirSync(galleryDir).filter((f: string) => f.endsWith(".png") || f.endsWith(".jpg")).sort();
+      const idx = parseInt(req.params.index, 10);
+      if (idx < 0 || idx >= files.length) return res.status(404).json({ error: "Index out of range" });
+
+      const filePath = resolve(galleryDir, files[idx]);
+      const buffer = readFileSync(filePath);
+      res.setHeader("Content-Type", "image/png");
+      res.send(buffer);
+    } catch {
+      res.status(404).json({ error: "Assets not found" });
+    }
   });
 
   // ─── Asset Preview ───────────────────────────────────────────────────────

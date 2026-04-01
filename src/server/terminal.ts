@@ -38,9 +38,17 @@ export function attachTerminalServer(server: Server, db: Db): void {
     }
   });
 
+  let activeTerminals = 0;
+  const MAX_TERMINALS = 5;
+
   wss.on("connection", (ws, req) => {
     if (!pty) {
       ws.send(JSON.stringify({ type: "error", data: "Terminal not available — node-pty failed to load" }));
+      ws.close();
+      return;
+    }
+    if (activeTerminals >= MAX_TERMINALS) {
+      ws.send(JSON.stringify({ type: "error", data: `Maximum ${MAX_TERMINALS} terminal sessions reached` }));
       ws.close();
       return;
     }
@@ -59,7 +67,8 @@ export function attachTerminalServer(server: Server, db: Db): void {
     const cols = parseInt(url.searchParams.get("cols") ?? "120", 10);
     const rows = parseInt(url.searchParams.get("rows") ?? "40", 10);
 
-    console.log(`Terminal: new session in ${cwd} (${cols}x${rows})`);
+    activeTerminals++;
+    console.log(`Terminal: new session in ${cwd} (${cols}x${rows}) [${activeTerminals}/${MAX_TERMINALS}]`);
 
     // Spawn PTY
     const shell = process.platform === "win32" ? "powershell.exe" : "bash";
@@ -111,11 +120,13 @@ export function attachTerminalServer(server: Server, db: Db): void {
     });
 
     ws.on("close", () => {
-      console.log("Terminal: WebSocket closed — killing PTY");
+      activeTerminals = Math.max(0, activeTerminals - 1);
+      console.log(`Terminal: WebSocket closed — killing PTY [${activeTerminals}/${MAX_TERMINALS}]`);
       try { ptyProcess.kill(); } catch { /* already dead */ }
     });
 
     ws.on("error", () => {
+      activeTerminals = Math.max(0, activeTerminals - 1);
       try { ptyProcess.kill(); } catch { /* already dead */ }
     });
   });

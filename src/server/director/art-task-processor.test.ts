@@ -226,4 +226,60 @@ describe("postProcessArtTasks", () => {
     expect(result[1].description).toContain("[workflow:");
     expect(result[2].description).not.toContain("[workflow:");
   });
+
+  it("injects [style_lock: true] when style is locked", () => {
+    // Create a style lock
+    const artDir = join(projectDir, ".swe", "art");
+    mkdirSync(artDir, { recursive: true });
+    writeFileSync(join(artDir, "style-lock.json"), JSON.stringify({
+      checkpoint: "sd_xl_base_1.0.safetensors",
+      preset: "pixel_sprite",
+      prompt_style_prefix: "dark fantasy pixel art",
+      reference_image: ".swe/art/style-reference.png",
+      ip_adapter_model: "ip-adapter.safetensors",
+      ip_adapter_weight: 0.75,
+      locked_at: new Date().toISOString(),
+    }));
+
+    const task = makeTask({ type: "art", title: "Create fire icon", description: "A fire icon." });
+    const result = postProcessArtTasks([task], projectDir);
+    expect(result[0].description).toContain("[style_lock: true]");
+    expect(result[0].description).toContain("dark fantasy pixel art");
+  });
+
+  it("does NOT inject style_lock for style_exploration tasks", () => {
+    const artDir = join(projectDir, ".swe", "art");
+    mkdirSync(artDir, { recursive: true });
+    writeFileSync(join(artDir, "style-lock.json"), JSON.stringify({
+      checkpoint: "sd_xl_base_1.0.safetensors",
+      preset: "pixel_sprite",
+      prompt_style_prefix: "dark fantasy pixel art",
+      reference_image: ".swe/art/style-reference.png",
+      ip_adapter_model: "ip-adapter.safetensors",
+      ip_adapter_weight: 0.75,
+      locked_at: new Date().toISOString(),
+    }));
+
+    const task = makeTask({ type: "style_exploration", title: "Explore styles", description: "Explore." });
+    const result = postProcessArtTasks([task], projectDir);
+    expect(result[0].description).not.toContain("[style_lock:");
+  });
+
+  it("does NOT inject style_lock for music/sfx tasks", () => {
+    const artDir = join(projectDir, ".swe", "art");
+    mkdirSync(artDir, { recursive: true });
+    writeFileSync(join(artDir, "style-lock.json"), JSON.stringify({
+      checkpoint: "sd_xl_base_1.0.safetensors",
+      preset: "pixel_sprite",
+      prompt_style_prefix: "dark fantasy pixel art",
+      reference_image: ".swe/art/style-reference.png",
+      ip_adapter_model: "ip-adapter.safetensors",
+      ip_adapter_weight: 0.75,
+      locked_at: new Date().toISOString(),
+    }));
+
+    const task = makeTask({ type: "music", title: "Create music", description: "Music." });
+    const result = postProcessArtTasks([task], projectDir);
+    expect(result[0].description).not.toContain("[style_lock:");
+  });
 });

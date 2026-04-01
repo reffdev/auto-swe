@@ -31,6 +31,7 @@ export function resolveModel(task: ForemanTask): RouteResult {
     case "art":
     case "music":
     case "sfx":
+    case "style_exploration":
       return { modelId: "comfyui", machineType: "comfyui" };
     case "content":
       return { modelId: "qwen3.5:9b", machineType: "inference" };

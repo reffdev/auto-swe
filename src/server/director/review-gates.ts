@@ -7,7 +7,7 @@
 
 import type { Db, DirectorDirective, DirectorReview } from "../db";
 
-export type ReviewType = "task_verify" | "design_choice" | "milestone_gate" | "failure_escalation";
+export type ReviewType = "task_verify" | "design_choice" | "milestone_gate" | "failure_escalation" | "style_selection";
 
 /**
  * Create a review gate that pauses the directive until human responds.
@@ -95,7 +95,7 @@ export function shouldPauseDirective(db: Db, directive: DirectorDirective): bool
  */
 export function processReviewResponse(
   review: DirectorReview,
-): { action: "resume" | "retry_task" | "generate_tasks"; context: string } {
+): { action: "resume" | "retry_task" | "generate_tasks" | "lock_style"; context: string } {
   const response = review.response ?? "";
 
   switch (review.review_type) {
@@ -117,6 +117,20 @@ export function processReviewResponse(
     case "failure_escalation":
       // Human provided guidance on how to handle the failure
       return { action: "generate_tasks", context: `Human guidance on failure: ${response}` };
+
+    case "style_selection": {
+      // Human selected a style from exploration variations
+      try {
+        const parsed = JSON.parse(response) as { action: "lock" | "refine"; selected?: number[]; feedback?: string };
+        if (parsed.action === "lock") {
+          return { action: "lock_style", context: JSON.stringify(parsed) };
+        }
+        return { action: "retry_task", context: `Style refinement: ${parsed.feedback ?? "try again"}` };
+      } catch {
+        // Plain text response — treat as refinement feedback
+        return { action: "retry_task", context: `Style refinement: ${response}` };
+      }
+    }
 
     default:
       return { action: "resume", context: response };

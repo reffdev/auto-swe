@@ -20,6 +20,7 @@ import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 import { postProcessArtTasks } from "./art-task-processor";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
+import { isStyleLocked } from "./style-lock";
 import { selectPlannerMachine } from "../planner-llm";
 import { nudgeForeman } from "../foreman/scheduler";
 import { logEpisodic } from "./persistent-memory";
@@ -56,12 +57,15 @@ export async function planNextTasks(
   const workflowSummary = workflowManifest ? summarizeManifestForPrompt(workflowManifest) : null;
 
   // Build prompt
+  const styleLocked = isStyleLocked(project.workdir);
+
   const { system, user } = buildPlanningPrompt({
     directiveContext,
     milestoneTitle: milestone.title,
     milestoneVerification: milestone.verification ?? "Not specified",
     workflowSummary,
     idleMachineTypes,
+    styleLocked,
   });
 
   // Call LLM (no streaming needed — planning is a single-shot call)

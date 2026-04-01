@@ -104,6 +104,8 @@ export function buildPlanningPrompt(opts: {
   workflowSummary?: string | null;
   /** Machine types that are idle and need tasks. */
   idleMachineTypes?: string[];
+  /** Whether the project has a locked art style */
+  styleLocked?: boolean;
 }): { system: string; user: string } {
   const systemParts = [
     "You are a project director generating the next batch of tasks for autonomous execution.",
@@ -169,7 +171,35 @@ export function buildPlanningPrompt(opts: {
     "The system will automatically select the correct preset based on [asset_type:].",
     "You can also force a specific preset with `[preset: game_asset]` in the description.",
     "No workflow template files are required — just provide the hints above.",
+    "",
+    "### Style Exploration",
+    "",
+    "- **style_exploration**: Generate multiple style variations for the user to choose from.",
+    "  Use type `style_exploration` with `[variation_count: 6]` in the description.",
+    "  The prompt should describe the desired art direction broadly.",
+    "  Example description hints:",
+    "    [asset_type: concept]",
+    "    [prompt: 16-bit dark fantasy pixel art style, limited color palette, glowing accents, arcane theme]",
+    "    [variation_count: 6]",
+    "    [output: assets/style_exploration/]",
   ];
+
+  // Style lock awareness
+  if (opts.styleLocked === false) {
+    systemParts.push(
+      "",
+      "**⚠️ ART STYLE NOT ESTABLISHED**: This project does not have a locked art style yet.",
+      "Before generating any `art` tasks, you SHOULD generate a `style_exploration` task first",
+      "so the user can approve a visual style. You may still generate art tasks — they will just",
+      "lack style consistency until a style is locked. Prioritize style exploration early.",
+    );
+  } else if (opts.styleLocked === true) {
+    systemParts.push(
+      "",
+      "**✓ Art style is locked.** All art tasks automatically use IP-Adapter conditioning",
+      "with the approved reference image. Generate art tasks freely.",
+    );
+  }
 
   if (opts.workflowSummary) {
     systemParts.push("", "### Project-Specific Workflows (override presets when available)", "", opts.workflowSummary);

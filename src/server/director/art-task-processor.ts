@@ -18,9 +18,10 @@ import {
   type WorkflowManifest,
   type WorkflowEntry,
 } from "../foreman/workflow-manifest";
-import { PRESETS, AUDIO_PRESETS, type PresetName } from "../foreman/comfyui-workflows";
+// PRESETS used indirectly via selectPreset() mapping to preset names
+import { getStyleLock } from "./style-lock";
 
-const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx"]);
+const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx", "style_exploration"]);
 
 /**
  * Post-process parsed tasks: inject ComfyUI tags into art/music/sfx tasks.
@@ -32,18 +33,52 @@ export function postProcessArtTasks(
 ): ParsedTask[] {
   const manifest = loadWorkflowManifest(projectWorkdir);
 
+  const styleLock = getStyleLock(projectWorkdir);
+
   return tasks.map(task => {
     if (!COMFYUI_TASK_TYPES.has(task.type)) return task;
 
     // Already has ComfyUI tags — don't double-process
     if (task.description.includes("[workflow:") || task.description.includes("[preset:")) return task;
 
+    let processed: ParsedTask;
     if (manifest) {
-      return injectManifestTags(task, manifest);
+      processed = injectManifestTags(task, manifest);
+    } else {
+      processed = injectPresetTags(task);
     }
 
-    // No manifest — use built-in presets (zero setup required)
-    return injectPresetTags(task);
+    // If style is locked and this is an art task (not style_exploration), inject style lock tag
+    if (styleLock && task.type === "art" && !processed.description.includes("[style_lock:")) {
+      let desc = processed.description;
+
+      if (styleLock.prompt_style_prefix) {
+        // Prepend style prefix to [prompt:] tag if present
+        const promptMatch = desc.match(/\[prompt:\s*(.+?)\]/i);
+        if (promptMatch) {
+          desc = desc.replace(promptMatch[0], `[prompt: ${styleLock.prompt_style_prefix}, ${promptMatch[1].trim()}]`);
+        }
+
+        // Also prepend to text field inside [params:] if present
+        const paramsMatch = desc.match(/\[params:\s*(\{[\s\S]*?\})\]/i);
+        if (paramsMatch) {
+          try {
+            const params = JSON.parse(paramsMatch[1]) as Record<string, Record<string, unknown>>;
+            for (const nodeParams of Object.values(params)) {
+              if (typeof nodeParams.text === "string") {
+                nodeParams.text = `${styleLock.prompt_style_prefix}, ${nodeParams.text}`;
+                break;
+              }
+            }
+            desc = desc.replace(paramsMatch[0], `[params: ${JSON.stringify(params)}]`);
+          } catch { /* ignore parse errors */ }
+        }
+      }
+
+      processed = { ...processed, description: desc + "\n[style_lock: true]" };
+    }
+
+    return processed;
   });
 }
 

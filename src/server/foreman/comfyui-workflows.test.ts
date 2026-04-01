@@ -6,6 +6,7 @@ import {
   buildAudioGenWorkflow,
   buildWorkflow,
   buildAudioWorkflow,
+  applyIPAdapter,
   PRESETS,
   AUDIO_PRESETS,
   type WorkflowOptions,
@@ -233,5 +234,86 @@ describe("AUDIO_PRESETS", () => {
 
   it("sfx defaults to 5s", () => {
     expect(AUDIO_PRESETS.sfx.duration).toBe(5);
+  });
+});
+
+describe("applyIPAdapter", () => {
+  it("injects IP-Adapter nodes into a workflow", () => {
+    const base = buildTxt2ImgWorkflow({ prompt: "test", checkpoint: "sd_xl_base_1.0.safetensors" });
+    const result = applyIPAdapter(base, {
+      referenceImage: "style_ref.png",
+      ipAdapterModel: "ip-adapter-plus.safetensors",
+      weight: 0.75,
+    });
+
+    // New nodes should exist
+    expect(result["30"].class_type).toBe("LoadImage");
+    expect(result["30"].inputs.image).toBe("style_ref.png");
+    expect(result["31"].class_type).toBe("IPAdapterModelLoader");
+    expect(result["31"].inputs.ipadapter_file).toBe("ip-adapter-plus.safetensors");
+    expect(result["32"].class_type).toBe("IPAdapterApply");
+    expect(result["32"].inputs.weight).toBe(0.75);
+  });
+
+  it("rewires KSampler model input through IP-Adapter", () => {
+    const base = buildTxt2ImgWorkflow({ prompt: "test", checkpoint: "sd_xl_base_1.0.safetensors" });
+    const originalModel = base["3"].inputs.model; // ["4", 0]
+    const result = applyIPAdapter(base, {
+      referenceImage: "ref.png",
+      ipAdapterModel: "ip.safetensors",
+      weight: 0.8,
+    });
+
+    // KSampler should now reference IP-Adapter output
+    expect(result["3"].inputs.model).toEqual(["32", 0]);
+    // IP-Adapter should reference the original model
+    expect(result["32"].inputs.model).toEqual(originalModel);
+  });
+
+  it("does not modify the original workflow", () => {
+    const base = buildTxt2ImgWorkflow({ prompt: "test", checkpoint: "sd_xl_base_1.0.safetensors" });
+    const originalModel = JSON.parse(JSON.stringify(base["3"].inputs.model));
+    applyIPAdapter(base, {
+      referenceImage: "ref.png",
+      ipAdapterModel: "ip.safetensors",
+      weight: 0.8,
+    });
+
+    // Original should be unchanged (deep copy inside applyIPAdapter)
+    expect(base["3"].inputs.model).toEqual(originalModel);
+  });
+
+  it("works with LoRA workflows", () => {
+    const base = buildTxt2ImgWithLoRAWorkflow({
+      prompt: "test",
+      checkpoint: "sd_xl_base_1.0.safetensors",
+      lora: "pixel-art-xl.safetensors",
+    });
+    // KSampler model comes from LoRA node ["10", 0]
+    expect(base["3"].inputs.model).toEqual(["10", 0]);
+
+    const result = applyIPAdapter(base, {
+      referenceImage: "ref.png",
+      ipAdapterModel: "ip.safetensors",
+      weight: 0.7,
+    });
+
+    // KSampler should now go through IP-Adapter
+    expect(result["3"].inputs.model).toEqual(["32", 0]);
+    // IP-Adapter should reference LoRA output
+    expect(result["32"].inputs.model).toEqual(["10", 0]);
+  });
+
+  it("returns unchanged workflow if no KSampler found", () => {
+    const consoleSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const noSampler = { "1": { class_type: "LoadImage", inputs: { image: "test.png" } } };
+    const result = applyIPAdapter(noSampler as any, {
+      referenceImage: "ref.png",
+      ipAdapterModel: "ip.safetensors",
+      weight: 0.8,
+    });
+
+    expect(result["30"]).toBeUndefined(); // no nodes added
+    consoleSpy.mockRestore();
   });
 });

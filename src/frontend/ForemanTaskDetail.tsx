@@ -119,7 +119,7 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && feedback.trim()) {
-                  void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); refresh() })
+                  void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); void refresh() })
                 }
               }}
               className="flex-1"
@@ -128,7 +128,7 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               size="sm"
               variant="destructive"
               disabled={!feedback.trim()}
-              onClick={() => void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); refresh() })}
+              onClick={() => void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); void refresh() })}
             >
               Reject &amp; Retry
             </Button>
@@ -219,7 +219,7 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
   )
 }
 
-const ASSET_TYPES = new Set(['art', 'music', 'sfx'])
+const ASSET_TYPES = new Set(['art', 'music', 'sfx', 'style_exploration'])
 
 function isAssetTask(task: ForemanTask): boolean {
   return ASSET_TYPES.has(task.type)
@@ -227,8 +227,16 @@ function isAssetTask(task: ForemanTask): boolean {
 
 function AssetPreview({ taskId, taskType }: { taskId: string; taskType: string }) {
   const [error, setError] = useState(false)
-  const assetUrl = `/api/foreman/tasks/${taskId}/asset?t=${Date.now()}`
+  const [cacheKey] = useState(() => Date.now())
   const isAudio = taskType === 'music' || taskType === 'sfx'
+  const isStyleExploration = taskType === 'style_exploration'
+
+  // For style exploration, show multi-image grid
+  if (isStyleExploration) {
+    return <StyleExplorationGrid taskId={taskId} />
+  }
+
+  const assetUrl = `/api/foreman/tasks/${taskId}/asset?t=${cacheKey}`
 
   if (error) {
     return (
@@ -268,6 +276,51 @@ function AssetPreview({ taskId, taskType }: { taskId: string; taskType: string }
           />
         )}
       </div>
+    </section>
+  )
+}
+
+function StyleExplorationGrid({ taskId }: { taskId: string }) {
+  const [files, setFiles] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [cacheKey] = useState(() => Date.now())
+
+  useEffect(() => {
+    fetch(`/api/foreman/tasks/${taskId}/assets`)
+      .then(r => r.json())
+      .then(data => { setFiles(data.files ?? []); setLoading(false) })
+      .catch(() => setLoading(false))
+  }, [taskId])
+
+  if (loading) {
+    return <section><h3 className="text-sm font-medium mb-2">Style Variations</h3><p className="text-xs text-muted-foreground">Loading...</p></section>
+  }
+
+  if (files.length === 0) {
+    return <section><h3 className="text-sm font-medium mb-2">Style Variations</h3><p className="text-xs text-muted-foreground">No variations generated yet</p></section>
+  }
+
+  return (
+    <section>
+      <h3 className="text-sm font-medium mb-2">Style Variations ({files.length})</h3>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+        {files.map((_, i) => (
+          <div key={i} className="relative bg-muted/50 rounded border border-border overflow-hidden">
+            <img
+              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}`}
+              alt={`Variation ${i + 1}`}
+              className="w-full aspect-square object-contain"
+              style={{ imageRendering: 'pixelated' }}
+            />
+            <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
+              #{i + 1}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground mt-2">
+        Use the Director review to select a style and lock it, or reject to generate new variations.
+      </p>
     </section>
   )
 }

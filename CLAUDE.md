@@ -9,7 +9,7 @@ An autonomous software engineering orchestration system. It takes high-level dir
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Frontend (React, Vite)     :5173 (dev) / static (prod) │
-│  Dashboard, Director, Foreman, Terminal, Asset Preview   │
+│  Dashboard, Director, Foreman, Terminal, Asset Preview  │
 └──────────────────────┬──────────────────────────────────┘
                        │ /api/*
 ┌──────────────────────▼──────────────────────────────────┐
@@ -43,17 +43,17 @@ An autonomous software engineering orchestration system. It takes high-level dir
 │  └─ Routing          Task type → machine type mapping   │
 ├─────────────────────────────────────────────────────────┤
 │  Pipeline            Multi-stage issue processing       │
-│  ├─ Scout → Implement → Build → Test → Review → GitOps │
+│  ├─ Scout → Implement → Build → Test → Review → GitOps  │
 │  └─ Review caching   Shared context across lenses       │
 ├─────────────────────────────────────────────────────────┤
 │  Infrastructure                                         │
 │  ├─ SQLite (WAL)     Single DB, Drizzle ORM             │
-│  ├─ Git              Worktree isolation, PR creation     │
-│  └─ Stats            Token speed, machine utilization    │
+│  ├─ Git              Worktree isolation, PR creation    │
+│  └─ Stats            Token speed, machine utilization   │
 └─────────────────────────────────────────────────────────┘
 
   Machines:
-  ├─ Inference (Ollama/OpenRouter/llama.cpp)  → code tasks
+  ├─ Inference (Ollama/OpenRouter/llama.cpp) → code tasks
   └─ ComfyUI (ROCm/CUDA)                     → art/music/sfx
 ```
 
@@ -160,16 +160,16 @@ All machine access goes through `machine-manager.ts`. Consumers acquire leases:
 
 Art/music/sfx tasks route to ComfyUI machines via presets:
 
-| Preset | Model | Use |
-|---|---|---|
-| pixel_sprite | SDXL + pixel-art-xl LoRA | Sprites, icons |
-| background | SDXL | Game backgrounds |
-| portrait | SDXL | Character art |
-| concept | FLUX.2-dev | High quality concept art |
-| game_asset | SDXL + game_assets_v3 LoRA | Items, props |
-| fast_draft | Z-Image-Turbo (8 steps) | Quick previews |
-| music | ACE-Step 1.5 | Background music |
-| sfx | AudioGen | Sound effects |
+| Preset       | Model                      | Use                      |
+|--------------|----------------------------|--------------------------|
+| pixel_sprite | SDXL + pixel-art-xl LoRA   | Sprites, icons           |
+| background   | SDXL                       | Game backgrounds         |
+| portrait     | SDXL                       | Character art            |
+| concept      | FLUX.2-dev                 | High quality concept art |
+| game_asset   | SDXL + game_assets_v3 LoRA | Items, props             |
+| fast_draft   | Z-Image-Turbo (8 steps)    | Quick previews           |
+| music        | ACE-Step 1.5               | Background music         |
+| sfx          | AudioGen                   | Sound effects            |
 
 Art tasks skip automated verification → go straight to human review.
 On rejection, user feedback is processed by an LLM to intelligently revise the prompt.

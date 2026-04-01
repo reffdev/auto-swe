@@ -13,6 +13,7 @@ import type { Db, DirectorDirective, Project } from "../db";
 import { gatherProjectContext } from "../pipeline/nodes";
 import { readConventions, readMemoryCategory } from "./persistent-memory";
 import { searchMemories, isMemsearchAvailable } from "./memsearch";
+import { getStyleLock } from "./style-lock";
 
 // ─── Progress JSON ──────────────────────────────────────────────────────────
 
@@ -162,7 +163,15 @@ export async function assembleDirectorContext(
     }
   }
 
-  // 7. Persistent memory
+  // 7. Art style status
+  const styleLock = getStyleLock(project.workdir);
+  if (styleLock) {
+    parts.push(`# Art Style (LOCKED)\n\nPreset: ${styleLock.preset}\nCheckpoint: ${styleLock.checkpoint}\nStyle prefix: "${styleLock.prompt_style_prefix}"\nIP-Adapter: ${styleLock.ip_adapter_model} @ ${styleLock.ip_adapter_weight}\nLocked: ${styleLock.locked_at}`);
+  } else {
+    parts.push("# Art Style\n\n**Not established.** No style reference locked for this project. A style_exploration task should be created before generating production art assets.");
+  }
+
+  // 8. Persistent memory
   // Conventions always included (they're project rules)
   const conventions = readConventions(project.workdir);
   if (conventions.length > 0) {

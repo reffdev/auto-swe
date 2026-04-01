@@ -391,6 +391,77 @@ export function buildWorkflow(opts: WorkflowOptions): Workflow {
   return buildTxt2ImgWorkflow(opts);
 }
 
+// ─── IP-Adapter ─────────────────────────────────────────────────────────────
+
+export interface IPAdapterOptions {
+  /** Filename of the reference image (must be in ComfyUI's input/ dir) */
+  referenceImage: string;
+  /** IP-Adapter model filename */
+  ipAdapterModel: string;
+  /** Conditioning weight (0.0-1.0) */
+  weight: number;
+}
+
+/**
+ * Apply IP-Adapter conditioning to an existing workflow.
+ * Injects LoadImage + IPAdapterModelLoader + IPAdapterApply nodes
+ * and rewires the model path so KSampler gets the conditioned model.
+ *
+ * Works with SDXL workflows. For FLUX, the IP-Adapter nodes may differ.
+ */
+export function applyIPAdapter(workflow: Workflow, opts: IPAdapterOptions): Workflow {
+  const wf = JSON.parse(JSON.stringify(workflow)) as Workflow;
+
+  // Find KSampler node — it receives the model input we need to intercept
+  const kSamplerEntry = Object.entries(wf).find(([, n]) => n.class_type === "KSampler");
+  if (!kSamplerEntry) {
+    console.warn("applyIPAdapter: no KSampler found in workflow — skipping");
+    return wf;
+  }
+
+  const [kSamplerId, kSamplerNode] = kSamplerEntry;
+  const originalModelInput = kSamplerNode.inputs.model; // e.g., ["4", 0] or ["10", 0]
+
+  // Use high node IDs to avoid conflicts
+  const loadImageId = "30";
+  const ipLoaderModelId = "31";
+  const ipApplyId = "32";
+
+  // Load the reference image
+  wf[loadImageId] = {
+    class_type: "LoadImage",
+    inputs: { image: opts.referenceImage },
+  };
+
+  // Load IP-Adapter model
+  wf[ipLoaderModelId] = {
+    class_type: "IPAdapterModelLoader",
+    inputs: { ipadapter_file: opts.ipAdapterModel },
+  };
+
+  // Apply IP-Adapter — takes model + IP-Adapter model + image → conditioned model
+  wf[ipApplyId] = {
+    class_type: "IPAdapterApply",
+    inputs: {
+      ipadapter: [ipLoaderModelId, 0],
+      clip_vision: [ipLoaderModelId, 1],
+      image: [loadImageId, 0],
+      model: originalModelInput,
+      weight: opts.weight,
+      noise: 0.0,
+      weight_type: "linear",
+      start_at: 0.0,
+      end_at: 1.0,
+      unfold_batch: false,
+    },
+  };
+
+  // Rewire KSampler to use IP-Adapter conditioned model
+  wf[kSamplerId].inputs.model = [ipApplyId, 0];
+
+  return wf;
+}
+
 /**
  * Build an audio workflow based on the preset type.
  */
