@@ -16,7 +16,7 @@ import { parseNextTasks } from "./parsers";
 import { webSearchTool } from "../tools/web-search";
 import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
-import { makeFilesystemTools, makeBuildCheckTools } from "../tools";
+import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 import { postProcessArtTasks } from "./art-task-processor";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
@@ -80,12 +80,7 @@ export async function planNextTasks(
       webSearch: webSearchTool,
       fetchUrl: fetchUrlTool,
       lookupDocs,
-      ...makeFilesystemTools(project.workdir),
-      ...makeBuildCheckTools(project.workdir, {
-        buildCommand: project.build_command,
-        testCommand: project.test_command,
-        lintCommand: project.lint_command,
-      }),
+      ...makeReadOnlyTools(project.workdir),
       ...makeMemoryTools(project.workdir),
     },
     maxSteps: 50,

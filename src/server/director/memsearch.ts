@@ -34,7 +34,6 @@ export function isMemsearchAvailable(): boolean {
     const result = spawnSync("memsearch", ["--version"], {
       encoding: "utf-8",
       timeout: 5000,
-      shell: true,
     });
     memsearchAvailable = result.status === 0;
   } catch {
@@ -76,7 +75,6 @@ export async function indexMemories(projectWorkdir: string): Promise<boolean> {
       cwd: projectWorkdir,
       encoding: "utf-8",
       timeout: 30_000,
-      shell: true,
     } as any);
 
     let stderr = "";
@@ -114,7 +112,6 @@ export async function searchMemories(
         cwd: projectWorkdir,
         encoding: "utf-8",
         timeout: SEARCH_TIMEOUT_MS,
-        shell: true,
       } as any,
     );
 
@@ -165,7 +162,6 @@ export function startMemsearchWatch(projectWorkdir: string): void {
 
   watchProcess = spawn("memsearch", ["watch", ...paths], {
     cwd: projectWorkdir,
-    shell: true,
     stdio: "ignore",
     detached: true,
   });

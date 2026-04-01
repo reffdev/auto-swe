@@ -31,18 +31,20 @@ export function isGenerating(conversationId: string): boolean {
 // ─── Machine selection ───────────────────────────────────────────────────────
 
 export function selectPlannerMachine(db: Db, project?: Project): { machine: Machine; modelId: string } | null {
-  const machines = db.getMachines().filter((m: Machine) => m.enabled === 1);
-  if (machines.length === 0) return null;
+  const allMachines = db.getMachines();
 
-  // 1. Check for Director-specific machine in foreman config
+  // 1. Check for Director-specific machine in foreman config (can be disabled)
   const config = db.getForemanConfig();
   if (config?.director_machine_id) {
-    const directorMachine = machines.find((m: Machine) => m.id === config.director_machine_id);
+    const directorMachine = allMachines.find((m: Machine) => m.id === config.director_machine_id);
     if (directorMachine) {
       const modelId = config.director_model_id ?? directorMachine.model_id;
       if (modelId) return { machine: directorMachine, modelId };
     }
   }
+
+  const machines = allMachines.filter((m: Machine) => m.enabled === 1);
+  if (machines.length === 0) return null;
 
   // 2. Project model_id override
   if (project?.model_id) {

@@ -140,6 +140,8 @@ export function createDirectorRouter(db: Db): Router {
     const machineInfo = selectPlannerMachine(db, project);
     if (!machineInfo) return res.status(503).json({ error: "No machine available" });
 
+    console.log(`Director message: using machine "${machineInfo.machine.name || machineInfo.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
+
     // Get all messages for context
     const allMessages = db.getDirectorMessages(conversation.id);
 
@@ -190,6 +192,8 @@ export function createDirectorRouter(db: Db): Router {
 
     const machineInfo = selectPlannerMachine(db, project);
     if (!machineInfo) return res.status(503).json({ error: "No machine available" });
+
+    console.log(`Director retry: using machine "${machineInfo.machine.name || machineInfo.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
 
     // Delete the last assistant message (the failed one)
     const allMessages = db.getDirectorMessages(conversation.id);

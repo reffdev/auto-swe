@@ -13,7 +13,7 @@ import { assembleDirectorContext } from "./memory";
 import { webSearchTool } from "../tools/web-search";
 import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
-import { makeFilesystemTools, makeBuildCheckTools } from "../tools";
+import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 
 // ─── In-memory streaming state ──────────────────────────────────────────────
@@ -94,8 +94,7 @@ export async function generateDirectorResponse(opts: {
   });
 
   const toolCount = project
-    ? Object.keys(makeFilesystemTools(project.workdir)).length +
-      Object.keys(makeBuildCheckTools(project.workdir, {})).length +
+    ? Object.keys(makeReadOnlyTools(project.workdir)).length +
       Object.keys(makeMemoryTools(project.workdir)).length + 3
     : 3;
   console.log(`Director: system prompt ${systemPrompt.length} chars, ${opts.messages.length} message(s), ${toolCount} tools`);
@@ -113,12 +112,7 @@ export async function generateDirectorResponse(opts: {
         fetchUrl: fetchUrlTool,
         lookupDocs,
         ...(project ? {
-          ...makeFilesystemTools(project.workdir),
-          ...makeBuildCheckTools(project.workdir, {
-            buildCommand: project.build_command,
-            testCommand: project.test_command,
-            lintCommand: project.lint_command,
-          }),
+          ...makeReadOnlyTools(project.workdir),
           ...makeMemoryTools(project.workdir),
         } : {}),
       },

@@ -51,8 +51,9 @@ export function startDirectorScheduler(db: Db): void {
   if (config?.project_id) {
     const project = db.getProject(config.project_id);
     if (project) {
-      indexMemories(project.workdir).catch(() => {});
-      startMemsearchWatch(project.workdir);
+      indexMemories(project.workdir)
+        .then(() => startMemsearchWatch(project.workdir))
+        .catch(() => {});
     }
   }
 }
