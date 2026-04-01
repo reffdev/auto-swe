@@ -1188,6 +1188,10 @@ export class Db {
       .where(eq(schema.directorMessages.id, id)).get()!;
   }
 
+  deleteDirectorMessage(id: string): void {
+    this.drizzle.delete(schema.directorMessages).where(eq(schema.directorMessages.id, id)).run();
+  }
+
   getDirectorMessages(conversationId: string, afterId?: string): DirectorMessage[] {
     if (afterId) {
       const after = this.drizzle.select().from(schema.directorMessages)

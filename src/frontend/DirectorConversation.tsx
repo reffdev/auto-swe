@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Send, Check, Loader2 } from 'lucide-react'
+import { ArrowLeft, Send, Check, Loader2, RotateCcw } from 'lucide-react'
 import * as api from './api'
 import type { DirectorMessage } from './api'
 
@@ -115,19 +115,39 @@ export function DirectorConversation({ directiveId, onBack }: { directiveId: str
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {messages.map(msg => (
-          <div key={msg.id} className={cn('max-w-[80%]', msg.role === 'user' ? 'ml-auto' : '')}>
-            <div className={cn(
-              'rounded-lg px-4 py-3 text-sm',
-              msg.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted',
-            )}>
-              <pre className="whitespace-pre-wrap font-sans">{msg.content}</pre>
+        {messages.map((msg, idx) => {
+          const isLast = idx === messages.length - 1;
+          const isFailedResponse = isLast && msg.role === 'assistant' && !generating && (
+            msg.content.includes('(No response generated)') ||
+            msg.content.startsWith('Error generating response:')
+          );
+
+          return (
+            <div key={msg.id} className={cn('max-w-[80%]', msg.role === 'user' ? 'ml-auto' : '')}>
+              <div className={cn(
+                'rounded-lg px-4 py-3 text-sm',
+                msg.role === 'user' ? 'bg-primary text-primary-foreground' :
+                isFailedResponse ? 'bg-destructive/10 border border-destructive/30' : 'bg-muted',
+              )}>
+                <pre className="whitespace-pre-wrap font-sans">{msg.content}</pre>
+              </div>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[10px] text-muted-foreground">
+                  {msg.role === 'user' ? 'You' : 'Director'} &middot; {new Date(msg.created_at).toLocaleTimeString()}
+                </span>
+                {isFailedResponse && conversationId && (
+                  <Button variant="ghost" size="sm" className="h-5 text-[10px] px-1.5"
+                    onClick={() => {
+                      void api.retryDirectorConversation(conversationId)
+                    }}
+                  >
+                    <RotateCcw className="size-2.5 mr-1" /> Retry
+                  </Button>
+                )}
+              </div>
             </div>
-            <div className="text-[10px] text-muted-foreground mt-1">
-              {msg.role === 'user' ? 'You' : 'Director'} &middot; {new Date(msg.created_at).toLocaleTimeString()}
-            </div>
-          </div>
-        ))}
+          );
+        })}
 
         {/* Streaming partial */}
         {generating && partialText && (

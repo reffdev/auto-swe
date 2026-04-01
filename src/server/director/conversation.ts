@@ -47,6 +47,9 @@ export async function generateDirectorResponse(opts: {
 }): Promise<void> {
   const { db } = opts;
 
+  console.log(`Director: generating response for conversation ${opts.conversationId} (directive: ${opts.directiveId})`);
+  console.log(`Director: using machine "${opts.machine.name || opts.machine.id}" at ${opts.machine.base_url} with model ${opts.modelId}`);
+
   const provider = createOpenAICompatible({
     name: "director",
     baseURL: opts.machine.base_url,
@@ -58,10 +61,14 @@ export async function generateDirectorResponse(opts: {
   const directive = db.getDirectorDirective(opts.directiveId);
   const project = directive ? db.getProject(directive.project_id) : null;
 
+  if (!directive) console.warn(`Director: directive ${opts.directiveId} not found`);
+  if (!project) console.warn(`Director: project not found for directive ${opts.directiveId}`);
+
   let projectContext: string | undefined;
   let designDocsContent: string | undefined;
 
   if (directive && project) {
+    console.log(`Director: assembling context for project "${project.name}" (workdir: ${project.workdir})`);
     projectContext = await assembleDirectorContext(db, directive, project, { includeTaskSummaries: false });
 
     // Read input design docs referenced by the directive
@@ -85,6 +92,13 @@ export async function generateDirectorResponse(opts: {
     projectContext,
     designDocsContent,
   });
+
+  const toolCount = project
+    ? Object.keys(makeFilesystemTools(project.workdir)).length +
+      Object.keys(makeBuildCheckTools(project.workdir, {})).length +
+      Object.keys(makeMemoryTools(project.workdir)).length + 3
+    : 3;
+  console.log(`Director: system prompt ${systemPrompt.length} chars, ${opts.messages.length} message(s), ${toolCount} tools`);
 
   // Initialize streaming state
   activeStreams.set(opts.conversationId, { text: "", done: false });
@@ -112,9 +126,27 @@ export async function generateDirectorResponse(opts: {
     });
 
     let fullText = "";
+    let stepCount = 0;
     for await (const chunk of result.textStream) {
       fullText += chunk;
       activeStreams.set(opts.conversationId, { text: fullText, done: false });
+    }
+
+    // Log step details
+    try {
+      const steps = await result.steps;
+      stepCount = steps.length;
+      for (const step of steps) {
+        const toolCalls = step.toolCalls as Array<{ toolName?: string }> | undefined;
+        if (toolCalls?.length) {
+          console.log(`Director: step — tool calls: ${toolCalls.map(tc => tc.toolName).join(", ")}`);
+        }
+      }
+    } catch { /* steps not available */ }
+
+    console.log(`Director: response complete — ${fullText.length} chars, ${stepCount} steps`);
+    if (!fullText) {
+      console.warn(`Director: empty response generated! This usually means the LLM only made tool calls without producing text. Check maxSteps and tool usage.`);
     }
 
     // Save final message to DB
@@ -127,8 +159,12 @@ export async function generateDirectorResponse(opts: {
     activeStreams.set(opts.conversationId, { text: fullText, done: true });
     setTimeout(() => activeStreams.delete(opts.conversationId), 5000);
   } catch (err) {
-    console.error(`Director LLM error for conversation ${opts.conversationId}:`, err);
-    const errorText = "Sorry, I encountered an error generating a response. Please try again.";
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`Director LLM error for conversation ${opts.conversationId}:`, errMsg);
+    if (err instanceof Error && err.stack) {
+      console.error(`Director LLM stack:`, err.stack);
+    }
+    const errorText = `Error generating response: ${errMsg.slice(0, 200)}`;
     db.createDirectorMessage({
       conversation_id: opts.conversationId,
       role: "assistant",

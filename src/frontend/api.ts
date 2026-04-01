@@ -675,6 +675,10 @@ export function sendDirectorMessage(conversationId: string, content: string): Pr
   return json(`/api/director/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ content }) });
 }
 
+export function retryDirectorConversation(conversationId: string): Promise<{ retrying: boolean }> {
+  return json(`/api/director/conversations/${conversationId}/retry`, { method: "POST" });
+}
+
 export function pollDirectorMessages(conversationId: string, afterId?: string): Promise<{ messages: DirectorMessage[]; generating: boolean; partialText?: string }> {
   const qs = afterId ? `?after=${afterId}` : "";
   return json(`/api/director/conversations/${conversationId}/messages${qs}`);

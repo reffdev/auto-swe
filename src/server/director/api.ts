@@ -173,6 +173,46 @@ export function createDirectorRouter(db: Db): Router {
     });
   });
 
+  router.post("/conversations/:id/retry", (req, res) => {
+    const conversation = db.getDirectorConversation(req.params.id);
+    if (!conversation) return res.status(404).json({ error: "Conversation not found" });
+
+    if (isDirectorGenerating(conversation.id)) {
+      return res.status(409).json({ error: "Already generating" });
+    }
+
+    const directives = db.getDirectorDirectives();
+    const directive = directives.find(d => d.conversation_id === conversation.id);
+    if (!directive) return res.status(500).json({ error: "Directive not found" });
+
+    const project = db.getProject(directive.project_id);
+    if (!project) return res.status(500).json({ error: "Project not found" });
+
+    const machineInfo = selectPlannerMachine(db, project);
+    if (!machineInfo) return res.status(503).json({ error: "No machine available" });
+
+    // Delete the last assistant message (the failed one)
+    const allMessages = db.getDirectorMessages(conversation.id);
+    const lastAssistant = [...allMessages].reverse().find(m => m.role === "assistant");
+    if (lastAssistant) {
+      db.deleteDirectorMessage(lastAssistant.id);
+    }
+
+    // Re-trigger generation with remaining messages
+    const remainingMessages = db.getDirectorMessages(conversation.id);
+    generateDirectorResponse({
+      db,
+      conversationId: conversation.id,
+      directiveId: directive.id,
+      machine: machineInfo.machine,
+      modelId: machineInfo.modelId,
+      projectName: project.name,
+      messages: remainingMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+    }).catch(err => console.error("Director retry error:", err));
+
+    res.status(202).json({ retrying: true });
+  });
+
   router.post("/conversations/:id/approve", async (req, res) => {
     const conversation = db.getDirectorConversation(req.params.id);
     if (!conversation) return res.status(404).json({ error: "Conversation not found" });
