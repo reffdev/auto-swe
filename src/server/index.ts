@@ -93,6 +93,8 @@ if (existsSync(clientDir)) {
 }
 
 // 7. Start background services
+import { clearAllLeases } from "./machine-manager";
+clearAllLeases();
 startStatsCollector(db);
 startAnalysisScheduler(db);
 startForemanScheduler(db);

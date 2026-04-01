@@ -32,6 +32,13 @@ export interface MachineLease {
 const activeLeases = new Map<string, MachineLease[]>();
 let leaseCounter = 0;
 
+/** Clear all leases — call on server startup to prevent stale state. */
+export function clearAllLeases(): void {
+  const count = getActiveLeases().length;
+  activeLeases.clear();
+  if (count > 0) console.log(`Machine manager: cleared ${count} stale lease(s) from previous session`);
+}
+
 const DEFAULT_LEASE_TIMEOUT_MS: Record<LeaseConsumer, number> = {
   director: 5 * 60 * 1000,    // 5 min — conversation/planning calls
   foreman: 30 * 60 * 1000,    // 30 min — full task execution
@@ -64,6 +71,11 @@ export function acquireLease(
 ): { lease: MachineLease; machine: Machine } | null {
   // Clean expired leases first
   cleanExpiredLeases();
+
+  const allLeases = getActiveLeases();
+  if (allLeases.length > 0) {
+    console.log(`Machine manager: ${allLeases.length} active lease(s): ${allLeases.map(l => `${l.consumer}/${l.label} on ${l.machineId} (${Math.round((Date.now() - l.acquiredAt) / 1000)}s)`).join(", ")}`);
+  }
 
   const machines = db.getMachines();
   const machineType = opts?.machineType ?? "inference";
