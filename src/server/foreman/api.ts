@@ -11,7 +11,7 @@ import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
-import { isComfyUITaskType, injectFeedbackIntoArtTask } from "./art-feedback";
+import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
 
 export function createForemanRouter(db: Db): Router {
   const router = Router();
@@ -125,7 +125,7 @@ export function createForemanRouter(db: Db): Router {
     res.json(db.getForemanTask(task.id));
   });
 
-  router.post("/tasks/:id/reject", (req, res) => {
+  router.post("/tasks/:id/reject", async (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
     if (task.status !== "awaiting_review") {
@@ -136,11 +136,14 @@ export function createForemanRouter(db: Db): Router {
     if (!feedback || typeof feedback !== "string") {
       return res.status(400).json({ error: "feedback is required" });
     }
+    if (feedback.length > 5000) {
+      return res.status(400).json({ error: "feedback is too long (max 5000 chars)" });
+    }
 
-    // For art/music/sfx tasks, inject feedback into the prompt
+    // For art/music/sfx tasks, use LLM to intelligently revise the prompt
     let description = task.description;
     if (isComfyUITaskType(task.type)) {
-      description = injectFeedbackIntoArtTask(description, feedback);
+      description = await processArtFeedback(db, description, feedback);
     }
 
     db.updateForemanTask(task.id, {

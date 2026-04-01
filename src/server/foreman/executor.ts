@@ -108,9 +108,12 @@ export async function executeForemanTask(
 
   try {
     // Set up git workspace within project lock
+    // On retry, try to reuse the existing worktree to preserve previous work
     await withProjectLock(project.id, async () => {
       await ensureWorkdir(project);
-      await resetToOrigin(project);
+      if (task.retry_count === 0) {
+        await resetToOrigin(project);
+      }
       await setupWorktree(project.workdir, worktreePath, branch);
     });
 

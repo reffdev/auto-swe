@@ -232,14 +232,29 @@ export async function setupWorktree(
       try { await git("worktree prune", mainWorkdir); } catch { /* best-effort */ }
     }
 
-    // Delete stale local branch from prior runs
+    // Check if the branch already has commits (from a prior retry)
+    let branchHasWork = false;
     try {
-      await gitSafe(["branch", "-D", branch], mainWorkdir);
+      const defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
+      const diffStat = (await git(`diff --stat ${defaultBranch}...${branch}`, mainWorkdir)).trim();
+      branchHasWork = diffStat.length > 0;
     } catch {
-      /* branch doesn't exist — fine */
+      /* branch doesn't exist or no remote — fine */
     }
 
-    await gitSafe(["worktree", "add", worktreePath, "-b", branch], mainWorkdir);
+    if (branchHasWork) {
+      // Branch has work from a prior attempt — create worktree on the existing branch
+      console.log(`Git: branch ${branch} has prior work — reusing`);
+      await gitSafe(["worktree", "add", worktreePath, branch], mainWorkdir);
+    } else {
+      // No prior work — delete stale branch and create fresh
+      try {
+        await gitSafe(["branch", "-D", branch], mainWorkdir);
+      } catch {
+        /* branch doesn't exist — fine */
+      }
+      await gitSafe(["worktree", "add", worktreePath, "-b", branch], mainWorkdir);
+    }
 
     // Verify the worktree has files
     const entries = readdirSync(worktreePath).filter((e) => e !== ".git");

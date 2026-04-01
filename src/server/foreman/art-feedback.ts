@@ -1,9 +1,16 @@
 /**
- * Art task feedback injection — shared logic for modifying ComfyUI task
- * descriptions when a user rejects generated output with feedback.
+ * Art task feedback processing — uses an LLM to interpret user feedback
+ * and intelligently revise the ComfyUI prompt.
  *
- * Used by both the Foreman reject API and the Director scheduler retry flow.
+ * Instead of literally appending "too dark" to the prompt, an agent analyzes
+ * the original prompt + feedback and produces a revised prompt that addresses
+ * the feedback while maintaining the original intent.
  */
+
+import { generateText } from "ai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { selectPlannerMachine } from "../planner-llm";
+import type { Db } from "../db";
 
 const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx"]);
 
@@ -12,41 +19,134 @@ export function isComfyUITaskType(type: string): boolean {
 }
 
 /**
- * Inject human feedback into an art task's ComfyUI description.
- *
- * Updates:
- * 1. The [prompt:] hint — replaces any prior "(revision: ...)" suffix
- * 2. The text field inside [params:] — replaces prior revision suffix
- * 3. Appends a [feedback:] note (replaces any prior one)
+ * Process user feedback on a rejected art task via LLM.
+ * Returns the updated task description with a revised prompt.
  */
-export function injectFeedbackIntoArtTask(description: string, feedback: string): string {
-  // 1. Update the [prompt:] hint if present
-  description = updatePromptHint(description, feedback);
+export async function processArtFeedback(
+  db: Db,
+  description: string,
+  feedback: string,
+): Promise<string> {
+  // Extract current prompt
+  const promptMatch = description.match(/\[prompt:\s*(.+?)\]/i);
+  const currentPrompt = promptMatch ? stripRevision(promptMatch[1].trim()) : null;
 
-  // 2. Update the text field inside [params:] if present
-  description = updateParamsText(description, feedback);
+  if (!currentPrompt) {
+    // No prompt tag — just append feedback note
+    return description + `\n\n[feedback: ${feedback}]`;
+  }
 
-  // 3. Replace or append the [feedback:] note
+  // Try to get an LLM to revise the prompt
+  const revisedPrompt = await revisePromptWithLLM(db, currentPrompt, feedback);
+
+  if (revisedPrompt) {
+    // Replace [prompt:] with the revised version
+    description = description.replace(promptMatch![0], `[prompt: ${revisedPrompt}]`);
+
+    // Update [params:] text field to match
+    description = updateParamsText(description, revisedPrompt);
+  } else {
+    // LLM unavailable — fall back to simple append
+    description = description.replace(
+      promptMatch![0],
+      `[prompt: ${currentPrompt} (revision: ${feedback})]`,
+    );
+    description = updateParamsText(description, `${currentPrompt} (revision: ${feedback})`);
+  }
+
+  // Always record the feedback
   description = updateFeedbackNote(description, feedback);
 
   return description;
 }
 
 /**
- * Update the [prompt:] hint, replacing any prior revision suffix.
+ * Simple synchronous feedback injection — used when LLM is not available
+ * or for non-art tasks.
  */
-function updatePromptHint(description: string, feedback: string): string {
-  const match = description.match(/\[prompt:\s*(.+?)\]/i);
-  if (!match) return description;
-
-  const original = stripRevision(match[1].trim());
-  return description.replace(match[0], `[prompt: ${original} (revision: ${feedback})]`);
+export function injectFeedbackIntoArtTask(description: string, feedback: string): string {
+  const promptMatch = description.match(/\[prompt:\s*(.+?)\]/i);
+  if (promptMatch) {
+    const original = stripRevision(promptMatch[1].trim());
+    description = description.replace(promptMatch[0], `[prompt: ${original} (revision: ${feedback})]`);
+  }
+  description = updateParamsTextWithFeedback(description, feedback);
+  description = updateFeedbackNote(description, feedback);
+  return description;
 }
 
-/**
- * Update the text field inside the [params:] JSON block.
- */
-function updateParamsText(description: string, feedback: string): string {
+// ─── LLM Prompt Revision ────────────────────────────────────────────────────
+
+const REVISION_SYSTEM_PROMPT = `You are an expert at writing image/audio generation prompts for ComfyUI (Stable Diffusion, FLUX, AudioGen, ACE-Step).
+
+Given an original prompt and user feedback about the generated result, produce a REVISED prompt that:
+1. Addresses the user's feedback directly
+2. Preserves the original intent and style
+3. Is a complete, standalone prompt (not appended feedback)
+4. Uses proper generation prompt conventions (descriptive, specific)
+
+Examples:
+- Original: "pixel art fire symbol, 64x64" + Feedback: "too dark" → "pixel art fire symbol, 64x64, bright colors, well-lit, high contrast"
+- Original: "fantasy forest background" + Feedback: "needs more purple tones" → "fantasy forest background, purple and violet color palette, mystical atmosphere, purple-tinted lighting"
+- Original: "explosion sound effect" + Feedback: "too long and boomy" → "short punchy explosion sound effect, quick burst, sharp impact"
+
+Respond with ONLY the revised prompt text. No explanation, no quotes, no formatting.`;
+
+async function revisePromptWithLLM(
+  db: Db,
+  currentPrompt: string,
+  feedback: string,
+): Promise<string | null> {
+  try {
+    const machineInfo = selectPlannerMachine(db);
+    if (!machineInfo) return null;
+
+    const provider = createOpenAICompatible({
+      name: "art-feedback",
+      baseURL: machineInfo.machine.base_url,
+      apiKey: machineInfo.machine.api_key || undefined,
+    });
+    const model = provider(machineInfo.modelId);
+
+    const result = await generateText({
+      model,
+      system: REVISION_SYSTEM_PROMPT,
+      prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
+    });
+
+    const revised = result.text.trim();
+    if (revised && revised.length > 5 && revised.length < 2000) {
+      console.log(`Art feedback: revised prompt "${currentPrompt}" → "${revised}" (feedback: "${feedback}")`);
+      return revised;
+    }
+    return null;
+  } catch (err) {
+    console.warn("Art feedback LLM revision failed:", err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function updateParamsText(description: string, newPrompt: string): string {
+  const match = description.match(/\[params:\s*(\{[^[\]]*(?:\{[^}]*\}[^[\]]*)*\})\]/i);
+  if (!match) return description;
+
+  try {
+    const params = JSON.parse(match[1]) as Record<string, Record<string, unknown>>;
+    for (const nodeParams of Object.values(params)) {
+      if (typeof nodeParams.text === "string") {
+        nodeParams.text = newPrompt;
+        break;
+      }
+    }
+    return description.replace(match[0], `[params: ${JSON.stringify(params)}]`);
+  } catch {
+    return description;
+  }
+}
+
+function updateParamsTextWithFeedback(description: string, feedback: string): string {
   const match = description.match(/\[params:\s*(\{[^[\]]*(?:\{[^}]*\}[^[\]]*)*\})\]/i);
   if (!match) return description;
 
@@ -64,9 +164,6 @@ function updateParamsText(description: string, feedback: string): string {
   }
 }
 
-/**
- * Replace or append the [feedback:] note.
- */
 function updateFeedbackNote(description: string, feedback: string): string {
   const feedbackTag = `[feedback: ${feedback}]`;
   const existing = description.match(/\n*\[feedback:\s*.+?\]/i);
@@ -76,10 +173,6 @@ function updateFeedbackNote(description: string, feedback: string): string {
   return description + `\n\n${feedbackTag}`;
 }
 
-/**
- * Strip a prior "(revision: ...)" suffix from a string.
- * Handles nested revisions gracefully.
- */
 export function stripRevision(text: string): string {
   return text.replace(/\s*\(revision:\s*.+\)$/, "").trim();
 }

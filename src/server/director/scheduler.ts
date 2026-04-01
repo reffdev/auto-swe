@@ -17,7 +17,7 @@ import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
-import { isComfyUITaskType, injectFeedbackIntoArtTask } from "../foreman/art-feedback";
+import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
 import { acquireLease, releaseLease } from "../machine-manager";
@@ -365,9 +365,9 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
             machine_id: null,
           };
 
-          // For art/music/sfx tasks, inject feedback into the prompt params
+          // For art/music/sfx tasks, use LLM to revise the prompt based on feedback
           if (retryTask && isComfyUITaskType(retryTask.type) && review.response) {
-            updates.description = injectFeedbackIntoArtTask(retryTask.description, review.response);
+            updates.description = await processArtFeedback(db, retryTask.description, review.response);
           }
 
           db.updateForemanTask(review.task_id, updates);
