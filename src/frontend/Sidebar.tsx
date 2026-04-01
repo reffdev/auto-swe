@@ -455,6 +455,10 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 <Activity className="size-3" />
                 Settings
               </button>
+              <button onClick={() => { void navigate(`/terminal/${p.id}`); }} className={navClass(location.pathname === `/terminal/${p.id}`)}>
+                <span className="font-mono text-[10px]">&gt;_</span>
+                Terminal
+              </button>
             </div>
           </div>
           )
@@ -608,23 +612,6 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
 
       <div className="border-t border-border" />
 
-      {/* Terminal — one link per project */}
-      {projects.length > 0 && (
-        <nav className="px-1 py-2">
-          {projects.map(p => {
-            const isActive = location.pathname === `/terminal/${p.id}`
-            return (
-              <button key={p.id} onClick={() => { void navigate(`/terminal/${p.id}`); }} className={cn(
-                'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
-                isActive ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-              )}>
-                <span className="font-mono text-[10px]">&gt;_</span>
-                {p.name}
-              </button>
-            )
-          })}
-        </nav>
-      )}
 
       {/* Stats */}
       <div className="mt-auto" />
