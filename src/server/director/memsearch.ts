@@ -107,7 +107,7 @@ export async function searchMemories(
   return new Promise((resolve) => {
     const proc = spawn(
       "memsearch",
-      ["search", query, "--top-k", String(topK), "--json"],
+      ["search", query, "--top-k", String(topK), "--json-output"],
       {
         cwd: projectWorkdir,
         encoding: "utf-8",

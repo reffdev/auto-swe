@@ -249,13 +249,15 @@ export function createDirectorRouter(db: Db): Router {
       // Mark conversation as approved
       db.updateDirectorConversation(conversation.id, { status: "approved" });
 
-      // Generate initial tasks for first milestone
+      // Generate initial tasks for first milestone (fire and forget — don't block the response)
       const updatedDirective = db.getDirectorDirective(directive.id)!;
       const milestones = db.getDirectorMilestones(directive.id);
       const firstMilestone = milestones[0];
 
       if (firstMilestone) {
-        await planNextTasks(db, updatedDirective, project, firstMilestone);
+        console.log(`Director: approved — starting task planning for milestone "${firstMilestone.title}"`);
+        void planNextTasks(db, updatedDirective, project, firstMilestone)
+          .catch(err => console.error("Director: initial task planning failed:", err));
       }
 
       res.json({
