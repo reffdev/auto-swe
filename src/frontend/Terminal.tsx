@@ -229,12 +229,14 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
         </div>
       </div>
 
-      {/* Terminal */}
-      <div
-        ref={termRef}
-        className="flex-1 bg-[#0a0a0a]"
-        style={{ minHeight: 0, padding: '4px' }}
-      />
+      {/* Terminal — wrapper tracks size, inner div hosts xterm */}
+      <div className="flex-1 relative bg-[#0a0a0a] overflow-hidden" style={{ minHeight: 0 }}>
+        <div
+          ref={termRef}
+          className="absolute inset-0"
+          style={{ padding: '4px' }}
+        />
+      </div>
     </div>
   )
 }
