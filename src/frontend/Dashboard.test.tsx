@@ -3,6 +3,11 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { DashboardLayout } from './Dashboard'
 import type { ViewName } from './routes'
 
+// Mock Terminal to avoid xterm.js canvas dependency in jsdom
+jest.mock('./Terminal', () => ({
+  TerminalView: () => <div data-testid="terminal">Terminal Mock</div>,
+}))
+
 const TEST_ROUTES: Array<{ path: string; view: ViewName }> = [
   { path: '/', view: 'landing' },
   { path: '/project/:projectId', view: 'issue-list' },
