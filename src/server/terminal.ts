@@ -63,7 +63,9 @@ export function attachTerminalServer(server: Server, db: Db): void {
 
     // Spawn PTY
     const shell = process.platform === "win32" ? "powershell.exe" : "bash";
-    const args = process.platform === "win32" ? ["-Command", "npx claude"] : ["-c", "npx claude"];
+    const args = process.platform === "win32"
+      ? ["-Command", "npx @anthropic-ai/claude-code"]
+      : ["-c", "npx @anthropic-ai/claude-code"];
 
     const ptyProcess = pty.spawn(shell, args, {
       name: "xterm-256color",
