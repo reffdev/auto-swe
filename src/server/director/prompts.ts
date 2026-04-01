@@ -15,8 +15,38 @@ export function buildConversationSystemPrompt(opts: {
     "Your job is to have a conversation with the human to fully understand what they want built.",
     "You will be creating a comprehensive plan that autonomous AI agents will execute.",
     "",
-    "You have access to tools: webSearch (search the web), fetchUrl (read web pages), and lookupDocs (library documentation).",
-    "Use these proactively to research relevant technologies, design patterns, libraries, or anything else relevant to the project.",
+    "You have access to tools for research and persistent memory.",
+    "",
+    "## Research Tools",
+    "- **webSearch**: Search the web for current information",
+    "- **fetchUrl**: Read a specific web page",
+    "- **lookupDocs**: Look up library/framework documentation",
+    "",
+    "## Memory Tools",
+    "You have a persistent memory system organized into categories:",
+    "",
+    "- **Conventions** (`writeConvention`): Project rules, style guides, and standards that ALL agents",
+    "  and tasks must follow. These are injected into every planning context with highest priority.",
+    "  Examples: coding-style.md, art-guidelines.md, commit-conventions.md",
+    "",
+    "- **Semantic** (`writeSemanticMemory`): Stable facts and knowledge that persist across sessions.",
+    "  Things unlikely to change: tech stack decisions, user preferences, architectural constraints,",
+    "  discovered patterns. Examples: tech-stack.md, user-preferences.md, known-issues.md",
+    "",
+    "- **Procedural** (`writeProcedure`): Step-by-step workflows and how-to guides for repeatable",
+    "  processes. Examples: adding-a-new-game.md, pixel-art-generation.md, deploy-checklist.md",
+    "",
+    "- **Episodic**: Auto-generated daily logs of what happened (task completions, failures,",
+    "  milestones). You don't write these — they're created automatically. But you can search them.",
+    "",
+    "- **searchMemory**: Semantic search across ALL memory categories",
+    "- **listMemories** / **readMemoryFile**: Browse existing memories before writing",
+    "",
+    "**When to write memories**: After learning something stable (conventions, preferences, patterns),",
+    "after establishing a workflow worth repeating, or after a design decision that future sessions",
+    "should know about. Always check existing memories first to update rather than duplicate.",
+    "",
+    "Use these proactively to research relevant technologies and save important decisions.",
     "",
     "During this conversation:",
     "1. Read and understand any design documents provided below",
@@ -72,9 +102,17 @@ export function buildPlanningPrompt(opts: {
   milestoneTitle: string;
   milestoneVerification: string;
   workflowSummary?: string | null;
+  /** Machine types that are idle and need tasks. */
+  idleMachineTypes?: string[];
 }): { system: string; user: string } {
   const systemParts = [
     "You are a project director generating the next batch of tasks for autonomous execution.",
+    "",
+    "You have access to persistent memory tools. Before generating tasks, use searchMemory to check",
+    "for relevant conventions, past decisions, and workflows. After planning, save any new insights:",
+    "- **writeConvention**: Save new project rules discovered during planning",
+    "- **writeSemanticMemory**: Save stable facts (e.g., 'sprite resolution is 64x64')",
+    "- **writeProcedure**: Save repeatable workflows you establish",
     "",
     "Each task you generate will be executed independently by an AI coding agent with access to",
     "the project's filesystem, build tools, and documentation lookup.",
@@ -97,8 +135,8 @@ export function buildPlanningPrompt(opts: {
     "",
     "- **code**: Programming tasks executed by an AI coding agent",
     "- **art**: Visual asset generation via ComfyUI (sprites, backgrounds, icons, UI, etc.)",
-    "- **music**: Music generation via ComfyUI audio workflows",
-    "- **sfx**: Sound effect generation via ComfyUI audio workflows",
+    "- **music**: Music generation via ComfyUI (ACE-Step — full songs, loops, genre-specific)",
+    "- **sfx**: Sound effect generation via ComfyUI (AudioGen — explosions, clicks, ambient, impacts)",
     "- **review**: Code review tasks",
     "- **content**: Content writing tasks (dialogue, descriptions, etc.)",
     "",
@@ -121,10 +159,15 @@ export function buildPlanningPrompt(opts: {
     "- tileset → pixel_sprite",
     "- portrait → portrait (SDXL, 768x1024)",
     "- background → background (SDXL, 1024x768)",
-    "- concept → concept (FLUX, 1024x1024, high quality)",
+    "- concept → concept (FLUX.2-dev, 1024x1024, highest quality, best prompt adherence)",
     "- ui → icon",
     "",
+    "Additional presets (use via [asset_type:] hint or explicit [preset:] tag):",
+    "- game_asset → game_asset (SDXL + game assets LoRA — items, props, sprites with clean backgrounds)",
+    "- fast_draft → fast_draft (Z-Image-Turbo, 8 steps — quick previews and iterations)",
+    "",
     "The system will automatically select the correct preset based on [asset_type:].",
+    "You can also force a specific preset with `[preset: game_asset]` in the description.",
     "No workflow template files are required — just provide the hints above.",
   ];
 
@@ -156,7 +199,7 @@ export function buildPlanningPrompt(opts: {
 
   const system = systemParts.join("\n");
 
-  const user = [
+  const userParts = [
     opts.directiveContext,
     "",
     "---",
@@ -169,7 +212,25 @@ export function buildPlanningPrompt(opts: {
     "generate the next 1-5 tasks to make progress toward this milestone.",
     "Include a mix of code and art/audio tasks when possible to keep all machines busy.",
     "Focus on what's missing or incomplete.",
-  ].join("\n");
+  ];
+
+  if (opts.idleMachineTypes?.length) {
+    const typeLabels: Record<string, string> = {
+      inference: "code/review/content",
+      comfyui: "art/music/sfx",
+    };
+    const idleDesc = opts.idleMachineTypes
+      .map(t => `**${t}** (runs ${typeLabels[t] ?? t} tasks)`)
+      .join(" and ");
+    userParts.push(
+      "",
+      `**PRIORITY:** The following machine type(s) are currently idle with no queued work: ${idleDesc}.`,
+      "You MUST generate at least one task for each idle machine type so they are not wasted.",
+      "Other tasks are still running — this is a top-up request, not a full batch.",
+    );
+  }
+
+  const user = userParts.join("\n");
 
   return { system, user };
 }

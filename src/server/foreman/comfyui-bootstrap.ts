@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import { checkComfyUIHealth, listAvailableModels } from "./comfyui-schema";
 import { PRESETS } from "./comfyui-workflows";
-import type { WorkflowManifest, WorkflowEntry } from "./workflow-manifest";
+import { getWorkflowDir, type WorkflowManifest, type WorkflowEntry } from "./workflow-manifest";
 
 /**
  * Bootstrap ComfyUI integration for a project.
@@ -49,7 +49,7 @@ export async function bootstrapComfyUI(
   const manifest = buildManifestFromModels(models);
 
   // 4. Write to project
-  const workflowDir = resolve(projectWorkdir, "comfyui-workflows");
+  const workflowDir = getWorkflowDir(projectWorkdir);
   if (!existsSync(workflowDir)) {
     mkdirSync(workflowDir, { recursive: true });
   }

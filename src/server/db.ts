@@ -594,6 +594,7 @@ export class Db {
     startDate?: string;
     endDate?: string;
     search?: string;
+    projectId?: string;
     page?: number;
     pageSize?: number;
   }): {
@@ -619,7 +620,7 @@ export class Db {
     totalGroups: number;
     totalCalls: number;
   } {
-    const { status, model, startDate, endDate, search, page = 1, pageSize = 20 } = params;
+    const { status, model, startDate, endDate, search, projectId, page = 1, pageSize = 20 } = params;
     const offset = (page - 1) * pageSize;
 
     // Build WHERE clause with parameterized values
@@ -645,6 +646,14 @@ export class Db {
     if (endDate) {
       whereParts.push("lr.created_at <= ?");
       whereParams.push(endDate);
+    }
+    if (projectId) {
+      whereParts.push(`(
+        EXISTS (SELECT 1 FROM issues i2 WHERE i2.id = lr.issue_id AND i2.project_id = ?)
+        OR EXISTS (SELECT 1 FROM foreman_tasks ft2 WHERE 'foreman:' || ft2.id = lr.issue_id AND ft2.project_id = ?)
+        OR EXISTS (SELECT 1 FROM director_directives dd2 WHERE 'director:' || dd2.id = lr.issue_id AND dd2.project_id = ?)
+      )`);
+      whereParams.push(projectId, projectId, projectId);
     }
     if (search?.trim()) {
       const pattern = `%${search.trim()}%`;

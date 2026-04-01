@@ -18,12 +18,18 @@ import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, injectFeedbackIntoArtTask } from "../foreman/art-feedback";
+import { logEpisodic } from "./persistent-memory";
+import { indexMemories, startMemsearchWatch, stopMemsearchWatch } from "./memsearch";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
 let schedulerDb: Db | null = null;
 let pendingNudge = false;
 let processing = false;
+let planningInProgress = false;
+
+/** Expose DB for episodic extractor (avoids circular import of full scheduler) */
+export function getGlobalDb(): Db | null { return schedulerDb; }
 
 // Track machines actively used by Director LLM calls so Foreman doesn't double-book them.
 // Exposed via getDirectorActiveMachineIds() for the concurrency query.
@@ -39,10 +45,21 @@ export function startDirectorScheduler(db: Db): void {
   schedulerDb = db;
   console.log("Director scheduler ready (event-driven)");
   nudgeDirector(db);
+
+  // Start memsearch indexing and watcher for the active project
+  const config = db.getForemanConfig();
+  if (config?.project_id) {
+    const project = db.getProject(config.project_id);
+    if (project) {
+      indexMemories(project.workdir).catch(() => {});
+      startMemsearchWatch(project.workdir);
+    }
+  }
 }
 
 export function stopDirectorScheduler(): void {
   schedulerDb = null;
+  stopMemsearchWatch();
 }
 
 /**
@@ -130,6 +147,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
             db.updateForemanTask(task.id, { git_worktree: null });
           }
           console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
+          logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${result.confidence}`);
           nudgeForeman(db); // unblock dependents
         }
       } else if (result.verdict === "fail") {
@@ -139,6 +157,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           error_message: `Verifier: ${result.issues.join("; ")}`,
         });
         console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
+        logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
         // Director will handle the failure below
       } else {
         // Escalate to human
@@ -206,6 +225,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           completed_at: new Date().toISOString(),
         });
         console.log(`Director: milestone "${activeMilestone.title}" completed`);
+        logEpisodic(project.workdir, `Milestone completed: "${activeMilestone.title}"`, `Tasks: ${milestoneTasks.length}`);
 
         // Create milestone gate review if needed
         if (shouldEscalate(directive.autonomy_level, "milestone_complete")) {
@@ -239,11 +259,13 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
             completed_at: new Date().toISOString(),
           });
           console.log(`Director: directive "${directive.directive}" completed!`);
+          logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
         }
       } else {
         // Milestone verification failed — generate corrective tasks
         db.updateDirectorMilestone(activeMilestone.id, { status: "active" });
         console.log(`Director: milestone "${activeMilestone.title}" verification failed: ${verification.issues.join("; ")}`);
+        logEpisodic(project.workdir, `Milestone verification failed: "${activeMilestone.title}"`, verification.issues.join("; "));
         await planNextTasks(db, directive, project, activeMilestone);
       }
     } else if (!hasQueued && milestoneTasks.length === 0) {
@@ -252,6 +274,18 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
     } else if (!hasQueued && milestoneTasks.some(t => t.status === "failed")) {
       // All tasks done but some failed — need more tasks
       await planNextTasks(db, directive, project, activeMilestone);
+    } else if (hasQueued && !planningInProgress) {
+      // Some tasks still running — check if any machine types are idle
+      const idleTypes = getIdleMachineTypes(db, directive.id, activeMilestone.id);
+      if (idleTypes.length > 0) {
+        console.log(`Director: machine type(s) idle with no queued work: ${idleTypes.join(", ")} — requesting top-up tasks`);
+        planningInProgress = true;
+        try {
+          await planNextTasks(db, directive, project, activeMilestone, idleTypes);
+        } finally {
+          planningInProgress = false;
+        }
+      }
     }
   }
 
@@ -329,5 +363,44 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
     // Re-nudge to process the now-active directive
     nudgeDirector(db);
   }
+}
+
+// ─── Idle machine detection ─────────────────────────────────────────────────
+
+/** Task types that route to each machine type */
+const MACHINE_TYPE_TASK_TYPES: Record<string, Set<string>> = {
+  inference: new Set(["code", "review", "content", "claude"]),
+  comfyui: new Set(["art", "music", "sfx"]),
+};
+
+/**
+ * Detect machine types that have available capacity but no queued/running tasks
+ * for the current directive+milestone. Returns machine types that need work.
+ */
+function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): string[] {
+  const machines = db.getMachines().filter(m => m.enabled);
+  const machineTypes = new Set(machines.map(m => m.machine_type));
+
+  // Get current queued/running tasks for this milestone
+  const tasks = db.getDirectiveTasks(directiveId, milestoneId);
+  const activeTasks = tasks.filter(t => t.status === "queued" || t.status === "running");
+
+  // For each machine type, check if there are any queued tasks that would route to it
+  const idleTypes: string[] = [];
+  for (const machineType of machineTypes) {
+    const taskTypes = MACHINE_TYPE_TASK_TYPES[machineType];
+    if (!taskTypes) continue;
+
+    const hasWork = activeTasks.some(t => taskTypes.has(t.type));
+    if (!hasWork) {
+      // Verify the machine type actually has available capacity
+      const available = db.getAvailableMachine(undefined, machineType);
+      if (available) {
+        idleTypes.push(machineType);
+      }
+    }
+  }
+
+  return idleTypes;
 }
 

@@ -141,31 +141,41 @@ describe("constructReviewPrompts", () => {
     issueDescription: "",
   };
 
-  it("uses general lens by default", () => {
-    const { system } = constructReviewPrompts(baseOpts);
-    expect(system).toContain("General Review");
+  it("system prompt is lens-agnostic (cacheable)", () => {
+    const general = constructReviewPrompts(baseOpts);
+    const security = constructReviewPrompts({ ...baseOpts, lens: REVIEW_LENSES.security });
+    expect(general.system).toBe(security.system);
+    expect(general.system).toContain("Code Review");
+    expect(general.system).not.toContain("General Review");
+    expect(general.system).not.toContain("Security Review");
   });
 
-  it("accepts a custom lens", () => {
-    const { system } = constructReviewPrompts({ ...baseOpts, lens: REVIEW_LENSES.security });
-    expect(system).toContain("Security Review");
-    expect(system).toContain("Input validation");
+  it("lens-specific content goes in lensPrompt", () => {
+    const { lensPrompt } = constructReviewPrompts(baseOpts);
+    expect(lensPrompt).toContain("General Review");
+    expect(lensPrompt).toContain("REJECT if the change rewrites");
   });
 
-  it("includes submitVerdict instruction", () => {
+  it("accepts a custom lens in lensPrompt", () => {
+    const { lensPrompt } = constructReviewPrompts({ ...baseOpts, lens: REVIEW_LENSES.security });
+    expect(lensPrompt).toContain("Security Review");
+    expect(lensPrompt).toContain("Input validation");
+  });
+
+  it("includes submitVerdict instruction in system", () => {
     const { system } = constructReviewPrompts(baseOpts);
     expect(system).toContain("submitVerdict");
   });
 
-  it("includes checkBuild and checkTests in instructions", () => {
+  it("includes checkBuild and checkTests in system", () => {
     const { system } = constructReviewPrompts(baseOpts);
     expect(system).toContain("checkTests");
     expect(system).toContain("checkBuild");
   });
 
-  it("general lens includes anti-rewrite rules", () => {
-    const { system } = constructReviewPrompts(baseOpts);
-    expect(system).toContain("REJECT if the change rewrites");
-    expect(system).toContain("REJECT if files were rewritten");
+  it("shared context is identical across lenses", () => {
+    const general = constructReviewPrompts(baseOpts);
+    const security = constructReviewPrompts({ ...baseOpts, lens: REVIEW_LENSES.security });
+    expect(general.sharedContext).toBe(security.sharedContext);
   });
 });

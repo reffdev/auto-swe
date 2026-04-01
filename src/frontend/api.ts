@@ -353,6 +353,7 @@ export function getGroupedLlmLogs(params?: {
   search?: string;
   page?: number;
   page_size?: number;
+  project_id?: string;
 }): Promise<GroupedLlmLogsResponse> {
   const qs = new URLSearchParams();
   if (params?.status) qs.set('status', params.status.join(','));
@@ -362,6 +363,7 @@ export function getGroupedLlmLogs(params?: {
   if (params?.search) qs.set('search', params.search);
   if (params?.page) qs.set('page', params.page.toString());
   if (params?.page_size) qs.set('page_size', params.page_size.toString());
+  if (params?.project_id) qs.set('project_id', params.project_id);
   
   const query = qs.toString();
   return json(`/api/llm-logs/grouped${query ? '?' + query : ''}`);

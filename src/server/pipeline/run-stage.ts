@@ -54,6 +54,12 @@ export interface RunStageOpts {
   worktreePath?: string;
   /** Optional callback for step updates (used by analysis to store output externally) */
   onStepsUpdate?: (stepsJson: string) => void;
+  /**
+   * Additional user messages appended after the main userPrompt.
+   * Used for prompt caching: the main userPrompt contains shared context (cached),
+   * and additionalMessages contain per-call instructions (not cached).
+   */
+  additionalMessages?: string[];
 }
 
 const MAX_COMPACTIONS = 3;
@@ -291,6 +297,15 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       const agentPromise = (async () => {
         const messages: CoreMessage[] = [];
         messages.push({ role: "user", content: currentUserPrompt });
+
+        // Append additional user messages (e.g., lens-specific review instructions)
+        // These come after the shared context, enabling prompt caching on the prefix.
+        if (opts.additionalMessages?.length) {
+          for (const msg of opts.additionalMessages) {
+            messages.push({ role: "assistant", content: "I've reviewed the context above. Ready for the review instructions." });
+            messages.push({ role: "user", content: msg });
+          }
+        }
 
         if (currentPreloads?.length) {
           const preloadCalls = currentPreloads.map((f, i) => ({

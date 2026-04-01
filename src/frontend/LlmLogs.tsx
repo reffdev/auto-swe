@@ -677,7 +677,7 @@ export function LlmLogs({ projectId }: LlmLogsProps) {
     const fetchLogs = async () => {
       try {
         setLoading(true)
-        const data = await api.getGroupedLlmLogs()
+        const data = await api.getGroupedLlmLogs({ project_id: projectId })
         setGroups(data.groups)
         setError(null)
       } catch (e) {

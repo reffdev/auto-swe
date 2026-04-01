@@ -59,13 +59,13 @@ describe("loadWorkflowManifest", () => {
 
   it("returns null when manifest directory exists but no file", () => {
     projectDir = makeTempProject();
-    mkdirSync(join(projectDir, "comfyui-workflows"), { recursive: true });
+    mkdirSync(join(projectDir, ".swe", "comfyui-workflows"), { recursive: true });
     expect(loadWorkflowManifest(projectDir)).toBeNull();
   });
 
   it("loads a valid manifest", () => {
     projectDir = makeTempProject();
-    const workflowDir = join(projectDir, "comfyui-workflows");
+    const workflowDir = join(projectDir, ".swe", "comfyui-workflows");
     mkdirSync(workflowDir, { recursive: true });
     writeFileSync(join(workflowDir, "manifest.json"), JSON.stringify(sampleManifest));
 
@@ -78,7 +78,7 @@ describe("loadWorkflowManifest", () => {
 
   it("returns null for invalid JSON", () => {
     projectDir = makeTempProject();
-    const workflowDir = join(projectDir, "comfyui-workflows");
+    const workflowDir = join(projectDir, ".swe", "comfyui-workflows");
     mkdirSync(workflowDir, { recursive: true });
     writeFileSync(join(workflowDir, "manifest.json"), "not valid json{{{");
 

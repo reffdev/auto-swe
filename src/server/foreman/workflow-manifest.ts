@@ -10,6 +10,11 @@
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 
+/** Resolved path to the comfyui-workflows directory for a project */
+export function getWorkflowDir(projectWorkdir: string): string {
+  return resolve(projectWorkdir, ".swe", "comfyui-workflows");
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface WorkflowParam {
@@ -52,7 +57,7 @@ export interface WorkflowManifest {
  * Returns null if no manifest exists (ComfyUI not configured for this project).
  */
 export function loadWorkflowManifest(projectWorkdir: string): WorkflowManifest | null {
-  const manifestPath = resolve(projectWorkdir, "comfyui-workflows", "manifest.json");
+  const manifestPath = resolve(getWorkflowDir(projectWorkdir), "manifest.json");
   if (!existsSync(manifestPath)) return null;
 
   try {

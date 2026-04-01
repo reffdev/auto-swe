@@ -11,6 +11,8 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, Project } from "../db";
 import { gatherProjectContext } from "../pipeline/nodes";
+import { readConventions, readMemoryCategory } from "./persistent-memory";
+import { searchMemories, isMemsearchAvailable } from "./memsearch";
 
 // ─── Progress JSON ──────────────────────────────────────────────────────────
 
@@ -90,12 +92,12 @@ export function addKeyDecision(db: Db, directive: DirectorDirective, decision: s
  * Assemble the full context for a Director LLM call.
  * This is the "context assembly pipeline" from the plan.
  */
-export function assembleDirectorContext(
+export async function assembleDirectorContext(
   db: Db,
   directive: DirectorDirective,
   project: Project,
   opts?: { includeTaskSummaries?: boolean; maxRecentTasks?: number },
-): string {
+): Promise<string> {
   const parts: string[] = [];
   const maxRecentTasks = opts?.maxRecentTasks ?? 10;
 
@@ -160,7 +162,38 @@ export function assembleDirectorContext(
     }
   }
 
-  // 7. Project filesystem state (directory listing, key files)
+  // 7. Persistent memory
+  // Conventions always included (they're project rules)
+  const conventions = readConventions(project.workdir);
+  if (conventions.length > 0) {
+    const convText = conventions
+      .map(e => `### ${e.filename.replace(".md", "")}\n${e.content}`)
+      .join("\n\n");
+    parts.push("# Conventions\n\n" + convText);
+  }
+
+  // Procedural workflows always included (they're small and high-value)
+  const procedural = readMemoryCategory(project.workdir, "procedural");
+  if (procedural.length > 0) {
+    const procText = procedural
+      .map(e => `### ${e.filename.replace(".md", "")}\n${e.content}`)
+      .join("\n\n");
+    parts.push("# Workflows\n\n" + procText);
+  }
+
+  // Semantic + episodic: search for relevant memories instead of dumping everything
+  const searchQuery = buildMemorySearchQuery(directive, activeMilestone);
+  if (searchQuery) {
+    const results = await searchMemories(project.workdir, searchQuery, 10);
+    if (results.length > 0) {
+      const memText = results
+        .map((r, i) => `${i + 1}. ${r.source ? `[${r.source}] ` : ""}${r.content}`)
+        .join("\n\n");
+      parts.push("# Relevant Memories\n\n" + memText);
+    }
+  }
+
+  // 8. Project filesystem state (directory listing, key files)
   try {
     const projectState = gatherProjectContext(project.workdir);
     if (projectState.context) {
@@ -180,6 +213,34 @@ export function assembleDirectorContext(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Build a search query from the current directive and milestone context.
+ * This is what memsearch uses to find relevant memories.
+ */
+function buildMemorySearchQuery(
+  directive: DirectorDirective,
+  activeMilestone: { title: string; description?: string | null } | null,
+): string | null {
+  if (!isMemsearchAvailable()) return null;
+
+  const parts: string[] = [];
+
+  // Directive description gives the overall project goal
+  if (directive.directive) {
+    parts.push(directive.directive.slice(0, 200));
+  }
+
+  // Current milestone narrows the focus
+  if (activeMilestone) {
+    parts.push(activeMilestone.title);
+    if (activeMilestone.description) {
+      parts.push(activeMilestone.description.slice(0, 200));
+    }
+  }
+
+  return parts.length > 0 ? parts.join(" ") : null;
+}
 
 function tryReadFile(path: string): string | null {
   try {

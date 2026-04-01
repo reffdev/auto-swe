@@ -113,31 +113,43 @@ describe("constructReviewPrompts with lens", () => {
     issueDescription: "Test description",
   };
 
-  it("uses general lens by default", () => {
-    const { system } = constructReviewPrompts(baseOpts);
-    expect(system).toContain("General Review");
+  it("system prompt is identical across lenses (cacheable)", () => {
+    const general = constructReviewPrompts(baseOpts);
+    const security = constructReviewPrompts({ ...baseOpts, lens: REVIEW_LENSES.security });
+    const ui = constructReviewPrompts({ ...baseOpts, lens: REVIEW_LENSES.ui });
+    expect(general.system).toBe(security.system);
+    expect(general.system).toBe(ui.system);
   });
 
-  it("uses provided lens", () => {
-    const { system } = constructReviewPrompts({
+  it("lens content goes in lensPrompt, not system", () => {
+    const { system, lensPrompt } = constructReviewPrompts({
       ...baseOpts,
       lens: REVIEW_LENSES.security,
     });
-    expect(system).toContain("Security Review");
-    expect(system).toContain("Input validation");
+    expect(system).not.toContain("Security Review");
+    expect(lensPrompt).toContain("Security Review");
+    expect(lensPrompt).toContain("Input validation");
   });
 
-  it("includes lens name in title", () => {
-    const { system } = constructReviewPrompts({
+  it("includes lens name in lensPrompt", () => {
+    const { lensPrompt } = constructReviewPrompts({
       ...baseOpts,
       lens: REVIEW_LENSES.ui,
     });
-    expect(system).toContain("UI Review");
+    expect(lensPrompt).toContain("UI Review");
   });
 
-  it("includes submitVerdict and safety instructions", () => {
+  it("includes submitVerdict and safety instructions in system", () => {
     const { system } = constructReviewPrompts(baseOpts);
     expect(system).toContain("submitVerdict");
     expect(system).toContain("Do NOT run servers");
+  });
+
+  it("shared context contains issue and stage outputs", () => {
+    const { sharedContext } = constructReviewPrompts(baseOpts);
+    expect(sharedContext).toContain("Test Issue");
+    expect(sharedContext).toContain("scout brief");
+    expect(sharedContext).toContain("impl output");
+    expect(sharedContext).toContain("test output");
   });
 });

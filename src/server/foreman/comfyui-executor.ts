@@ -18,7 +18,8 @@ import { resolve } from "path";
 import { spawnSync } from "child_process";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { executeComfyUIWorkflow, buildWorkflowFromTemplate } from "./comfyui";
-import { buildWorkflow, PRESETS, type PresetName } from "./comfyui-workflows";
+import { buildWorkflow, buildAudioWorkflow, PRESETS, AUDIO_PRESETS, type PresetName } from "./comfyui-workflows";
+import { getWorkflowDir } from "./workflow-manifest";
 import { getBreaker } from "./circuit-breaker";
 import { nudgeDirector } from "../director/scheduler";
 import { registerActiveTask, unregisterActiveTask } from "./executor";
@@ -74,19 +75,41 @@ export async function executeComfyUITask(
 
     let workflow: Record<string, unknown>;
 
-    if (presetName) {
-      // Preset-based workflow generation (no template files needed)
-      const preset = PRESETS[presetName as PresetName];
-      if (!preset) {
-        throw new Error(`Unknown ComfyUI preset: "${presetName}". Available: ${Object.keys(PRESETS).join(", ")}`);
+    // Resolve preset name from explicit [preset:] tag or from _preset_ workflow filename
+    const resolvedPreset = presetName
+      ?? (workflowFile?.startsWith("_preset_") ? workflowFile.replace("_preset_", "") : null);
+
+    if (resolvedPreset) {
+      // Get prompt from [prompt:] tag or from [params:] text field
+      let prompt = promptText;
+      if (!prompt && paramsStr) {
+        try {
+          const p = JSON.parse(paramsStr) as Record<string, Record<string, unknown>>;
+          for (const nodeParams of Object.values(p)) {
+            if (typeof nodeParams.text === "string") { prompt = nodeParams.text; break; }
+          }
+        } catch { /* ignore */ }
       }
-      if (!promptText) {
-        throw new Error("ComfyUI task with [preset:] must also have a [prompt:] tag");
+      if (!prompt) {
+        throw new Error("ComfyUI preset task must have a [prompt:] tag or text param");
       }
-      workflow = buildWorkflow({ ...preset, prompt: promptText });
+
+      // Check audio presets first, then image presets
+      const audioPreset = AUDIO_PRESETS[resolvedPreset as keyof typeof AUDIO_PRESETS];
+      if (audioPreset) {
+        const durationTag = extractTag(task.description, "duration");
+        const duration = durationTag ? parseInt(durationTag, 10) : audioPreset.duration;
+        workflow = buildAudioWorkflow(audioPreset.type, prompt, duration);
+      } else {
+        const preset = PRESETS[resolvedPreset as PresetName];
+        if (!preset) {
+          throw new Error(`Unknown ComfyUI preset: "${resolvedPreset}". Available: ${[...Object.keys(PRESETS), ...Object.keys(AUDIO_PRESETS)].join(", ")}`);
+        }
+        workflow = buildWorkflow({ ...preset, prompt });
+      }
     } else if (workflowFile) {
       // Template-based workflow (load from project's comfyui-workflows/)
-      const templatePath = resolve(project.workdir, "comfyui-workflows", workflowFile);
+      const templatePath = resolve(getWorkflowDir(project.workdir), workflowFile);
       if (!existsSync(templatePath)) {
         throw new Error(`Workflow template not found: ${templatePath}`);
       }

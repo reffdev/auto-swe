@@ -12,7 +12,7 @@ function makeTempProject(): string {
 }
 
 function writeManifest(projectDir: string, manifest: WorkflowManifest): void {
-  const workflowDir = join(projectDir, "comfyui-workflows");
+  const workflowDir = join(projectDir, ".swe", "comfyui-workflows");
   mkdirSync(workflowDir, { recursive: true });
   writeFileSync(join(workflowDir, "manifest.json"), JSON.stringify(manifest));
 }

@@ -183,8 +183,9 @@ function tryComfyUIBootstrap(db: Db): void {
 
   // Check if manifest already exists
   const { existsSync } = require("fs") as typeof import("fs");
+  const { getWorkflowDir } = require("./workflow-manifest") as typeof import("./workflow-manifest");
   const { resolve } = require("path") as typeof import("path");
-  const manifestPath = resolve(project.workdir, "comfyui-workflows", "manifest.json");
+  const manifestPath = resolve(getWorkflowDir(project.workdir), "manifest.json");
   if (existsSync(manifestPath)) return;
 
   // Bootstrap in background — don't block scheduler startup

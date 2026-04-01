@@ -671,6 +671,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const startDate = req.query.start_date as string | undefined;
     const endDate = req.query.end_date as string | undefined;
     const search = req.query.search as string | undefined;
+    const projectId = req.query.project_id as string | undefined;
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = parseInt(req.query.page_size as string) || 20;
 
@@ -690,6 +691,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         startDate,
         endDate,
         search,
+        projectId,
         page,
         pageSize,
       });

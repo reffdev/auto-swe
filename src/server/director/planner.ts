@@ -16,10 +16,12 @@ import { parseNextTasks } from "./parsers";
 import { webSearchTool } from "../tools/web-search";
 import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
+import { makeMemoryTools } from "./memsearch";
 import { postProcessArtTasks } from "./art-task-processor";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
 import { selectPlannerMachine } from "../planner-llm";
 import { nudgeForeman } from "../foreman/scheduler";
+import { logEpisodic } from "./persistent-memory";
 
 /**
  * Generate the next batch of tasks for the active milestone.
@@ -30,6 +32,8 @@ export async function planNextTasks(
   directive: DirectorDirective,
   project: Project,
   milestone: DirectorMilestone,
+  /** Machine types that are idle and need work. When set, the planner prioritizes generating tasks for these types. */
+  idleMachineTypes?: string[],
 ): Promise<number> {
   // Select machine for planning (uses large model)
   const machineInfo = selectPlannerMachine(db, project);
@@ -41,7 +45,7 @@ export async function planNextTasks(
   const { machine, modelId } = machineInfo;
 
   // Assemble context
-  const directiveContext = assembleDirectorContext(db, directive, project, {
+  const directiveContext = await assembleDirectorContext(db, directive, project, {
     includeTaskSummaries: true,
     maxRecentTasks: 10,
   });
@@ -56,6 +60,7 @@ export async function planNextTasks(
     milestoneTitle: milestone.title,
     milestoneVerification: milestone.verification ?? "Not specified",
     workflowSummary,
+    idleMachineTypes,
   });
 
   // Call LLM (no streaming needed — planning is a single-shot call)
@@ -70,7 +75,7 @@ export async function planNextTasks(
     model,
     system,
     prompt: user,
-    tools: { webSearch: webSearchTool, fetchUrl: fetchUrlTool, lookupDocs },
+    tools: { webSearch: webSearchTool, fetchUrl: fetchUrlTool, lookupDocs, ...makeMemoryTools(project.workdir) },
     maxSteps: 50,
   });
 
@@ -120,7 +125,9 @@ export async function planNextTasks(
   }
 
   if (created > 0) {
+    const taskTypes = parsedTasks.map(t => t.type).join(", ");
     console.log(`Director planner: generated ${created} task(s) for milestone "${milestone.title}"`);
+    logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
     nudgeForeman(db);
   }
 

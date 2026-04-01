@@ -244,6 +244,111 @@ export function buildFluxTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
   };
 }
 
+// ─── Audio Workflow Generators ───────────────────────────────────────────────
+
+export interface AudioWorkflowOptions {
+  /** Text prompt describing the audio */
+  prompt: string;
+  /** Duration in seconds */
+  duration?: number;
+  /** Random seed */
+  seed?: number;
+}
+
+/**
+ * ACE-Step music workflow: native ComfyUI audio generation for music.
+ * Generates full songs, loops, and genre-specific music.
+ */
+export function buildACEStepWorkflow(opts: AudioWorkflowOptions): Workflow {
+  const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
+
+  return {
+    "1": {
+      class_type: "ACEStepModelLoader",
+      inputs: {},
+    },
+    "2": {
+      class_type: "ACEStepSampler",
+      inputs: {
+        model: ["1", 0],
+        lyrics: "",
+        prompt: opts.prompt,
+        duration: opts.duration ?? 30,
+        seed,
+        steps: 60,
+        cfg: 3.0,
+      },
+    },
+    "3": {
+      class_type: "SaveAudio",
+      inputs: {
+        audio: ["2", 0],
+        filename_prefix: "comfyui_music",
+      },
+    },
+  };
+}
+
+/**
+ * Stable Audio Open workflow: for sound effects generation.
+ * Native ComfyUI support. Generates up to 47 seconds of audio.
+ */
+export function buildStableAudioWorkflow(opts: AudioWorkflowOptions): Workflow {
+  const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
+
+  return {
+    "1": {
+      class_type: "StableAudioModelLoader",
+      inputs: {
+        model: "stable_audio_open_1.0.safetensors",
+      },
+    },
+    "2": {
+      class_type: "StableAudioSampler",
+      inputs: {
+        model: ["1", 0],
+        positive_prompt: opts.prompt,
+        negative_prompt: "low quality, distorted, noise",
+        duration: Math.min(opts.duration ?? 5, 47),
+        seed,
+        steps: 100,
+        cfg: 7.0,
+      },
+    },
+    "3": {
+      class_type: "SaveAudio",
+      inputs: {
+        audio: ["2", 0],
+        filename_prefix: "comfyui_sfx",
+      },
+    },
+  };
+}
+
+/**
+ * AudioGen workflow (via eigenpunk/ComfyUI-audio custom node).
+ * Fallback for SFX if Stable Audio Open is not installed.
+ */
+export function buildAudioGenWorkflow(opts: AudioWorkflowOptions): Workflow {
+  return {
+    "1": {
+      class_type: "AudioGen",
+      inputs: {
+        prompt: opts.prompt,
+        duration: opts.duration ?? 5,
+        model_size: "medium",
+      },
+    },
+    "2": {
+      class_type: "SaveAudio",
+      inputs: {
+        audio: ["1", 0],
+        filename_prefix: "comfyui_sfx",
+      },
+    },
+  };
+}
+
 // ─── Workflow Selection ─────────────────────────────────────────────────────
 
 /**
@@ -261,6 +366,17 @@ export function buildWorkflow(opts: WorkflowOptions): Workflow {
   }
 
   return buildTxt2ImgWorkflow(opts);
+}
+
+/**
+ * Build an audio workflow based on the preset type.
+ */
+export function buildAudioWorkflow(preset: "music" | "sfx", prompt: string, duration?: number): Workflow {
+  const opts: AudioWorkflowOptions = { prompt, duration };
+  if (preset === "music") {
+    return buildACEStepWorkflow(opts);
+  }
+  return buildAudioGenWorkflow(opts);
 }
 
 // ─── Preset Configurations ──────────────────────────────────────────────────
@@ -307,7 +423,7 @@ export const PRESETS = {
 
   /** High quality concept art (FLUX.2-dev) */
   concept: {
-    checkpoint: "flux1-dev.safetensors",
+    checkpoint: "flux2-dev.safetensors",
     width: 1024,
     height: 1024,
     steps: 20,
@@ -338,6 +454,48 @@ export const PRESETS = {
     sampler: "euler_ancestral",
     negative: "blurry, low quality, watermark, text",
   },
+
+  /** Z-Image-Turbo — fast drafts, 8 steps, good prompt adherence */
+  fast_draft: {
+    checkpoint: "z_image_turbo.safetensors",
+    width: 1024,
+    height: 1024,
+    steps: 8,
+    cfg: 2.0,
+    sampler: "euler",
+    scheduler: "simple",
+    negative: "blurry, low quality, watermark",
+  },
+
+  /** 2D game assets (SDXL + game assets LoRA) — sprites, items, props with clean backgrounds */
+  game_asset: {
+    checkpoint: "sd_xl_base_1.0.safetensors",
+    lora: "game_assets_v3.safetensors",
+    lora_strength: 0.8,
+    width: 1024,
+    height: 1024,
+    steps: 20,
+    cfg: 7.0,
+    sampler: "euler_ancestral",
+    negative: "blurry, photorealistic, 3d render, watermark, complex background",
+  },
 } as const satisfies Record<string, Partial<WorkflowOptions>>;
+
+/** Audio presets — separate from image presets since they use different workflows */
+export const AUDIO_PRESETS = {
+  /** Background music (ACE-Step) */
+  music: {
+    type: "music" as const,
+    duration: 30,
+    description: "Background music loop via ACE-Step",
+  },
+
+  /** Sound effects (AudioGen) */
+  sfx: {
+    type: "sfx" as const,
+    duration: 5,
+    description: "Sound effect via AudioGen",
+  },
+} as const;
 
 export type PresetName = keyof typeof PRESETS;

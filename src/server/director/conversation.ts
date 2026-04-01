@@ -13,6 +13,7 @@ import { assembleDirectorContext } from "./memory";
 import { webSearchTool } from "../tools/web-search";
 import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
+import { makeMemoryTools } from "./memsearch";
 
 // ─── In-memory streaming state ──────────────────────────────────────────────
 
@@ -60,7 +61,7 @@ export async function generateDirectorResponse(opts: {
   let designDocsContent: string | undefined;
 
   if (directive && project) {
-    projectContext = assembleDirectorContext(db, directive, project, { includeTaskSummaries: false });
+    projectContext = await assembleDirectorContext(db, directive, project, { includeTaskSummaries: false });
 
     // Read input design docs referenced by the directive
     if (directive.design_docs) {
@@ -92,7 +93,12 @@ export async function generateDirectorResponse(opts: {
       model,
       system: systemPrompt,
       messages: opts.messages.map(m => ({ role: m.role, content: m.content })),
-      tools: { webSearch: webSearchTool, fetchUrl: fetchUrlTool, lookupDocs },
+      tools: {
+        webSearch: webSearchTool,
+        fetchUrl: fetchUrlTool,
+        lookupDocs,
+        ...(project ? makeMemoryTools(project.workdir) : {}),
+      },
       maxSteps: 50,
     });
 

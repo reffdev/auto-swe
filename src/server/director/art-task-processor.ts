@@ -18,7 +18,7 @@ import {
   type WorkflowManifest,
   type WorkflowEntry,
 } from "../foreman/workflow-manifest";
-import { PRESETS, type PresetName } from "../foreman/comfyui-workflows";
+import { PRESETS, AUDIO_PRESETS, type PresetName } from "../foreman/comfyui-workflows";
 
 const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx"]);
 
@@ -78,10 +78,10 @@ function injectPresetTags(task: ParsedTask): ParsedTask {
 }
 
 /**
- * Map asset types to built-in presets.
+ * Map asset types to built-in presets (image and audio).
  */
-function selectPreset(assetType: string): PresetName | null {
-  const map: Record<string, PresetName> = {
+function selectPreset(assetType: string): string | null {
+  const map: Record<string, string> = {
     sprite: "pixel_sprite",
     icon: "icon",
     tileset: "pixel_sprite",
@@ -89,6 +89,8 @@ function selectPreset(assetType: string): PresetName | null {
     background: "background",
     concept: "concept",
     ui: "icon",
+    music: "music",
+    sfx: "sfx",
   };
   return map[assetType] ?? null;
 }
