@@ -17,6 +17,7 @@ import { ForemanConfig } from './ForemanConfig'
 import { DirectorDashboard } from './DirectorDashboard'
 import { DirectorConversation } from './DirectorConversation'
 import { DirectorReview } from './DirectorReview'
+import { TerminalView } from './Terminal'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
 
@@ -141,6 +142,8 @@ export function DashboardLayout({ view }: { view: ViewName }) {
               return directiveId ? <DirectorConversation directiveId={directiveId} onBack={() => navigate('/director')} /> : null
             case 'director-review':
               return reviewId ? <DirectorReview reviewId={reviewId} onBack={() => navigate('/director')} /> : null
+            case 'terminal':
+              return <TerminalView onBack={() => navigate('/')} />
           }
         })() : null}
       </main>

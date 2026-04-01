@@ -18,6 +18,7 @@ export const ROUTE_PATHS = [
   '/director/:directiveId',
   '/director/:directiveId/conversation',
   '/director/review/:reviewId',
+  '/terminal',
 ] as const;
 
 /** Route names for view discrimination */
@@ -37,3 +38,4 @@ export type ViewName =
   | 'director-detail'
   | 'director-conversation'
   | 'director-review'
+  | 'terminal'

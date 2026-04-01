@@ -102,6 +102,13 @@ startDirectorScheduler(db);
 const server = app.listen(PORT, () => {
   console.log(`auto-swe server listening on http://localhost:${PORT}`);
 });
+
+// 9. Terminal WebSocket (PTY for Claude CLI)
+import("./terminal").then(async ({ initPty, attachTerminalServer }) => {
+  if (await initPty()) {
+    attachTerminalServer(server, db);
+  }
+}).catch(() => {});
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
     console.error(`\nFATAL: Port ${PORT} is already in use. Kill the old process first:\n  cmd.exe /c "taskkill /F /PID $(netstat -ano | grep :${PORT} | head -1 | awk '{print $NF}')"\n`);

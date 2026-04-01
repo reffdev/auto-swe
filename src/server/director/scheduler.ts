@@ -119,6 +119,24 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
   const awaitingReview = db.getDirectiveTasksAwaitingReview(directive.id);
   for (const task of awaitingReview) {
     try {
+      // Art/music/sfx tasks skip automated verification — go straight to human review
+      if (isComfyUITaskType(task.type)) {
+        const existingReviews = db.getDirectorReviews(directive.id).filter(
+          r => r.task_id === task.id && r.status === "pending"
+        );
+        if (existingReviews.length === 0) {
+          createReviewGate(db, {
+            directive_id: directive.id,
+            task_id: task.id,
+            review_type: "task_verify",
+            question: `Art task "${task.title}" is ready for review. Please check the generated asset.`,
+            context: { type: task.type },
+          });
+          console.log(`Director: art task "${task.title}" sent to human review (skipping automated verification)`);
+        }
+        continue;
+      }
+
       const result = await verifyTask(db, task, project);
 
       if (result.verdict === "pass") {

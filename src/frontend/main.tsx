@@ -22,6 +22,7 @@ const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/director/review/:reviewId', view: 'director-review' },
   { path: '/director/:directiveId/conversation', view: 'director-conversation' },
   { path: '/director/:directiveId', view: 'director-detail' },
+  { path: '/terminal', view: 'terminal' },
 ]
 
 const router = createHashRouter(

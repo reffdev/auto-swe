@@ -336,7 +336,7 @@ function ForemanHeader() {
 
   return (
     <div className="px-3 pt-3 pb-1 flex items-center justify-between">
-      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Foreman</span>
+      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Director</span>
       {enabled !== null && (
         <button
           onClick={toggle}
@@ -346,7 +346,7 @@ function ForemanHeader() {
           )}
           role="switch"
           aria-checked={enabled}
-          title={enabled ? 'Foreman enabled' : 'Foreman disabled'}
+          title={enabled ? 'Autonomous mode ON' : 'Autonomous mode OFF'}
         >
           <span className={cn(
             'pointer-events-none block h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
@@ -560,9 +560,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       <div className="border-t border-border" />
 
       {/* Director */}
-      <div className="px-3 pt-3 pb-1">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Director</span>
-      </div>
+      <ForemanHeader />
       <nav className="px-1 pb-2">
         {(() => {
           const path = location.pathname
@@ -581,7 +579,9 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       </nav>
 
       {/* Foreman */}
-      <ForemanHeader />
+      <div className="px-3 pt-3 pb-1">
+        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Foreman</span>
+      </div>
       <nav className="px-1 pb-2">
         {(() => {
           const path = location.pathname
@@ -602,6 +602,24 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 Config
               </button>
             </>
+          )
+        })()}
+      </nav>
+
+      <div className="border-t border-border" />
+
+      {/* Terminal */}
+      <nav className="px-1 py-2">
+        {(() => {
+          const isTerminal = location.pathname === '/terminal'
+          return (
+            <button onClick={() => { void navigate('/terminal'); }} className={cn(
+              'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+              isTerminal ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+            )}>
+              <span className="font-mono text-[10px]">&gt;_</span>
+              Claude CLI
+            </button>
           )
         })()}
       </nav>
