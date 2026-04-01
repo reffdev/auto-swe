@@ -199,17 +199,33 @@ export async function setupWorktree(
           await git("rev-parse --abbrev-ref HEAD", worktreePath)
         ).trim();
         if (currentBranch === branch) {
-          // Rebase onto latest origin so worktree has current code + previous work
+          // Worktree exists with the right branch — try to rebase onto latest
           try {
-            const defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
+            // Determine the default branch (try multiple methods)
+            let defaultBranch = "main";
+            try {
+              defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
+            } catch {
+              // origin/HEAD not set — try to detect from remote
+              try {
+                const remoteInfo = (await git("remote show origin", mainWorkdir));
+                const headMatch = remoteInfo.match(/HEAD branch:\s*(\S+)/);
+                if (headMatch) defaultBranch = headMatch[1];
+              } catch { /* use "main" default */ }
+            }
+
             await git(`rebase origin/${defaultBranch}`, worktreePath);
-            console.log(`Git: reusing existing worktree for branch ${branch} (rebased onto origin/${defaultBranch})`);
-            return { ok: true, fresh: false };
-          } catch {
-            // Rebase conflict — abort and start fresh
+            const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
+            console.log(`Git: reusing worktree for ${branch} @ ${hash} (rebased onto origin/${defaultBranch})`);
+          } catch (rebaseErr) {
+            // Rebase failed — abort it but KEEP the worktree to preserve prior work
             try { await git("rebase --abort", worktreePath); } catch { /* already aborted */ }
-            console.log(`Git: rebase failed for branch ${branch} — removing worktree to start fresh`);
+            const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
+            const errMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+            console.warn(`Git: rebase failed for ${branch} — keeping worktree as-is @ ${hash} (PR may need manual conflict resolution)`);
+            console.warn(`Git: rebase error: ${errMsg.slice(0, 300)}`);
           }
+          return { ok: true, fresh: false };
         }
       } catch {
         // Not a valid git worktree — stale directory
