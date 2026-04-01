@@ -16,7 +16,6 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
   const [connected, setConnected] = useState(false)
   const [projects, setProjects] = useState<api.Project[]>([])
 
-  // Load projects for the dropdown
   useEffect(() => {
     api.poll().then(d => setProjects(d.projects)).catch(() => {})
   }, [])
@@ -38,84 +37,96 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
         cursor: '#e4e4e7',
         selectionBackground: '#27272a',
       },
-      allowProposedApi: true,
+      scrollback: 5000,
     })
 
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.open(termRef.current)
-    fit.fit()
 
     xtermRef.current = term
     fitRef.current = fit
 
-    // Connect WebSocket
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const params = new URLSearchParams()
-    if (projectId) params.set('project', projectId)
-    params.set('cols', String(term.cols))
-    params.set('rows', String(term.rows))
-    const wsUrl = `${proto}//${window.location.host}/ws/terminal?${params}`
-
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      setConnected(true)
-      term.focus()
+    // Debounced fit — prevents rapid layout thrashing
+    let fitTimer: ReturnType<typeof setTimeout> | null = null
+    const debouncedFit = () => {
+      if (fitTimer) clearTimeout(fitTimer)
+      fitTimer = setTimeout(() => {
+        try {
+          fit.fit()
+          // Sync size to PTY
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+          }
+        } catch { /* container not ready */ }
+      }, 100)
     }
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        switch (msg.type) {
-          case 'output':
-            term.write(msg.data)
-            break
-          case 'exit':
-            term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`)
-            setConnected(false)
-            break
-          case 'error':
-            term.write(`\r\n\x1b[31m${msg.data}\x1b[0m\r\n`)
-            setConnected(false)
-            break
+    // Initial fit after layout settles
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { fit.fit() } catch {}
+
+        // Connect WebSocket after fit so we have correct dimensions
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const params = new URLSearchParams()
+        if (projectId) params.set('project', projectId)
+        params.set('cols', String(term.cols))
+        params.set('rows', String(term.rows))
+        const wsUrl = `${proto}//${window.location.host}/ws/terminal?${params}`
+
+        const ws = new WebSocket(wsUrl)
+        wsRef.current = ws
+
+        ws.onopen = () => {
+          setConnected(true)
+          term.focus()
         }
-      } catch {
-        term.write(event.data)
-      }
-    }
 
-    ws.onclose = () => setConnected(false)
-    ws.onerror = () => setConnected(false)
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data)
+            switch (msg.type) {
+              case 'output':
+                term.write(msg.data)
+                break
+              case 'exit':
+                term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`)
+                setConnected(false)
+                break
+              case 'error':
+                term.write(`\r\n\x1b[31m${msg.data}\x1b[0m\r\n`)
+                setConnected(false)
+                break
+            }
+          } catch {
+            term.write(event.data)
+          }
+        }
 
-    // Terminal → WebSocket
-    term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'input', data }))
-      }
+        ws.onclose = () => setConnected(false)
+        ws.onerror = () => setConnected(false)
+
+        // Terminal → WebSocket
+        term.onData((data) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'input', data }))
+          }
+        })
+      })
     })
 
-    // Handle resize
-    const onResize = () => {
-      fit.fit()
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-    }
-    term.onResize(() => onResize())
-
-    const resizeObserver = new ResizeObserver(() => {
-      try { fit.fit() } catch { /* not ready */ }
-    })
+    // Observe container resize
+    const resizeObserver = new ResizeObserver(() => debouncedFit())
     resizeObserver.observe(termRef.current)
 
     return () => {
       resizeObserver.disconnect()
+      if (fitTimer) clearTimeout(fitTimer)
     }
   }
 
-  // Auto-connect when project is selected
+  // Connect when projectId changes
   useEffect(() => {
     if (projectId) {
       const cleanup = connect()
@@ -168,8 +179,8 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
       {/* Terminal */}
       <div
         ref={termRef}
-        className="flex-1 bg-[#0a0a0a] p-1"
-        style={{ minHeight: 0 }}
+        className="flex-1 bg-[#0a0a0a]"
+        style={{ minHeight: 0, padding: '4px' }}
       />
     </div>
   )
