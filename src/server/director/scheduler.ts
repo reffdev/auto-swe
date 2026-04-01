@@ -20,7 +20,7 @@ import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
-import { acquireLease, releaseLease, hasCapacity } from "../machine-manager";
+import { hasCapacity } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -74,6 +74,10 @@ export function nudgeDirector(db?: Db): void {
 // ─── Director Tick ───────────────────────────────────────────────────────────
 
 async function directorTick(db: Db): Promise<void> {
+  // Respect the enabled toggle — same flag controls both Director and Foreman
+  const config = db.getForemanConfig();
+  if (!config?.enabled) return;
+
   // Prevent concurrent ticks (the director tick may take time due to LLM calls)
   if (processing) return;
   processing = true;
@@ -99,18 +103,9 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  // Acquire a lease for Director LLM calls (verification, planning)
-  const config = db.getForemanConfig();
-  const leaseResult = acquireLease(db, "director", `directive: ${directive.directive.slice(0, 40)}`, {
-    preferredMachineId: config?.director_machine_id ?? undefined,
-  });
-  if (!leaseResult) return; // no machine available, will retry on next nudge
-
-  try {
-    await processDirectiveWork(db, directive, project);
-  } finally {
-    releaseLease(leaseResult.lease.id);
-  }
+  // No longer holds a lease for the entire processing cycle.
+  // Individual LLM calls (planner, verifier) acquire their own short-lived leases.
+  await processDirectiveWork(db, directive, project);
 }
 
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
@@ -186,7 +181,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           const existingLowConf = db.getDirectorReviews(directive.id).filter(
             r => r.task_id === task.id && r.status === "pending"
           );
-          if (existingLowConf.length > 0) break; // already escalated
+          if (existingLowConf.length > 0) continue; // already escalated
           createReviewGate(db, {
             directive_id: directive.id,
             task_id: task.id,
@@ -236,7 +231,8 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
   if (activeMilestone) {
     const milestoneTasks = db.getDirectiveTasks(directive.id, activeMilestone.id);
     const allComplete = milestoneTasks.length > 0 && milestoneTasks.every(t => t.status === "completed");
-    const hasQueued = milestoneTasks.some(t => t.status === "queued" || t.status === "running" || t.status === "awaiting_review");
+    const hasActiveWork = milestoneTasks.some(t => t.status === "queued" || t.status === "running");
+    const hasQueued = hasActiveWork || milestoneTasks.some(t => t.status === "awaiting_review");
 
     if (allComplete) {
       // Run milestone verification
@@ -280,7 +276,9 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
 
           // Generate tasks for next milestone (unless paused by review gate)
           if (!shouldPauseDirective(db, directive)) {
-            await planNextTasks(db, directive, project, nextMilestone);
+            try { await planNextTasks(db, directive, project, nextMilestone); } catch (err) {
+              console.error(`Director: planning for next milestone failed:`, err instanceof Error ? err.message : err);
+            }
           }
         } else {
           // All milestones complete — directive done
@@ -296,15 +294,21 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
         db.updateDirectorMilestone(activeMilestone.id, { status: "active" });
         console.log(`Director: milestone "${activeMilestone.title}" verification failed: ${verification.issues.join("; ")}`);
         logEpisodic(project.workdir, `Milestone verification failed: "${activeMilestone.title}"`, verification.issues.join("; "));
-        await planNextTasks(db, directive, project, activeMilestone);
+        try { await planNextTasks(db, directive, project, activeMilestone); } catch (err) {
+          console.error(`Director: corrective planning failed:`, err instanceof Error ? err.message : err);
+        }
       }
     } else if (!hasQueued && milestoneTasks.length === 0) {
       // No tasks at all for this milestone — generate some
-      await planNextTasks(db, directive, project, activeMilestone);
+      try { await planNextTasks(db, directive, project, activeMilestone); } catch (err) {
+        console.error(`Director: initial planning failed:`, err instanceof Error ? err.message : err);
+      }
     } else if (!hasQueued && milestoneTasks.some(t => t.status === "failed")) {
       // All tasks done but some failed — need more tasks
-      await planNextTasks(db, directive, project, activeMilestone);
-    } else if (hasQueued && !planningInProgress) {
+      try { await planNextTasks(db, directive, project, activeMilestone); } catch (err) {
+        console.error(`Director: failure recovery planning failed:`, err instanceof Error ? err.message : err);
+      }
+    } else if (hasActiveWork && !planningInProgress) {
       // Some tasks still running — check if any machine types are idle
       const zeroCount = zeroTaskCounts.get(activeMilestone.id) ?? 0;
       if (zeroCount >= 2) {
@@ -359,12 +363,12 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
   const reviews = db.getDirectorReviews(directive.id);
   const justResponded = reviews.filter(r => r.status === "responded");
 
-  // We mark reviews as "processed" by noting them (they stay responded)
-  // Only process reviews that haven't been acted on
   let shouldResume = false;
 
   for (const review of justResponded) {
     const result = processReviewResponse(review);
+    // Mark as processed so it's not re-processed on next tick
+    db.updateDirectorReview(review.id, { status: "processed" });
 
     switch (result.action) {
       case "resume":
