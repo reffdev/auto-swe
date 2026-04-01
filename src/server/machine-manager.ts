@@ -72,10 +72,8 @@ export function acquireLease(
   // Clean expired leases first
   cleanExpiredLeases();
 
-  const allLeases = getActiveLeases();
-  if (allLeases.length > 0) {
-    console.log(`Machine manager: ${allLeases.length} active lease(s): ${allLeases.map(l => `${l.consumer}/${l.label} on ${l.machineId} (${Math.round((Date.now() - l.acquiredAt) / 1000)}s)`).join(", ")}`);
-  }
+  // Only log when a lease is denied (not on every attempt)
+
 
   const machines = db.getMachines();
   const machineType = opts?.machineType ?? "inference";

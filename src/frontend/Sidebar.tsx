@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -489,16 +489,18 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const currentIssueId = currentPath.match(/\/issue\/([^/]+)/)?.[1]
           const currentTaskId = currentPath.match(/\/foreman\/task\/([^/]+)/)?.[1]
 
-          // Split into pipeline issues and foreman tasks
+          // Split into pipeline issues, foreman tasks, and analysis runs
           const foremanTaskIds = activeIds.filter(id => id.startsWith('foreman:')).map(id => id.replace('foreman:', ''))
-          const pipelineIssueIds = activeIds.filter(id => !id.startsWith('foreman:'))
+          const analysisRunIds = activeIds.filter(id => id.startsWith('analysis:')).map(id => id.replace('analysis:', ''))
+          const pipelineIssueIds = activeIds.filter(id => !id.startsWith('foreman:') && !id.startsWith('analysis:'))
           const activeIssuesFiltered = pipelineIssueIds.map(id => issues.find(i => i.id === id)).filter(Boolean) as Issue[]
 
           // Build unified list for cycling
-          type ActiveTarget = { type: 'issue'; issue: Issue } | { type: 'task'; taskId: string }
+          type ActiveTarget = { type: 'issue'; issue: Issue } | { type: 'task'; taskId: string } | { type: 'analysis' }
           const targets: ActiveTarget[] = [
             ...activeIssuesFiltered.map(i => ({ type: 'issue' as const, issue: i })),
             ...foremanTaskIds.map(id => ({ type: 'task' as const, taskId: id })),
+            ...analysisRunIds.map(() => ({ type: 'analysis' as const })),
           ]
 
           let nextTarget: ActiveTarget | null = null
@@ -523,7 +525,10 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     selectedMachineId === m.id && 'bg-accent font-medium',
                   )}
                 >
-                  <Server className="size-3.5 shrink-0 text-muted-foreground" />
+                  {m.machine_type === 'comfyui'
+                    ? <Palette className="size-3.5 shrink-0 text-purple-400" />
+                    : <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
+                  }
                   <span className="truncate flex-1">{m.name || m.model_id || 'Unnamed'}</span>
                   {activeIds.length > 0 && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
                     <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0 flex items-center gap-0.5">
@@ -545,11 +550,12 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     e.stopPropagation()
                     if (nextTarget.type === 'issue') {
                       void navigate(`/project/${nextTarget.issue.project_id}/issue/${nextTarget.issue.id}`)
-                    } else {
+                    } else if (nextTarget.type === 'task') {
                       void navigate(`/foreman/task/${nextTarget.taskId}`)
                     }
+                    // analysis has no detail page — arrow just indicates activity
                   }}
-                  title={nextTarget.type === 'issue' ? nextTarget.issue.title : `Foreman task`}
+                  title={nextTarget.type === 'issue' ? nextTarget.issue.title : nextTarget.type === 'task' ? 'Foreman task' : 'Analysis running'}
                   className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
                 >
                   <ArrowRight className="size-3.5" />

@@ -20,7 +20,7 @@ import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
-import { hasCapacity } from "../machine-manager";
+import { hasCapacity, acquireLease, releaseLease } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -108,7 +108,29 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   await processDirectiveWork(db, directive, project);
 }
 
+/** Plan tasks with a machine lease. Returns number created, or 0 on failure. */
+async function planWithLease(
+  db: Db, directive: DirectorDirective, project: import("../db").Project,
+  milestone: import("../db").DirectorMilestone, preferredMachine?: string,
+  idleTypes?: string[],
+): Promise<number> {
+  const lease = acquireLease(db, "director", `plan: ${milestone.title.slice(0, 30)}`, {
+    preferredMachineId: preferredMachine,
+  });
+  if (!lease) {
+    console.log(`Director: no machine available for planning "${milestone.title}"`);
+    return 0;
+  }
+  try {
+    return await planNextTasks(db, directive, project, milestone, idleTypes);
+  } finally {
+    releaseLease(lease.lease.id);
+  }
+}
+
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
+  const config = db.getForemanConfig();
+  const preferredMachine = config?.director_machine_id ?? undefined;
 
   // 1. Handle tasks awaiting review (auto-verify)
   const awaitingReview = db.getDirectiveTasksAwaitingReview(directive.id);
@@ -132,7 +154,16 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
         continue;
       }
 
-      const result = await verifyTask(db, task, project);
+      const verifyLease = acquireLease(db, "director", `verify: ${task.title.slice(0, 30)}`, {
+        preferredMachineId: preferredMachine,
+      });
+      if (!verifyLease) continue; // no machine, skip this task for now
+      let result;
+      try {
+        result = await verifyTask(db, task, project);
+      } finally {
+        releaseLease(verifyLease.lease.id);
+      }
 
       if (result.verdict === "pass") {
         // Check if task was flagged for human review
@@ -276,7 +307,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
 
           // Generate tasks for next milestone (unless paused by review gate)
           if (!shouldPauseDirective(db, directive)) {
-            try { await planNextTasks(db, directive, project, nextMilestone); } catch (err) {
+            try { await planWithLease(db, directive, project, nextMilestone, preferredMachine); } catch (err) {
               console.error(`Director: planning for next milestone failed:`, err instanceof Error ? err.message : err);
             }
           }
@@ -294,18 +325,18 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
         db.updateDirectorMilestone(activeMilestone.id, { status: "active" });
         console.log(`Director: milestone "${activeMilestone.title}" verification failed: ${verification.issues.join("; ")}`);
         logEpisodic(project.workdir, `Milestone verification failed: "${activeMilestone.title}"`, verification.issues.join("; "));
-        try { await planNextTasks(db, directive, project, activeMilestone); } catch (err) {
+        try { await planWithLease(db, directive, project, activeMilestone, preferredMachine); } catch (err) {
           console.error(`Director: corrective planning failed:`, err instanceof Error ? err.message : err);
         }
       }
     } else if (!hasQueued && milestoneTasks.length === 0) {
       // No tasks at all for this milestone — generate some
-      try { await planNextTasks(db, directive, project, activeMilestone); } catch (err) {
+      try { await planWithLease(db, directive, project, activeMilestone, preferredMachine); } catch (err) {
         console.error(`Director: initial planning failed:`, err instanceof Error ? err.message : err);
       }
     } else if (!hasQueued && milestoneTasks.some(t => t.status === "failed")) {
       // All tasks done but some failed — need more tasks
-      try { await planNextTasks(db, directive, project, activeMilestone); } catch (err) {
+      try { await planWithLease(db, directive, project, activeMilestone, preferredMachine); } catch (err) {
         console.error(`Director: failure recovery planning failed:`, err instanceof Error ? err.message : err);
       }
     } else if (hasActiveWork && !planningInProgress) {
@@ -319,7 +350,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           console.log(`Director: machine type(s) idle with no queued work: ${idleTypes.join(", ")} — requesting top-up tasks`);
           planningInProgress = true;
           try {
-            const created = await planNextTasks(db, directive, project, activeMilestone, idleTypes);
+            const created = await planWithLease(db, directive, project, activeMilestone, preferredMachine, idleTypes);
             if (created === 0) {
               zeroTaskCounts.set(activeMilestone.id, zeroCount + 1);
               console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/2 before backing off)`);
@@ -401,9 +432,11 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
       case "generate_tasks": {
         shouldResume = true;
         if (result.context) addKeyDecision(db, directive, result.context);
+        const config2 = db.getForemanConfig();
         const activeMilestone = db.getActiveMilestone(directive.id);
         if (activeMilestone) {
-          await planNextTasks(db, directive, project, activeMilestone);
+          try { await planWithLease(db, directive, project, activeMilestone, config2?.director_machine_id ?? undefined); }
+          catch (err) { console.error("Director: generate_tasks planning failed:", err instanceof Error ? err.message : err); }
         }
         break;
       }

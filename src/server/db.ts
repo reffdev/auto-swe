@@ -384,7 +384,12 @@ export class Db {
       WHERE fr.machine_id = ?
         AND ft.status = 'running'
         AND fr.status = 'running'
-    `).all(machineId, machineId) as Array<{ id: string }>;
+      UNION
+      SELECT DISTINCT 'analysis:' || ar.id
+      FROM analysis_runs ar
+      WHERE ar.machine_id = ?
+        AND ar.status = 'running'
+    `).all(machineId, machineId, machineId) as Array<{ id: string }>;
     return rows.map(r => r.id);
   }
 

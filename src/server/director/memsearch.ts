@@ -284,12 +284,12 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-        const { existsSync: exists, mkdirSync: mkdir, writeFileSync: writeFile } = await import("fs");
+        const fs = await import("fs");
         const dirPath = resolve(projectWorkdir, ".swe", "conventions");
         const filePath = resolve(dirPath, fname);
-        const existing = exists(filePath);
-        mkdir(dirPath, { recursive: true });
-        writeFile(filePath, content);
+        const existing = fs.existsSync(filePath);
+        fs.mkdirSync(dirPath, { recursive: true });
+        fs.writeFileSync(filePath, content);
         scheduleReindex(projectWorkdir);
         return existing
           ? `Updated convention: ${fname}`
@@ -405,19 +405,19 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ category, filename }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-        const { unlinkSync, existsSync: exists } = await import("fs");
+        const fs = await import("fs");
         const { createSnapshot } = await import("./persistent-memory");
 
         const filePath = category === "convention"
           ? resolve(projectWorkdir, ".swe", "conventions", fname)
           : resolve(categoryDir(projectWorkdir, category as MemoryCategory), fname);
 
-        if (!exists(filePath)) {
+        if (!fs.existsSync(filePath)) {
           return `File not found: ${category}/${fname}`;
         }
 
         createSnapshot(projectWorkdir, `pre-delete-${fname.replace(".md", "")}`);
-        unlinkSync(filePath);
+        fs.unlinkSync(filePath);
         return `Deleted ${category}/${fname} (snapshot created)`;
       },
     }),

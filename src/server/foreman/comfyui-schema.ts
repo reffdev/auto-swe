@@ -181,7 +181,7 @@ function extractComboOptions(
   //   [["opt1", "opt2", ...]]  — array of options wrapped in array
   //   ["COMBO", ["opt1", "opt2"]]  — type name + options
   const t = input.type;
-  if (Array.isArray(t[0])) return t[0] as string[];
-  if (Array.isArray(t[1])) return t[1] as string[];
+  if (Array.isArray(t[0])) return t[0];
+  if (Array.isArray(t[1])) return t[1];
   return [];
 }
