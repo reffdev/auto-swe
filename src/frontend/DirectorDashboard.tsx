@@ -144,11 +144,7 @@ export function DirectorDashboard() {
           <div className="divide-y divide-border">
             {directives.map(d => (
               <DirectiveCard key={d.id} directive={d} onClick={() => {
-                if (d.status === 'drafting' || d.status === 'conversing') {
-                  void navigate(`/director/${d.id}/conversation`)
-                } else {
-                  void navigate(`/director/${d.id}`)
-                }
+                void navigate(`/director/${d.id}/conversation`)
               }} onRefresh={refresh} />
             ))}
           </div>
