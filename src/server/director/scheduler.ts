@@ -19,7 +19,7 @@ import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
-// style-lock imported dynamically in lock_style handler
+import { isStyleLocked } from "./style-lock";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
 import { hasCapacity } from "../machine-manager";
@@ -45,16 +45,71 @@ export function getGlobalDb(): Db | null { return schedulerDb; }
 export function startDirectorScheduler(db: Db): void {
   schedulerDb = db;
   console.log("Director scheduler ready (event-driven)");
-  nudgeDirector(db);
 
-  // Index memories on startup (no watcher — Milvus Lite doesn't support concurrent access)
+  // Startup checks for the configured project
   const config = db.getForemanConfig();
   if (config?.project_id) {
     const project = db.getProject(config.project_id);
     if (project) {
+      // Index memories
       indexMemories(project.workdir).catch(() => {});
+
+      // Auto-create style exploration task if style isn't locked and none exists
+      ensureStyleExploration(db, project);
     }
   }
+
+  nudgeDirector(db);
+}
+
+/**
+ * On startup, check if the project needs a style exploration task.
+ * Creates one if: style not locked, no style_exploration task exists (any status).
+ */
+function ensureStyleExploration(db: Db, project: import("../db").Project): void {
+  if (isStyleLocked(project.workdir)) return;
+
+  // Check if any style_exploration task already exists for this project
+  const existing = db.getForemanTasks(project.id).filter(
+    (t: { type: string; status: string }) => t.type === "style_exploration" &&
+      t.status !== "completed" && t.status !== "failed"
+  );
+  if (existing.length > 0) return;
+
+  // Check if comfyui machines exist
+  const comfyMachines = db.getMachines().filter(m => m.machine_type === "comfyui");
+  if (comfyMachines.length === 0) return;
+
+  // Find the active directive for this project
+  const directives = db.getDirectorDirectives(project.id);
+  const activeDirective = directives.find(d =>
+    d.status === "active" || d.status === "paused" || d.status === "planning"
+  );
+
+  console.log("Director: art style not locked — creating style exploration task");
+
+  db.createForemanTask({
+    project_id: project.id,
+    title: "Explore art styles",
+    description: [
+      "Generate visual style variations for the project so the user can select and lock an art style.",
+      "This must be completed before any production art assets are generated.",
+      "",
+      "[preset: concept]",
+      "[prompt: pixel art style exploration, varied color palettes, different line weights and shading approaches, game asset examples]",
+      "[variation_count: 6]",
+    ].join("\n"),
+    priority: 1,
+    type: "style_exploration",
+    model: "auto",
+    max_retries: 3,
+    status: "queued",
+    directive_id: activeDirective?.id,
+    milestone_id: activeDirective ? db.getActiveMilestone(activeDirective.id)?.id : undefined,
+  });
+
+  logEpisodic(project.workdir, "Auto-created style exploration task", "Art style not locked on startup");
+  nudgeForeman(db);
 }
 
 export function stopDirectorScheduler(): void {
