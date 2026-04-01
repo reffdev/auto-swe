@@ -9,6 +9,7 @@ import { generateDirectorResponse, getDirectorStream, isDirectorGenerating } fro
 import { decomposeDirective } from "./decomposer";
 import { planNextTasks } from "./planner";
 import { nudgeDirector } from "./scheduler";
+import { acquireLease, releaseLease } from "../machine-manager";
 
 export function createDirectorRouter(db: Db): Router {
   const router = Router();
@@ -149,25 +150,33 @@ export function createDirectorRouter(db: Db): Router {
     const project = db.getProject(directive.project_id);
     if (!project) return res.status(500).json({ error: "Project not found" });
 
-    // Select machine
+    // Select machine and acquire lease
     const machineInfo = selectPlannerMachine(db, project);
     if (!machineInfo) return res.status(503).json({ error: "No machine available" });
 
-    console.log(`Director message: using machine "${machineInfo.machine.name || machineInfo.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
+    const leaseResult = acquireLease(db, "director", `conversation: ${directive.directive.slice(0, 40)}`, {
+      preferredMachineId: machineInfo.machine.id,
+    });
+    if (!leaseResult) return res.status(503).json({ error: "No machine available (all busy)" });
+
+    console.log(`Director message: using machine "${leaseResult.machine.name || leaseResult.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
 
     // Get all messages for context
     const allMessages = db.getDirectorMessages(conversation.id);
 
-    // Fire and forget — streaming response
+    // Fire and forget — streaming response, release lease when done
+    const leaseId = leaseResult.lease.id;
     generateDirectorResponse({
       db,
       conversationId: conversation.id,
       directiveId: directive.id,
-      machine: machineInfo.machine,
+      machine: leaseResult.machine,
       modelId: machineInfo.modelId,
       projectName: project.name,
       messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-    }).catch(err => console.error("Director conversation error:", err));
+    })
+      .catch(err => console.error("Director conversation error:", err))
+      .finally(() => releaseLease(leaseId));
 
     res.status(202).json({ message_id: msg.id });
   });
@@ -206,7 +215,12 @@ export function createDirectorRouter(db: Db): Router {
     const machineInfo = selectPlannerMachine(db, project);
     if (!machineInfo) return res.status(503).json({ error: "No machine available" });
 
-    console.log(`Director retry: using machine "${machineInfo.machine.name || machineInfo.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
+    const leaseResult = acquireLease(db, "director", `retry: ${directive.directive.slice(0, 40)}`, {
+      preferredMachineId: machineInfo.machine.id,
+    });
+    if (!leaseResult) return res.status(503).json({ error: "No machine available (all busy)" });
+
+    console.log(`Director retry: using machine "${leaseResult.machine.name || leaseResult.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
 
     // Delete the last assistant message (the failed one)
     const allMessages = db.getDirectorMessages(conversation.id);
@@ -216,16 +230,19 @@ export function createDirectorRouter(db: Db): Router {
     }
 
     // Re-trigger generation with remaining messages
+    const leaseId = leaseResult.lease.id;
     const remainingMessages = db.getDirectorMessages(conversation.id);
     generateDirectorResponse({
       db,
       conversationId: conversation.id,
       directiveId: directive.id,
-      machine: machineInfo.machine,
+      machine: leaseResult.machine,
       modelId: machineInfo.modelId,
       projectName: project.name,
       messages: remainingMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-    }).catch(err => console.error("Director retry error:", err));
+    })
+      .catch(err => console.error("Director retry error:", err))
+      .finally(() => releaseLease(leaseId));
 
     res.status(202).json({ retrying: true });
   });

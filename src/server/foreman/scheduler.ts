@@ -10,7 +10,7 @@ import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { getBreaker } from "./circuit-breaker";
-import { getDirectorActiveMachineIds } from "../director/scheduler";
+import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -88,21 +88,22 @@ async function schedulerTick(db: Db): Promise<void> {
 
     // Sort by model affinity then priority
     const sorted = sortByModelAffinity(ready, lastOllamaModel);
-    const directorExclude = getDirectorActiveMachineIds();
 
-    // Find the first task that has an available machine of the right type
+    // Find the first task that has an available machine lease
     let task = null;
-    let machine = null;
+    let leaseResult: { lease: MachineLease; machine: import("../db").Machine } | null = null;
     for (const candidate of sorted) {
       const route = resolveModel(candidate);
-      const m = db.getAvailableMachine(directorExclude, route.machineType);
-      if (m && getBreaker(m.id).canExecute()) {
+      const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
+      if (result) {
         task = candidate;
-        machine = m;
+        leaseResult = result;
         break;
       }
     }
-    if (!task || !machine) break; // no dispatchable task+machine pair
+    if (!task || !leaseResult) break; // no dispatchable task+machine pair
+
+    const { lease, machine } = leaseResult;
 
     // Reserve task BEFORE dispatching to prevent double-dispatch
     db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });
@@ -114,6 +115,7 @@ async function schedulerTick(db: Db): Promise<void> {
     executeForemanTask({ db }, machine, task, project)
       .catch(err => console.error(`Foreman task ${task.id} error:`, err))
       .finally(() => {
+        releaseLease(lease.id);
         unregisterActiveTask(task.id);
         const resolved = task.resolved_model;
         if (resolved) lastOllamaModel = resolved;

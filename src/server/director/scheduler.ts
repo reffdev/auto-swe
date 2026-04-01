@@ -20,6 +20,7 @@ import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, injectFeedbackIntoArtTask } from "../foreman/art-feedback";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
+import { acquireLease, releaseLease } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -32,14 +33,6 @@ let lastPlanError: { timestamp: number; message: string } | null = null;
 
 /** Expose DB for episodic extractor (avoids circular import of full scheduler) */
 export function getGlobalDb(): Db | null { return schedulerDb; }
-
-// Track machines actively used by Director LLM calls so Foreman doesn't double-book them.
-// Exposed via getDirectorActiveMachineIds() for the concurrency query.
-const directorActiveMachines = new Set<string>();
-
-export function getDirectorActiveMachineIds(): string[] {
-  return [...directorActiveMachines];
-}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -106,15 +99,17 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  // Director LLM calls (verification, planning) must respect machine concurrency.
-  // Reserve a slot so Foreman doesn't double-book the machine while Director is thinking.
-  const machine = db.getAvailableMachine();
-  if (!machine) return;
-  directorActiveMachines.add(machine.id);
+  // Acquire a lease for Director LLM calls (verification, planning)
+  const config = db.getForemanConfig();
+  const leaseResult = acquireLease(db, "director", `directive: ${directive.directive.slice(0, 40)}`, {
+    preferredMachineId: config?.director_machine_id ?? undefined,
+  });
+  if (!leaseResult) return; // no machine available, will retry on next nudge
+
   try {
     await processDirectiveWork(db, directive, project);
   } finally {
-    directorActiveMachines.delete(machine.id);
+    releaseLease(leaseResult.lease.id);
   }
 }
 
@@ -130,14 +125,20 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
         // Check if task was flagged for human review
         const needsHumanReview = task.description.includes("[needs_human_review]");
         if (needsHumanReview && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
-          createReviewGate(db, {
-            directive_id: directive.id,
-            task_id: task.id,
-            review_type: "task_verify",
-            question: `Task "${task.title}" passed automated verification but was flagged for human review. Please confirm the output is acceptable.`,
-            context: { issues: result.issues, reasoning: result.reasoning, confidence: result.confidence },
-          });
-          console.log(`Director: task "${task.title}" passed but flagged for human review`);
+          // Check if a review gate already exists for this task
+          const existingReviews = db.getDirectorReviews(directive.id).filter(
+            r => r.task_id === task.id && r.status === "pending"
+          );
+          if (existingReviews.length === 0) {
+            createReviewGate(db, {
+              directive_id: directive.id,
+              task_id: task.id,
+              review_type: "task_verify",
+              question: `Task "${task.title}" passed automated verification but was flagged for human review. Please confirm the output is acceptable.`,
+              context: { issues: result.issues, reasoning: result.reasoning, confidence: result.confidence },
+            });
+            console.log(`Director: task "${task.title}" passed but flagged for human review`);
+          }
         } else {
           // Auto-complete the task
           db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
@@ -164,6 +165,10 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
       } else {
         // Escalate to human
         if (shouldEscalate(directive.autonomy_level, "low_confidence")) {
+          const existingLowConf = db.getDirectorReviews(directive.id).filter(
+            r => r.task_id === task.id && r.status === "pending"
+          );
+          if (existingLowConf.length > 0) break; // already escalated
           createReviewGate(db, {
             directive_id: directive.id,
             task_id: task.id,
@@ -231,13 +236,18 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
 
         // Create milestone gate review if needed
         if (shouldEscalate(directive.autonomy_level, "milestone_complete")) {
-          createReviewGate(db, {
-            directive_id: directive.id,
-            milestone_id: activeMilestone.id,
-            review_type: "milestone_gate",
-            question: `Milestone "${activeMilestone.title}" has been completed. Please review before proceeding to the next milestone.`,
-            context: { milestone: activeMilestone.title, tasks_completed: milestoneTasks.length },
-          });
+          const existingMilestoneGate = db.getDirectorReviews(directive.id).filter(
+            r => r.milestone_id === activeMilestone.id && r.status === "pending"
+          );
+          if (existingMilestoneGate.length === 0) {
+            createReviewGate(db, {
+              directive_id: directive.id,
+              milestone_id: activeMilestone.id,
+              review_type: "milestone_gate",
+              question: `Milestone "${activeMilestone.title}" has been completed. Please review before proceeding to the next milestone.`,
+              context: { milestone: activeMilestone.title, tasks_completed: milestoneTasks.length },
+            });
+          }
         }
 
         // Activate next milestone
