@@ -3,7 +3,7 @@
  */
 
 import { Router } from "express";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { resolve, extname } from "path";
 import type { Db } from "../db";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
@@ -264,8 +264,10 @@ export function createForemanRouter(db: Db): Router {
     }
 
     if (!existsSync(assetPath)) {
-      return res.status(404).json({ error: "Asset file not found" });
+      return res.status(404).json({ error: `Asset file not found: ${assetPath}` });
     }
+
+    console.log(`Asset preview: serving ${assetPath}`);
 
     // Set content type based on extension
     const ext = extname(assetPath).toLowerCase();
@@ -282,8 +284,14 @@ export function createForemanRouter(db: Db): Router {
       ".mp4": "video/mp4",
     };
     const contentType = mimeMap[ext] ?? "application/octet-stream";
-    res.setHeader("Content-Type", contentType);
-    res.sendFile(assetPath);
+    // Read and send file directly instead of sendFile (avoids path resolution issues)
+    try {
+      const buffer = readFileSync(assetPath);
+      res.setHeader("Content-Type", contentType);
+      res.send(buffer);
+    } catch {
+      res.status(404).json({ error: "Failed to read asset file" });
+    }
   });
 
   return router;
