@@ -119,7 +119,7 @@ async function planWithLease(
   });
   if (!lease) {
     console.log(`Director: no machine available for planning "${milestone.title}"`);
-    return 0;
+    return -1; // -1 = no machine, distinct from 0 = planner generated nothing
   }
   try {
     return await planNextTasks(db, directive, project, milestone, idleTypes);
@@ -352,11 +352,13 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           try {
             const created = await planWithLease(db, directive, project, activeMilestone, preferredMachine, idleTypes);
             if (created === 0) {
+              // Planner ran but generated nothing — count toward backoff
               zeroTaskCounts.set(activeMilestone.id, zeroCount + 1);
               console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/2 before backing off)`);
-            } else {
+            } else if (created > 0) {
               zeroTaskCounts.set(activeMilestone.id, 0);
             }
+            // created === -1 means no machine available — don't count against backoff
             lastPlanError = null;
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

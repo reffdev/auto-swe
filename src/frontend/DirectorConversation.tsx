@@ -131,7 +131,7 @@ export function DirectorConversation({ directiveId, onBack }: { directiveId: str
                 void api.updateForemanConfig({
                   director_machine_id: machineId,
                   director_model_id: machine?.model_id ?? null,
-                } as any)
+                } as Partial<api.ForemanConfig>)
                 if (machine?.model_id) setDirectorModelId(machine.model_id)
               }}
               className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground"
@@ -146,7 +146,7 @@ export function DirectorConversation({ directiveId, onBack }: { directiveId: str
                 value={directorModelId}
                 onChange={(e) => {
                   setDirectorModelId(e.target.value)
-                  void api.updateForemanConfig({ director_model_id: e.target.value || null } as any)
+                  void api.updateForemanConfig({ director_model_id: e.target.value || null } as Partial<api.ForemanConfig>)
                 }}
                 placeholder="model override"
                 className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground w-40"

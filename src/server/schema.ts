@@ -280,5 +280,6 @@ export const foremanConfig = sqliteTable("foreman_config", {
   tick_interval_ms: integer("tick_interval_ms").notNull().default(30000),
   director_machine_id: text("director_machine_id"),             // machine for Director LLM calls
   director_model_id: text("director_model_id"),                 // model override for Director
+  analysis_enabled: integer("analysis_enabled").notNull().default(1), // 0|1 — global analysis toggle
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });

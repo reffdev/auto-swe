@@ -92,9 +92,7 @@ export async function indexMemories(projectWorkdir: string): Promise<boolean> {
   return new Promise((resolve) => {
     const proc = spawn("memsearch", ["index", ...paths], {
       cwd: projectWorkdir,
-      encoding: "utf-8",
-      timeout: 30_000,
-    } as any);
+    });
 
     let stderr = "";
     proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
@@ -127,12 +125,11 @@ export async function searchMemories(
     const proc = spawn(
       "memsearch",
       ["search", query, "--top-k", String(topK), "--json-output"],
-      {
-        cwd: projectWorkdir,
-        encoding: "utf-8",
-        timeout: SEARCH_TIMEOUT_MS,
-      } as any,
+      { cwd: projectWorkdir },
     );
+
+    // Kill if search takes too long
+    const searchTimeout = setTimeout(() => { try { proc.kill(); } catch {} }, SEARCH_TIMEOUT_MS);
 
     let stdout = "";
     let stderr = "";
@@ -140,6 +137,7 @@ export async function searchMemories(
     proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
 
     proc.on("close", (code) => {
+      clearTimeout(searchTimeout);
       if (code !== 0) {
         if (stderr) console.warn(`MemSearch search failed: ${stderr.slice(0, 200)}`);
         resolve([]);
@@ -161,7 +159,7 @@ export async function searchMemories(
       }
     });
 
-    proc.on("error", () => resolve([]));
+    proc.on("error", () => { clearTimeout(searchTimeout); resolve([]); });
   });
 }
 

@@ -241,6 +241,7 @@ export class Db {
       "ALTER TABLE machines ADD COLUMN machine_type TEXT NOT NULL DEFAULT 'inference'",
       "ALTER TABLE foreman_config ADD COLUMN director_machine_id TEXT",
       "ALTER TABLE foreman_config ADD COLUMN director_model_id TEXT",
+      "ALTER TABLE foreman_config ADD COLUMN analysis_enabled INTEGER NOT NULL DEFAULT 1",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -253,7 +254,7 @@ export class Db {
 
   // ─── Crash recovery ──────────────────────────────────────────────────────
 
-  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanRuns: number; directorDirectives: number } {
+  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanRuns: number; directorDirectives: number; analysisRuns: number } {
     const db = this.drizzle;
     const m = db.update(schema.machines)
       .set({ status: "idle", current_run_id: null })
@@ -276,6 +277,10 @@ export class Db {
       .set({ status: "fail", completed_at: sql`datetime('now')` })
       .where(eq(schema.foremanRuns.status, "running"))
       .run();
+    // Reset stuck analysis runs
+    const ar = this.sqlite.prepare(
+      "UPDATE analysis_runs SET status = 'fail', completed_at = datetime('now') WHERE status = 'running'"
+    ).run();
     // Reset planning directives back to active so the Director re-plans
     const dd = db.update(schema.directorDirectives)
       .set({ status: "active" })
@@ -288,6 +293,7 @@ export class Db {
       foremanTasks: ft.changes,
       foremanRuns: fr.changes,
       directorDirectives: dd.changes,
+      analysisRuns: ar.changes,
     };
   }
 

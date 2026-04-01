@@ -498,6 +498,7 @@ export interface ForemanConfig {
   tick_interval_ms: number;
   director_machine_id: string | null;
   director_model_id: string | null;
+  analysis_enabled: number;
   created_at: string;
 }
 

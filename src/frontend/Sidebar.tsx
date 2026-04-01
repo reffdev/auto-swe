@@ -331,7 +331,7 @@ function ForemanHeader() {
   const toggle = () => {
     const next = !enabled
     setEnabled(next)
-    void api.updateForemanConfig({ enabled: next ? 1 : 0 } as any)
+    void api.updateForemanConfig({ enabled: next ? 1 : 0 } as Partial<api.ForemanConfig>)
   }
 
   return (

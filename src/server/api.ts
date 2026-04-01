@@ -834,20 +834,19 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   // ─── Analysis toggle ─────────────────────────────────────────────────────
 
   router.get("/analysis/enabled", (_req, res) => {
-    const { isAnalysisEnabled } = require("./analysis") as typeof import("./analysis");
-    res.json({ enabled: isAnalysisEnabled() });
+    const config = db.getForemanConfig();
+    res.json({ enabled: !!(config?.analysis_enabled ?? 1) });
   });
 
   router.post("/analysis/enabled", (req, res) => {
-    const { setAnalysisEnabled, isAnalysisEnabled } = require("./analysis") as typeof import("./analysis");
     const { enabled } = req.body;
     if (typeof enabled !== "boolean") {
       res.status(400).json({ error: "enabled must be a boolean" });
       return;
     }
-    setAnalysisEnabled(enabled);
+    db.upsertForemanConfig({ analysis_enabled: enabled ? 1 : 0 });
     console.log(`Analysis: globally ${enabled ? "enabled" : "disabled"}`);
-    res.json({ enabled: isAnalysisEnabled() });
+    res.json({ enabled });
   });
 
   // ─── Server info ────────────────────────────────────────────────────────

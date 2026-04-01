@@ -35,8 +35,8 @@ const db = new Db();
 
 // 2. Crash recovery — reset stuck machines/runs from prior crashes
 const recovered = db.recoverFromCrash();
-if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0 || recovered.foremanTasks > 0 || recovered.foremanRuns > 0 || recovered.directorDirectives > 0) {
-  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s), ${recovered.foremanTasks} foreman task(s), ${recovered.foremanRuns} foreman run(s), ${recovered.directorDirectives} directive(s)`);
+if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0 || recovered.foremanTasks > 0 || recovered.foremanRuns > 0 || recovered.directorDirectives > 0 || recovered.analysisRuns > 0) {
+  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s), ${recovered.foremanTasks} foreman task(s), ${recovered.foremanRuns} foreman run(s), ${recovered.directorDirectives} directive(s), ${recovered.analysisRuns} analysis run(s)`);
 }
 
 // 3. Create Express app
