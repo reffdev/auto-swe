@@ -19,7 +19,7 @@ import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewRe
 import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, injectFeedbackIntoArtTask } from "../foreman/art-feedback";
 import { logEpisodic } from "./persistent-memory";
-import { indexMemories, startMemsearchWatch, stopMemsearchWatch } from "./memsearch";
+import { indexMemories } from "./memsearch";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -46,21 +46,18 @@ export function startDirectorScheduler(db: Db): void {
   console.log("Director scheduler ready (event-driven)");
   nudgeDirector(db);
 
-  // Start memsearch indexing and watcher for the active project
+  // Index memories on startup (no watcher — Milvus Lite doesn't support concurrent access)
   const config = db.getForemanConfig();
   if (config?.project_id) {
     const project = db.getProject(config.project_id);
     if (project) {
-      indexMemories(project.workdir)
-        .then(() => startMemsearchWatch(project.workdir))
-        .catch(() => {});
+      indexMemories(project.workdir).catch(() => {});
     }
   }
 }
 
 export function stopDirectorScheduler(): void {
   schedulerDb = null;
-  stopMemsearchWatch();
 }
 
 /**

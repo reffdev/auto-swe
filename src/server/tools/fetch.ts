@@ -81,9 +81,7 @@ export const fetchUrlTool = tool({
       });
 
       if (!res.ok) {
-        throw new Error(
-          `Failed to fetch ${url}: ${res.status} ${res.statusText}`
-        );
+        return `Failed to fetch ${url}: ${res.status} ${res.statusText}`;
       }
 
       // Check Content-Length if available, but also enforce during read

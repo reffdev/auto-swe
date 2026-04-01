@@ -57,6 +57,25 @@ function getMemoryPaths(projectWorkdir: string): string[] {
 
 // ─── Indexing ───────────────────────────────────────────────────────────────
 
+// ─── Debounced re-indexing ───────────────────────────────────────────────────
+
+let reindexTimer: ReturnType<typeof setTimeout> | null = null;
+let lastIndexedWorkdir: string | null = null;
+
+/**
+ * Schedule a re-index after a memory write. Debounced to at most once per 60s.
+ */
+export function scheduleReindex(projectWorkdir: string): void {
+  lastIndexedWorkdir = projectWorkdir;
+  if (reindexTimer) return; // already scheduled
+  reindexTimer = setTimeout(() => {
+    reindexTimer = null;
+    if (lastIndexedWorkdir) {
+      indexMemories(lastIndexedWorkdir).catch(() => {});
+    }
+  }, 60_000);
+}
+
 /**
  * Index all markdown files in the project's .swe/ directory.
  * Should be called on startup and after writing new memories.
@@ -242,6 +261,7 @@ export function makeMemoryTools(projectWorkdir: string) {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         const existing = readMemory(projectWorkdir, "semantic", fname);
         writeMemory(projectWorkdir, "semantic", fname, content);
+        scheduleReindex(projectWorkdir);
         return existing
           ? `Updated semantic memory: ${fname}`
           : `Created semantic memory: ${fname}`;
@@ -266,6 +286,7 @@ export function makeMemoryTools(projectWorkdir: string) {
         const existing = exists(filePath);
         mkdir(dirPath, { recursive: true });
         writeFile(filePath, content);
+        scheduleReindex(projectWorkdir);
         return existing
           ? `Updated convention: ${fname}`
           : `Created convention: ${fname}`;
@@ -286,6 +307,7 @@ export function makeMemoryTools(projectWorkdir: string) {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         const existing = readMemory(projectWorkdir, "procedural", fname);
         writeMemory(projectWorkdir, "procedural", fname, content);
+        scheduleReindex(projectWorkdir);
         return existing
           ? `Updated procedure: ${fname}`
           : `Created procedure: ${fname}`;
