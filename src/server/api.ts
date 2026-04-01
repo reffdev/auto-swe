@@ -831,6 +831,25 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.status(202).json({ config });
   });
 
+  // ─── Analysis toggle ─────────────────────────────────────────────────────
+
+  router.get("/analysis/enabled", (_req, res) => {
+    const { isAnalysisEnabled } = require("./analysis") as typeof import("./analysis");
+    res.json({ enabled: isAnalysisEnabled() });
+  });
+
+  router.post("/analysis/enabled", (req, res) => {
+    const { setAnalysisEnabled, isAnalysisEnabled } = require("./analysis") as typeof import("./analysis");
+    const { enabled } = req.body;
+    if (typeof enabled !== "boolean") {
+      res.status(400).json({ error: "enabled must be a boolean" });
+      return;
+    }
+    setAnalysisEnabled(enabled);
+    console.log(`Analysis: globally ${enabled ? "enabled" : "disabled"}`);
+    res.json({ enabled: isAnalysisEnabled() });
+  });
+
   // ─── Server info ────────────────────────────────────────────────────────
 
   router.get("/server-info", (_req, res) => {

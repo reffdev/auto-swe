@@ -281,8 +281,9 @@ describe('Sidebar', () => {
 
     expect(screen.getByText('Issues')).toBeInTheDocument()
     expect(screen.getByText('LLM Logs')).toBeInTheDocument()
-    expect(screen.getByText('Analysis')).toBeInTheDocument()
+    expect(screen.getAllByText('Analysis').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    expect(screen.getByText('Terminal')).toBeInTheDocument()
   })
 
   it('calls onSelectMachine when a machine is clicked', () => {

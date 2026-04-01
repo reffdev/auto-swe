@@ -358,6 +358,49 @@ function ForemanHeader() {
   )
 }
 
+// ─── Analysis Toggle ────────────────────────────────────────────────────────
+
+function AnalysisToggle() {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    fetch('/api/analysis/enabled').then(r => r.json()).then(d => setEnabled(d.enabled)).catch(() => {})
+  }, [])
+
+  const toggle = () => {
+    const next = !enabled
+    setEnabled(next)
+    void fetch('/api/analysis/enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    })
+  }
+
+  return (
+    <div className="px-3 py-2 flex items-center justify-between">
+      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Analysis</span>
+      {enabled !== null && (
+        <button
+          onClick={toggle}
+          className={cn(
+            'relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            enabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'
+          )}
+          role="switch"
+          aria-checked={enabled}
+          title={enabled ? 'Analysis enabled' : 'Analysis disabled'}
+        >
+          <span className={cn(
+            'pointer-events-none block h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
+            enabled ? 'translate-x-3' : 'translate-x-0'
+          )} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 interface SidebarProps {
@@ -618,6 +661,8 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
 
       <div className="border-t border-border" />
 
+      {/* Analysis */}
+      <AnalysisToggle />
 
       {/* Stats */}
       <div className="mt-auto" />

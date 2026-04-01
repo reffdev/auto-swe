@@ -263,8 +263,13 @@ export async function executeAnalysis(
 
 const SCHEDULER_INTERVAL_MS = 60_000;
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
+let analysisGlobalEnabled = true;
+
+export function isAnalysisEnabled(): boolean { return analysisGlobalEnabled; }
+export function setAnalysisEnabled(enabled: boolean): void { analysisGlobalEnabled = enabled; }
 
 async function schedulerTick(db: Db): Promise<void> {
+  if (!analysisGlobalEnabled) return;
   const runningIssues = db.getIssues().filter(i => i.status === "running" || i.status === "approved");
   if (runningIssues.length > 0) return;
 
