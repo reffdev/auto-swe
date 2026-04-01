@@ -144,20 +144,46 @@ export async function executeForemanTask(
       codeConventions: conventionText || undefined,
     });
 
-    // Get previous error for reflective retry
+    // Get previous error and output for reflective retry
     let previousError: string | undefined;
     let previousOutput: string | undefined;
     if (task.retry_count > 0) {
       const prevRuns = db.getForemanRunsForTask(task.id);
       const lastRun = prevRuns[prevRuns.length - 1];
       if (lastRun) {
+        // Get the error — prefer validation failures over generic error
         previousError = lastRun.error_message ?? undefined;
         if (lastRun.validation_output) {
-          const vResults = JSON.parse(lastRun.validation_output);
-          const failures = vResults.filter((r: { passed: boolean }) => !r.passed);
-          if (failures.length > 0) {
-            previousError = `Validation failures:\n${failures.map((f: { criterion: string; output: string }) => `- ${f.criterion}: ${f.output}`).join("\n")}`;
-          }
+          try {
+            const vResults = JSON.parse(lastRun.validation_output);
+            const failures = vResults.filter((r: { passed: boolean }) => !r.passed);
+            if (failures.length > 0) {
+              previousError = `Validation failures:\n${failures.map((f: { criterion: string; output: string }) => `- ${f.criterion}: ${f.output}`).join("\n")}`;
+            }
+          } catch { /* ignore parse errors */ }
+        }
+
+        // Also get the task-level error (may have lint/build details)
+        if (!previousError && task.error_message) {
+          previousError = task.error_message;
+        }
+
+        // Get summary of what the agent did last time
+        if (lastRun.output) {
+          try {
+            const steps = JSON.parse(lastRun.output) as Array<{ toolCalls?: Array<{ tool: string; args: string }>; text?: string }>;
+            const summary = steps
+              .filter(s => s.toolCalls?.length || s.text)
+              .slice(-10) // last 10 steps
+              .map(s => {
+                if (s.toolCalls?.length) return s.toolCalls.map(tc => `[${tc.tool}] ${tc.args.slice(0, 150)}`).join("; ");
+                if (s.text) return s.text.slice(0, 200);
+                return "";
+              })
+              .filter(Boolean)
+              .join("\n");
+            if (summary) previousOutput = summary;
+          } catch { /* ignore parse errors */ }
         }
       }
     }

@@ -249,9 +249,9 @@ describe("applyIPAdapter", () => {
     // New nodes should exist
     expect(result["30"].class_type).toBe("LoadImage");
     expect(result["30"].inputs.image).toBe("style_ref.png");
-    expect(result["31"].class_type).toBe("IPAdapterModelLoader");
+    expect(result["31"].class_type).toBe("IPAdapterUnifiedLoader");
     expect(result["31"].inputs.ipadapter_file).toBe("ip-adapter-plus.safetensors");
-    expect(result["32"].class_type).toBe("IPAdapterApply");
+    expect(result["32"].class_type).toBe("IPAdapter");
     expect(result["32"].inputs.weight).toBe(0.75);
   });
 
@@ -264,10 +264,12 @@ describe("applyIPAdapter", () => {
       weight: 0.8,
     });
 
-    // KSampler should now reference IP-Adapter output
+    // KSampler should now reference IP-Adapter apply output
     expect(result["3"].inputs.model).toEqual(["32", 0]);
-    // IP-Adapter should reference the original model
-    expect(result["32"].inputs.model).toEqual(originalModel);
+    // Unified loader should reference the original model
+    expect(result["31"].inputs.model).toEqual(originalModel);
+    // IP-Adapter apply should reference unified loader
+    expect(result["32"].inputs.model).toEqual(["31", 0]);
   });
 
   it("does not modify the original workflow", () => {
@@ -298,10 +300,10 @@ describe("applyIPAdapter", () => {
       weight: 0.7,
     });
 
-    // KSampler should now go through IP-Adapter
+    // KSampler should now go through IP-Adapter apply
     expect(result["3"].inputs.model).toEqual(["32", 0]);
-    // IP-Adapter should reference LoRA output
-    expect(result["32"].inputs.model).toEqual(["10", 0]);
+    // Unified loader should reference LoRA output
+    expect(result["31"].inputs.model).toEqual(["10", 0]);
   });
 
   it("returns unchanged workflow if no KSampler found", () => {

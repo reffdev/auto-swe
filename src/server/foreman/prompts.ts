@@ -59,7 +59,8 @@ export function buildForemanUserPrompt(opts: {
       "",
       "## Previous Attempt Failed",
       "",
-      "The previous attempt failed with the following error. Analyze what went wrong and try a different approach:",
+      "Your previous attempt has been preserved in the worktree — all files you created or modified are still there.",
+      "Do NOT start over. Instead, read the error below and fix ONLY the specific issues:",
       "",
       opts.previousError,
     );
@@ -68,7 +69,9 @@ export function buildForemanUserPrompt(opts: {
   if (opts.previousOutput) {
     parts.push(
       "",
-      "## Previous Attempt Output",
+      "## What You Did Last Time",
+      "",
+      "Summary of your previous actions (your files are still in the worktree):",
       "",
       opts.previousOutput,
     );

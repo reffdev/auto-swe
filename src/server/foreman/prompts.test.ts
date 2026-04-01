@@ -75,7 +75,7 @@ describe("buildForemanUserPrompt", () => {
     });
     expect(prompt).toContain("Previous Attempt Failed");
     expect(prompt).toContain("file not found");
-    expect(prompt).toContain("different approach");
+    expect(prompt).toContain("Do NOT start over");
   });
 
   it("includes previous output", () => {
@@ -85,7 +85,7 @@ describe("buildForemanUserPrompt", () => {
       acceptanceCriteria: [],
       previousOutput: "Created file but with errors",
     });
-    expect(prompt).toContain("Previous Attempt Output");
+    expect(prompt).toContain("What You Did Last Time");
     expect(prompt).toContain("Created file but with errors");
   });
 

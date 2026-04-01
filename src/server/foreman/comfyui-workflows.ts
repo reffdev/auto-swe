@@ -424,7 +424,7 @@ export function applyIPAdapter(workflow: Workflow, opts: IPAdapterOptions): Work
 
   // Use high node IDs to avoid conflicts
   const loadImageId = "30";
-  const ipLoaderModelId = "31";
+  const unifiedLoaderId = "31";
   const ipApplyId = "32";
 
   // Load the reference image
@@ -433,26 +433,27 @@ export function applyIPAdapter(workflow: Workflow, opts: IPAdapterOptions): Work
     inputs: { image: opts.referenceImage },
   };
 
-  // Load IP-Adapter model
-  wf[ipLoaderModelId] = {
-    class_type: "IPAdapterModelLoader",
-    inputs: { ipadapter_file: opts.ipAdapterModel },
+  // Unified loader — handles IP-Adapter model + CLIP vision loading together
+  wf[unifiedLoaderId] = {
+    class_type: "IPAdapterUnifiedLoader",
+    inputs: {
+      model: originalModelInput,
+      preset: "PLUS (high strength)",
+      ipadapter_file: opts.ipAdapterModel,
+    },
   };
 
-  // Apply IP-Adapter — takes model + IP-Adapter model + image → conditioned model
+  // Apply IP-Adapter conditioning
   wf[ipApplyId] = {
-    class_type: "IPAdapterApply",
+    class_type: "IPAdapter",
     inputs: {
-      ipadapter: [ipLoaderModelId, 0],
-      clip_vision: [ipLoaderModelId, 1],
+      model: [unifiedLoaderId, 0],
+      ipadapter: [unifiedLoaderId, 1],
       image: [loadImageId, 0],
-      model: originalModelInput,
       weight: opts.weight,
-      noise: 0.0,
       weight_type: "linear",
       start_at: 0.0,
       end_at: 1.0,
-      unfold_batch: false,
     },
   };
 
