@@ -6,6 +6,8 @@ import { Sidebar } from './Sidebar'
 const mockUpdateAndRestart = jest.fn(() => Promise.resolve({}))
 jest.mock('./api', () => ({
   updateAndRestart: () => mockUpdateAndRestart(),
+  getForemanConfig: () => Promise.resolve(null),
+  updateForemanConfig: () => Promise.resolve({}),
 }))
 
 // Mock the dialogs
@@ -172,7 +174,7 @@ describe('Sidebar', () => {
       </MemoryRouter>
     )
 
-    expect(screen.getByText('Machines')).toBeInTheDocument()
+    expect(screen.getAllByText('Machines').length).toBeGreaterThanOrEqual(1)
   })
 
   it('shows "No machines yet" when no machines', () => {

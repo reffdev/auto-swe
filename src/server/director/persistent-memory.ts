@@ -53,8 +53,12 @@ const ALL_DIRS = [
   ["conventions", "snapshots"],
 ];
 
+const ensuredDirs = new Set<string>();
+
 /** Ensure the directory structure exists, seed ABOUT.md files, and prune old episodic logs. */
 export function ensureMemoryDirs(projectWorkdir: string): void {
+  if (ensuredDirs.has(projectWorkdir)) return;
+  ensuredDirs.add(projectWorkdir);
   for (const [parent, child] of ALL_DIRS) {
     const dirPath = resolve(projectWorkdir, SWE_ROOT, parent, child);
     if (!existsSync(dirPath)) {
@@ -72,6 +76,7 @@ export function ensureMemoryDirs(projectWorkdir: string): void {
 
 /** Add .swe/ to the project's .gitignore if not already present. */
 function ensureGitignore(projectWorkdir: string): void {
+  if (!existsSync(resolve(projectWorkdir, ".git"))) return;
   const gitignorePath = resolve(projectWorkdir, ".gitignore");
   let content = "";
   if (existsSync(gitignorePath)) {

@@ -200,12 +200,16 @@ export function startMemsearchWatch(projectWorkdir: string): void {
   console.log("MemSearch watcher started");
 }
 
-/** Stop the background watcher. */
+/** Stop the background watcher and clean up timers. */
 export function stopMemsearchWatch(): void {
   if (watchProcess) {
     watchProcess.kill();
     watchProcess = null;
     console.log("MemSearch watcher stopped");
+  }
+  if (reindexTimer) {
+    clearTimeout(reindexTimer);
+    reindexTimer = null;
   }
 }
 

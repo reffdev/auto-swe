@@ -45,14 +45,18 @@ export async function extractPatternsFromLogs(
   // Combine logs, cap at reasonable size
   const combined = logContents.join("\n\n---\n\n").slice(0, 30_000);
 
-  const result = await generateText({
-    model,
-    system: EXTRACTION_PROMPT,
-    prompt: combined,
-  });
-
-  // Parse extraction results
-  const extractions = parseExtractions(result.text);
+  let extractions: Extraction[];
+  try {
+    const result = await generateText({
+      model,
+      system: EXTRACTION_PROMPT,
+      prompt: combined,
+    });
+    extractions = parseExtractions(result.text);
+  } catch (err) {
+    console.warn("Episodic extraction LLM call failed:", err instanceof Error ? err.message : String(err));
+    return;
+  }
 
   if (extractions.length === 0) {
     console.log("Episodic extraction: no patterns found worth saving");

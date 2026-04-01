@@ -161,9 +161,11 @@ async function collect(db: Db): Promise<void> {
   }
 
   if (active.length > 0) {
+    const avgPrompt = active.reduce((s, m) => s + m.promptTps, 0) / active.length;
+    const avgCompletion = active.reduce((s, m) => s + m.completionTps, 0) / active.length;
     cachedSpeed = {
-      prompt_tokens_per_sec: Math.round(active.reduce((s, m) => s + m.promptTps, 0) / active.length * 10) / 10,
-      completion_tokens_per_sec: Math.round(active.reduce((s, m) => s + m.completionTps, 0) / active.length * 10) / 10,
+      prompt_tokens_per_sec: isFinite(avgPrompt) ? Math.round(avgPrompt * 10) / 10 : null,
+      completion_tokens_per_sec: isFinite(avgCompletion) ? Math.round(avgCompletion * 10) / 10 : null,
     };
   } else {
     cachedSpeed = getSpeedFromDb(db);

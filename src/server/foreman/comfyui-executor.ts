@@ -76,8 +76,8 @@ export async function executeComfyUITask(
     let workflow: Record<string, unknown>;
 
     // Resolve preset name from explicit [preset:] tag or from _preset_ workflow filename
-    const resolvedPreset = presetName
-      ?? (workflowFile?.startsWith("_preset_") ? workflowFile.replace("_preset_", "") : null);
+    const resolvedPreset = (presetName?.trim() || null)
+      ?? (workflowFile?.startsWith("_preset_") ? workflowFile.replace("_preset_", "").trim() : null);
 
     if (resolvedPreset) {
       // Get prompt from [prompt:] tag or from [params:] text field

@@ -27,6 +27,8 @@ let schedulerDb: Db | null = null;
 let pendingNudge = false;
 let processing = false;
 let planningInProgress = false;
+const zeroTaskCounts = new Map<string, number>(); // milestoneId → consecutive zero-task plan attempts
+let lastPlanError: { timestamp: number; message: string } | null = null;
 
 /** Expose DB for episodic extractor (avoids circular import of full scheduler) */
 export function getGlobalDb(): Db | null { return schedulerDb; }
@@ -146,6 +148,8 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           }
           console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
           logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${result.confidence}`);
+          // Reset zero-task counter so planner re-evaluates
+          if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
           nudgeForeman(db); // unblock dependents
         }
       } else if (result.verdict === "fail") {
@@ -274,14 +278,35 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
       await planNextTasks(db, directive, project, activeMilestone);
     } else if (hasQueued && !planningInProgress) {
       // Some tasks still running — check if any machine types are idle
-      const idleTypes = getIdleMachineTypes(db, directive.id, activeMilestone.id);
-      if (idleTypes.length > 0) {
-        console.log(`Director: machine type(s) idle with no queued work: ${idleTypes.join(", ")} — requesting top-up tasks`);
-        planningInProgress = true;
-        try {
-          await planNextTasks(db, directive, project, activeMilestone, idleTypes);
-        } finally {
-          planningInProgress = false;
+      const zeroCount = zeroTaskCounts.get(activeMilestone.id) ?? 0;
+      if (zeroCount >= 2) {
+        // Two consecutive zero-task plans — stop trying until tasks complete
+      } else {
+        const idleTypes = getIdleMachineTypes(db, directive.id, activeMilestone.id);
+        if (idleTypes.length > 0) {
+          console.log(`Director: machine type(s) idle with no queued work: ${idleTypes.join(", ")} — requesting top-up tasks`);
+          planningInProgress = true;
+          try {
+            const created = await planNextTasks(db, directive, project, activeMilestone, idleTypes);
+            if (created === 0) {
+              zeroTaskCounts.set(activeMilestone.id, zeroCount + 1);
+              console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/2 before backing off)`);
+            } else {
+              zeroTaskCounts.set(activeMilestone.id, 0);
+            }
+            lastPlanError = null;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            const now = Date.now();
+            if (lastPlanError?.message === msg && now - lastPlanError.timestamp < 60_000) {
+              // Suppress repeated errors within 60s
+            } else {
+              lastPlanError = { timestamp: now, message: msg };
+              console.error(`Director: planning error:`, msg);
+            }
+          } finally {
+            planningInProgress = false;
+          }
         }
       }
     }

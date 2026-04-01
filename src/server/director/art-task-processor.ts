@@ -59,8 +59,16 @@ function injectPresetTags(task: ParsedTask): ParsedTask {
 
   const presetName = selectPreset(assetType);
   if (!presetName) {
-    console.warn(`No preset available for asset type "${assetType}" in task "${task.title}"`);
-    return task;
+    // Default to pixel_sprite for unknown art types, sd15_generic as last resort
+    const fallback = task.type === "art" ? "pixel_sprite" : "sd15_generic";
+    console.warn(`No preset for asset type "${assetType}" in task "${task.title}" — falling back to ${fallback}`);
+    const tags = [
+      "",
+      `[preset: ${fallback}]`,
+      `[prompt: ${prompt}]`,
+      `[output: ${outputPath}]`,
+    ].join("\n");
+    return { ...task, description: task.description + "\n" + tags, needs_human_review: true };
   }
 
   const tags = [
