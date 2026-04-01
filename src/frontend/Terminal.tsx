@@ -94,6 +94,13 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     ws.onopen = () => {
       setConnected(true)
       session.term.focus()
+      // Re-fit and sync dimensions after connection establishes
+      setTimeout(() => {
+        try {
+          session.fit.fit()
+          ws.send(JSON.stringify({ type: 'resize', cols: session.term.cols, rows: session.term.rows }))
+        } catch {}
+      }, 300)
     }
 
     ws.onmessage = (event) => {
@@ -155,15 +162,12 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
       session.term.focus()
     }
 
-    // Fit after layout
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        try { session.fit.fit() } catch {}
-        // Connect WebSocket if not already
-        connectWs(session)
-        setConnected(session.ws?.readyState === WebSocket.OPEN)
-      })
-    })
+    // Fit after layout settles, then connect
+    setTimeout(() => {
+      try { session.fit.fit() } catch {}
+      connectWs(session)
+      setConnected(session.ws?.readyState === WebSocket.OPEN)
+    }, 200)
 
     // Resize observer
     const resizeObserver = new ResizeObserver(() => debouncedFit(session))

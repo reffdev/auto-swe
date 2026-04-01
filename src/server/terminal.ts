@@ -72,7 +72,7 @@ export function attachTerminalServer(server: Server, db: Db): void {
       cols,
       rows,
       cwd,
-      env: { ...process.env, TERM: "xterm-256color" },
+      env: { ...process.env, TERM: "xterm-256color", COLUMNS: String(cols), LINES: String(rows) },
     });
 
     // PTY → WebSocket
