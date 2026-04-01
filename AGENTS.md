@@ -1,8 +1,13 @@
 # AGENTS.md — Open SWE
 
+> **Note**: This file covers the original pipeline system. For the full current architecture including Director, Foreman, ComfyUI, memory system, and machine manager, see **CLAUDE.md**.
+
 ## What this project is
 
-Open SWE is an autonomous agent development system. Users create projects (linked to git repos), add LLM machines (OpenAI-compatible endpoints), create issues (tasks), and approve them for an agent to work on. The agent reads the codebase, makes changes, runs tests, commits, pushes a branch, and opens a PR.
+Open SWE is an autonomous software engineering orchestration system. It operates at two levels:
+
+1. **Director + Foreman** (primary): High-level directives decomposed into milestones and tasks, dispatched to inference and ComfyUI machines for code + art generation.
+2. **Pipeline** (legacy): Single-issue agent pipeline with scout → implement → review stages.
 
 ## How to run
 

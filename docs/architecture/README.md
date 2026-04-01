@@ -2,32 +2,42 @@
 
 Documentation for the Open-SWE autonomous software engineering system.
 
+> **Start with [CLAUDE.md](../../CLAUDE.md)** for the current system overview. These docs cover the foundational architecture in detail.
+
 ## Contents
 
-0. **[How It Works](00-how-it-works.md)** — Start here. The big picture: from idea to PR, what makes this different, and how agents are controlled.
-1. **[System Overview](01-system-overview.md)** — High-level architecture: frontend, API, pipeline, external services
-2. **[Pipeline Stages](02-pipeline-stages.md)** — Scout → Implement → Build Gate → Test-Write → Test Gate → Review → GitOps, tools per stage
-3. **[Review Lenses](03-review-lenses.md)** — Focused review passes: general, security, UI, performance, testing, error handling
-4. **[Issue Lifecycle](04-issue-lifecycle.md)** — From idea to merged PR: planning, epics, statuses, decomposition
-5. **[Data Model](05-data-model.md)** — Database tables, relationships, and key fields
-6. **[Voice Pipeline](06-voice-pipeline.md)** — Speech-to-speech interface: Whisper STT → LLM → Piper TTS
-7. **[Resilience](07-resilience.md)** — Timeouts, cancel, crash recovery, build/test gates, coding guardrails
-8. **[Agent Harness](08-agent-harness.md)** — How the harness runs agents: tool provisioning, prompt strategy, data flow, isolation, error handling
+### Core Architecture (original pipeline system)
+0. **[How It Works](00-how-it-works.md)** — The big picture: from idea to PR, how agents are controlled
+1. **[System Overview](01-system-overview.md)** — Frontend, API, pipeline, external services
+2. **[Pipeline Stages](02-pipeline-stages.md)** — Scout → Implement → Build Gate → Test-Write → Test Gate → Review → GitOps
+3. **[Review Lenses](03-review-lenses.md)** — 11 focused review passes with cache-friendly prompt structure
+4. **[Issue Lifecycle](04-issue-lifecycle.md)** — Planning, epics, statuses, decomposition
+5. **[Data Model](05-data-model.md)** — Database tables and relationships
+6. **[Voice Pipeline](06-voice-pipeline.md)** — Speech-to-speech: Whisper STT → LLM → Piper TTS
+7. **[Resilience](07-resilience.md)** — Timeouts, crash recovery, gates, guardrails
+8. **[Agent Harness](08-agent-harness.md)** — Tool provisioning, prompt strategy, isolation
+
+### Systems added since original docs (see CLAUDE.md for details)
+- **Director** — High-level autonomy: directives → milestones → task batches
+- **Foreman** — Event-driven task dispatch with machine type routing
+- **ComfyUI** — Art/music/SFX generation with presets, feedback, and human review
+- **Machine Manager** — Lease-based access control replacing ad-hoc exclusion
+- **Persistent Memory** — `.swe/` directory with episodic, semantic, procedural, conventions
+- **MemSearch** — Semantic search over markdown memories via memsearch CLI
+- **Web Terminal** — Claude CLI via PTY WebSocket (xterm.js frontend)
 
 ## Quick Start Concepts
 
-**Issue** — A unit of work. Can be standalone, an epic (container), or a story (child of epic).
+**Directive** — A high-level goal ("build a game"). The Director decomposes it into milestones and tasks.
 
-**Pipeline** — Automated flow: research → implement → build gate → write tests → test gate → review lenses → create PR.
+**Foreman Task** — A unit of work dispatched to a machine. Types: code, art, music, sfx, review, content.
 
-**Build/Test Gates** — Server-side checks between stages. Run the project's configured build/test commands. On failure, send errors back to the implementer automatically.
+**Machine** — An LLM or ComfyUI server endpoint. Managed via the Machine Manager lease system.
 
-**Machine** — An LLM server endpoint (llama.cpp). Machines are assigned to issues one at a time.
+**Machine Type** — `inference` (code tasks via Ollama/OpenRouter) or `comfyui` (art/audio via ComfyUI).
 
-**Review Lens** — A focused review pass. Each lens checks the implementation through a specific concern (security, UI, etc.). Multiple lenses run sequentially.
+**Review Lens** — A focused review pass. 11 lenses available. Reviews use cache-friendly prompt structure for ~77% token savings across lenses.
 
-**Planner** — Interactive AI conversation that helps refine vague ideas into structured issue specifications.
+**Pipeline** — Original single-issue flow: scout → implement → build gate → test → review → PR. Still functional but Director+Foreman is the primary system.
 
-**Scout** — First pipeline stage. Explores the codebase and produces a file manifest for the implementer.
-
-**Epic** — An issue broken into ordered stories with dependency tracking via `depends_on`.
+**Memory** — `.swe/` directory with conventions (rules), semantic (knowledge), procedural (workflows), and episodic (auto-logged activity). Searched via memsearch.
