@@ -63,8 +63,8 @@ describe("ensureMemoryDirs", () => {
 
   it("is idempotent", () => {
     ensureMemoryDirs(projectDir);
-    // Won't throw on second call
     ensureMemoryDirs(projectDir);
+    expect(existsSync(join(projectDir, ".swe", "memory", "episodic"))).toBe(true);
   });
 });
 

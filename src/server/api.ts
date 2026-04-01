@@ -815,18 +815,19 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   router.post("/projects/:id/analysis/trigger/:lensKey", async (req, res) => {
     const project = db.getProject(req.params.id);
     if (!project) { res.status(404).json({ error: "project not found" }); return; }
-    const machine = db.getAvailableMachine();
-    if (!machine) { res.status(409).json({ error: "no machine available" }); return; }
+    const leaseResult = acquireLease(db, "analysis", req.params.lensKey, { machineType: "inference" });
+    if (!leaseResult) { res.status(409).json({ error: "no machine available" }); return; }
+    const { lease, machine } = leaseResult;
     const modelId = project.model_id ?? machine.model_id;
-    if (!modelId) { res.status(409).json({ error: "no model specified" }); return; }
+    if (!modelId) { releaseLease(lease.id); res.status(409).json({ error: "no model specified" }); return; }
 
     const config = db.upsertAnalysisConfig({ project_id: project.id, lens_key: req.params.lensKey });
 
     // Dynamic import to avoid circular dependency
     const { executeAnalysis } = await import("./analysis");
-    executeAnalysis(db, machine, project, config).catch((err: Error) => {
-      console.error("Analysis trigger error:", err);
-    });
+    executeAnalysis(db, machine, project, config)
+      .catch((err: Error) => { console.error("Analysis trigger error:", err); })
+      .finally(() => releaseLease(lease.id));
     res.status(202).json({ config });
   });
 

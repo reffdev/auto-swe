@@ -118,12 +118,17 @@ describe("analysis runs", () => {
   });
 
   it("analysis runs count toward machine availability", () => {
+    const { acquireLease, releaseLease } = require("./machine-manager");
     const m = db.createMachine({ base_url: "http://test/v1" }); // max_concurrent defaults to 1
-    const run = db.createAnalysisRun({ project_id: projectId, config_id: configId, lens_key: "security", machine_id: m.id });
-    db.updateAnalysisRun(run.id, { status: "running" });
 
-    // Machine should be at capacity
-    const available = db.getAvailableMachine();
-    expect(available).toBeNull();
+    // Acquire a lease — machine should now be at capacity
+    const lease = acquireLease(db, "analysis", "blocker", { machineType: "inference" });
+    expect(lease).not.toBeNull();
+
+    // Second lease should fail
+    const second = acquireLease(db, "analysis", "second", { machineType: "inference" });
+    expect(second).toBeNull();
+
+    releaseLease(lease.lease.id);
   });
 });

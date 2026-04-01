@@ -7,6 +7,7 @@
 
 import type { ToolSet } from "ai";
 import type { Db, Machine, Project, AnalysisConfig } from "./db";
+import { acquireLease, releaseLease } from "./machine-manager";
 import { ANALYSIS_LENSES, constructAnalysisScoutPrompt, constructAnalysisGroupPrompt } from "./prompts/analysis";
 import { makeReadOnlyTools } from "./tools/filesystem";
 import { makeBuildCheckTools, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./tools/build-check";
@@ -271,17 +272,17 @@ async function schedulerTick(db: Db): Promise<void> {
   if (due.length === 0) return;
 
   const config = due[0];
-  const machine = db.getAvailableMachine();
-  if (!machine) return;
+  const leaseResult = acquireLease(db, "analysis", config.lens_key, { machineType: "inference" });
+  if (!leaseResult) return;
 
   const project = db.getProject(config.project_id);
-  if (!project) return;
+  if (!project) { releaseLease(leaseResult.lease.id); return; }
 
-  if (activeAnalyses.has(config.id)) return;
+  if (activeAnalyses.has(config.id)) { releaseLease(leaseResult.lease.id); return; }
 
-  executeAnalysis(db, machine, project, config).catch(err => {
-    console.error(`Analysis scheduler error:`, err);
-  });
+  executeAnalysis(db, leaseResult.machine, project, config)
+    .catch(err => { console.error(`Analysis scheduler error:`, err); })
+    .finally(() => releaseLease(leaseResult.lease.id));
 }
 
 export function startAnalysisScheduler(db: Db): void {

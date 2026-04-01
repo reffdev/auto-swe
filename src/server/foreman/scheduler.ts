@@ -9,7 +9,7 @@
 import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
-import { getBreaker } from "./circuit-breaker";
+// getBreaker used by machine-manager internally
 import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
@@ -183,17 +183,17 @@ function tryComfyUIBootstrap(db: Db): void {
   const comfyMachine = machines.find(m => m.machine_type === "comfyui" && m.enabled);
   if (!comfyMachine) return;
 
-  // Check if manifest already exists
-  const { existsSync } = require("fs") as typeof import("fs");
-  const { getWorkflowDir } = require("./workflow-manifest") as typeof import("./workflow-manifest");
-  const { resolve } = require("path") as typeof import("path");
-  const manifestPath = resolve(getWorkflowDir(project.workdir), "manifest.json");
-  if (existsSync(manifestPath)) return;
-
   // Bootstrap in background — don't block scheduler startup
-  import("./comfyui-bootstrap").then(({ bootstrapComfyUI }) => {
-    bootstrapComfyUI(comfyMachine.base_url, project.workdir).catch(err =>
-      console.warn("ComfyUI auto-bootstrap failed:", err),
-    );
-  });
+  import("./comfyui-bootstrap").then(async ({ bootstrapComfyUI }) => {
+    // Check if manifest already exists
+    const { existsSync: exists } = await import("fs");
+    const { getWorkflowDir } = await import("./workflow-manifest");
+    const { resolve: resolvePath } = await import("path");
+    const manifestPath = resolvePath(getWorkflowDir(project.workdir), "manifest.json");
+    if (exists(manifestPath)) return;
+
+    await bootstrapComfyUI(comfyMachine.base_url, project.workdir);
+  }).catch(err =>
+    console.warn("ComfyUI auto-bootstrap failed:", err),
+  );
 }

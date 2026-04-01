@@ -366,17 +366,17 @@ describe("issue actions", () => {
   });
 
   it("POST /api/issues/:id/approve requires available machine", async () => {
-    // Fill the machine to capacity with a running issue+run
-    const machines = db.getMachines();
-    const runningIssue = db.createIssue({ project_id: projectId, title: "Running" });
-    db.updateIssue(runningIssue.id, { status: "running" });
-    const run = db.createRun({ issue_id: runningIssue.id, stage: "implement" });
-    db.updateRun(run.id, { machine_id: machines[0].id, status: "running" });
+    // Fill the machine to capacity via the lease system
+    const { acquireLease, releaseLease } = await import("./machine-manager");
+    const lease = acquireLease(db, "pipeline", "blocker", { machineType: "inference" });
+    expect(lease).not.toBeNull();
 
     const issue = db.createIssue({ project_id: projectId, title: "Fix bug" });
     const res = await request(app).post(`/api/issues/${issue.id}/approve`);
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/no machine available/);
+
+    if (lease) releaseLease(lease.lease.id);
   });
 
   it("POST /api/issues/:id/retry resets failed issue", async () => {

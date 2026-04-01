@@ -206,7 +206,7 @@ describe("PRESETS", () => {
   });
 
   it("every preset has a checkpoint", () => {
-    for (const [name, preset] of Object.entries(PRESETS)) {
+    for (const [_name, preset] of Object.entries(PRESETS)) {
       expect(preset.checkpoint).toBeTruthy();
     }
   });
