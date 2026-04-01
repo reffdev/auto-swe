@@ -710,15 +710,36 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const active = machines.filter(m => m.status === "working").length;
 
     const issues = db.getIssues();
-    const queued = issues.filter(i => i.status === "pending" || i.status === "approved").length;
-    const prOpen = issues.filter(i => i.status === "awaiting_review").length;
-    const failed = issues.filter(i => i.status === "failed" || i.status === "cancelled").length;
+    const issueQueued = issues.filter(i => i.status === "pending" || i.status === "approved").length;
+    const issuePrOpen = issues.filter(i => i.status === "awaiting_review").length;
+    const issueFailed = issues.filter(i => i.status === "failed" || i.status === "cancelled").length;
+
+    // Foreman task counts
+    const foremanTasks = db.getForemanTasks();
+    const fQueued = foremanTasks.filter(t => t.status === "queued").length;
+    const fRunning = foremanTasks.filter(t => t.status === "running").length;
+    const fReview = foremanTasks.filter(t => t.status === "awaiting_review").length;
+    const fCompleted = foremanTasks.filter(t => t.status === "completed").length;
+    const fFailed = foremanTasks.filter(t => t.status === "failed").length;
 
     const speed = getGenerationSpeed();
 
     res.json({
       machines: { active, total: machines.length },
-      issues: { queued, pr_open: prOpen, failed },
+      issues: {
+        queued: issueQueued + fQueued + fRunning,
+        pr_open: issuePrOpen + fReview,
+        failed: issueFailed + fFailed,
+        completed: fCompleted,
+      },
+      foreman: {
+        queued: fQueued,
+        running: fRunning,
+        review: fReview,
+        completed: fCompleted,
+        failed: fFailed,
+        total: foremanTasks.length,
+      },
       speed,
       machineSpeed: getAllMachineSpeeds(),
     });

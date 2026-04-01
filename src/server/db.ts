@@ -368,7 +368,7 @@ export class Db {
     ) ?? null;
   }
 
-  /** Get active issue IDs for a machine */
+  /** Get active issue/task IDs for a machine */
   getActiveIssuesForMachine(machineId: string): string[] {
     const rows = this.sqlite.prepare(`
       SELECT DISTINCT i.id
@@ -377,7 +377,14 @@ export class Db {
       WHERE r.machine_id = ?
         AND i.status = 'running'
         AND r.status = 'running'
-    `).all(machineId) as Array<{ id: string }>;
+      UNION
+      SELECT DISTINCT 'foreman:' || ft.id
+      FROM foreman_tasks ft
+      JOIN foreman_runs fr ON fr.task_id = ft.id
+      WHERE fr.machine_id = ?
+        AND ft.status = 'running'
+        AND fr.status = 'running'
+    `).all(machineId, machineId) as Array<{ id: string }>;
     return rows.map(r => r.id);
   }
 

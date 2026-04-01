@@ -95,7 +95,8 @@ interface SpeedResult {
 
 interface Stats {
   machines: { active: number; total: number };
-  issues: { queued: number; pr_open: number; failed: number };
+  issues: { queued: number; pr_open: number; failed: number; completed?: number };
+  foreman?: { queued: number; running: number; review: number; completed: number; failed: number; total: number };
   speed: SpeedResult;
   machineSpeed: Record<string, SpeedResult>;
 }
@@ -126,32 +127,35 @@ function StatsPanel({ stats }: { stats: Stats | null }) {
 
   const promptTps = stats.speed.prompt_tokens_per_sec
   const completionTps = stats.speed.completion_tokens_per_sec
+  const f = stats.foreman
 
   return (
     <div className="px-3 py-2 border-t border-border space-y-1.5">
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
         <div className="flex items-center gap-1.5 text-muted-foreground">
           <Cpu className="size-3 shrink-0" />
-          <span>Active</span>
+          <span>Machines</span>
         </div>
         <span className="text-right font-mono">
           <span className={stats.machines.active > 0 ? 'text-emerald-400' : ''}>{stats.machines.active}</span>
           <span className="text-muted-foreground">/{stats.machines.total}</span>
         </span>
 
-        <div className="flex items-center gap-1.5 text-muted-foreground">
-          <Activity className="size-3 shrink-0" />
-          <span>Queued</span>
-        </div>
-        <span className="text-right font-mono">{stats.issues.queued}</span>
-
-        <div className="flex items-center gap-1.5 text-muted-foreground">
-          <GitPullRequest className="size-3 shrink-0" />
-          <span>PRs Open</span>
-        </div>
-        <span className="text-right font-mono">
-          {stats.issues.pr_open > 0 ? <span className="text-blue-400">{stats.issues.pr_open}</span> : '0'}
-        </span>
+        {f && f.total > 0 && (
+          <>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Hammer className="size-3 shrink-0" />
+              <span>Tasks</span>
+            </div>
+            <span className="text-right font-mono text-[10px]">
+              {f.running > 0 && <span className="text-emerald-400">{f.running}r </span>}
+              {f.queued > 0 && <span>{f.queued}q </span>}
+              {f.review > 0 && <span className="text-blue-400">{f.review}w </span>}
+              {f.completed > 0 && <span className="text-muted-foreground">{f.completed}d </span>}
+              {f.failed > 0 && <span className="text-destructive">{f.failed}f</span>}
+            </span>
+          </>
+        )}
 
         {stats.issues.failed > 0 && (
           <>
@@ -476,19 +480,32 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const machineSpd = stats?.machineSpeed?.[m.id]
           const outTps = machineSpd?.completion_tokens_per_sec
 
-          // Cycling arrow: find which active issue to link to
+          // Cycling arrow: find which active issue/task to link to
           const currentPath = location.pathname
           const currentIssueId = currentPath.match(/\/issue\/([^/]+)/)?.[1]
-          let nextIssue: typeof activeIssues[0] | null = null
-          if (activeIssues.length > 0) {
-            const currentIdx = activeIssues.findIndex(i => i.id === currentIssueId)
-            if (currentIdx >= 0) {
-              // Currently viewing one — cycle to next
-              nextIssue = activeIssues[(currentIdx + 1) % activeIssues.length]
-            } else {
-              // Not viewing any — go to first
-              nextIssue = activeIssues[0]
-            }
+          const currentTaskId = currentPath.match(/\/foreman\/task\/([^/]+)/)?.[1]
+
+          // Split into pipeline issues and foreman tasks
+          const foremanTaskIds = activeIds.filter(id => id.startsWith('foreman:')).map(id => id.replace('foreman:', ''))
+          const pipelineIssueIds = activeIds.filter(id => !id.startsWith('foreman:'))
+          const activeIssuesFiltered = pipelineIssueIds.map(id => issues.find(i => i.id === id)).filter(Boolean) as Issue[]
+
+          // Build unified list for cycling
+          type ActiveTarget = { type: 'issue'; issue: Issue } | { type: 'task'; taskId: string }
+          const targets: ActiveTarget[] = [
+            ...activeIssuesFiltered.map(i => ({ type: 'issue' as const, issue: i })),
+            ...foremanTaskIds.map(id => ({ type: 'task' as const, taskId: id })),
+          ]
+
+          let nextTarget: ActiveTarget | null = null
+          if (targets.length > 0) {
+            const currentIdx = targets.findIndex(t =>
+              (t.type === 'issue' && t.issue.id === currentIssueId) ||
+              (t.type === 'task' && t.taskId === currentTaskId)
+            )
+            nextTarget = currentIdx >= 0
+              ? targets[(currentIdx + 1) % targets.length]
+              : targets[0]
           }
 
           return (
@@ -518,13 +535,17 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
                   )}
                 </button>
-              {nextIssue && (
+              {nextTarget && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
-                    void navigate(`/project/${nextIssue.project_id}/issue/${nextIssue.id}`)
+                    if (nextTarget.type === 'issue') {
+                      void navigate(`/project/${nextTarget.issue.project_id}/issue/${nextTarget.issue.id}`)
+                    } else {
+                      void navigate(`/foreman/task/${nextTarget.taskId}`)
+                    }
                   }}
-                  title={nextIssue.title}
+                  title={nextTarget.type === 'issue' ? nextTarget.issue.title : `Foreman task`}
                   className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
                 >
                   <ArrowRight className="size-3.5" />

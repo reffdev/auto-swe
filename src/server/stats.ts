@@ -65,17 +65,50 @@ async function fetchMachineMetrics(baseUrl: string): Promise<{
 
 function getSpeedFromDb(db: Db): SpeedResult {
   try {
+    // Combine tokens from both llm_requests (pipeline) and foreman_runs (foreman)
     const row = db.sqlite
       .prepare(`
-        SELECT
-          SUM(prompt_tokens) as pt,
-          SUM(completion_tokens) as ct,
-          SUM(duration_ms) as ms
-        FROM llm_requests
-        WHERE created_at > datetime('now', '-5 minutes')
-          AND duration_ms > 0
+        SELECT SUM(pt) as pt, SUM(ct) as ct, SUM(ms) as ms FROM (
+          SELECT SUM(prompt_tokens) as pt, SUM(completion_tokens) as ct, SUM(duration_ms) as ms
+          FROM llm_requests
+          WHERE created_at > datetime('now', '-5 minutes') AND duration_ms > 0
+          UNION ALL
+          SELECT SUM(prompt_tokens) as pt, SUM(completion_tokens) as ct, SUM(duration_ms) as ms
+          FROM foreman_runs
+          WHERE created_at > datetime('now', '-5 minutes') AND duration_ms > 0
+        )
       `)
       .get() as { pt: number | null; ct: number | null; ms: number | null } | undefined;
+
+    if (!row || !row.ms || row.ms === 0) {
+      return { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
+    }
+
+    const promptTps = row.pt ? Math.round((row.pt / row.ms) * 1000 * 10) / 10 : null;
+    const completionTps = row.ct ? Math.round((row.ct / row.ms) * 1000 * 10) / 10 : null;
+
+    return { prompt_tokens_per_sec: promptTps, completion_tokens_per_sec: completionTps };
+  } catch {
+    return { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
+  }
+}
+
+function getMachineSpeedFromDb(db: Db, machineId: string): SpeedResult {
+  try {
+    const row = db.sqlite
+      .prepare(`
+        SELECT SUM(pt) as pt, SUM(ct) as ct, SUM(ms) as ms FROM (
+          SELECT SUM(lr.prompt_tokens) as pt, SUM(lr.completion_tokens) as ct, SUM(lr.duration_ms) as ms
+          FROM llm_requests lr
+          JOIN runs r ON lr.run_id = r.id
+          WHERE r.machine_id = ? AND lr.created_at > datetime('now', '-5 minutes') AND lr.duration_ms > 0
+          UNION ALL
+          SELECT SUM(prompt_tokens) as pt, SUM(completion_tokens) as ct, SUM(duration_ms) as ms
+          FROM foreman_runs
+          WHERE machine_id = ? AND created_at > datetime('now', '-5 minutes') AND duration_ms > 0
+        )
+      `)
+      .get(machineId, machineId) as { pt: number | null; ct: number | null; ms: number | null } | undefined;
 
     if (!row || !row.ms || row.ms === 0) {
       return { prompt_tokens_per_sec: null, completion_tokens_per_sec: null };
@@ -107,13 +140,22 @@ async function collect(db: Db): Promise<void> {
       const { promptTps, completionTps } = r.value;
       if (promptTps > 0 || completionTps > 0) {
         active.push(r.value);
-        // Only cache per-machine speed for machines actively working
         if (machines[i].status === "working") {
           cachedMachineSpeed.set(machines[i].id, {
             prompt_tokens_per_sec: Math.round(promptTps * 10) / 10,
             completion_tokens_per_sec: Math.round(completionTps * 10) / 10,
           });
         }
+      }
+    } else {
+      // Fallback: compute speed from DB for machines without /api/metrics
+      const dbSpeed = getMachineSpeedFromDb(db, machines[i].id);
+      if (dbSpeed.prompt_tokens_per_sec || dbSpeed.completion_tokens_per_sec) {
+        cachedMachineSpeed.set(machines[i].id, dbSpeed);
+        active.push({
+          promptTps: dbSpeed.prompt_tokens_per_sec ?? 0,
+          completionTps: dbSpeed.completion_tokens_per_sec ?? 0,
+        });
       }
     }
   }
