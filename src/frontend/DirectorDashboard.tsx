@@ -91,8 +91,8 @@ export function DirectorDashboard() {
               className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground"
             >
               <option value="">Auto</option>
-              {machines.filter(m => m.enabled).map(m => (
-                <option key={m.id} value={m.id}>{m.name || m.model_id || m.base_url}{m.machine_type !== 'inference' ? ` (${m.machine_type})` : ''}</option>
+              {machines.filter(m => m.machine_type === 'inference').map(m => (
+                <option key={m.id} value={m.id}>{m.name || m.model_id || m.base_url}{!m.enabled ? ' (disabled)' : ''}</option>
               ))}
             </select>
             {directorMachineId && (
