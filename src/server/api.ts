@@ -19,6 +19,7 @@ import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
 import { generateText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { acquireLease, releaseLease } from "./machine-manager";
 
 /** Base directory for auto-created project clones */
 const PROJECTS_BASE = resolve(process.env.PROJECTS_BASE ?? "./.projects");
@@ -308,14 +309,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot approve issue in status '${issue.status}'` });
       return;
     }
-    const machine = db.getAvailableMachine();
-    if (!machine) {
+    const leaseResult = acquireLease(db, "pipeline", issue.title, { machineType: "inference" });
+    if (!leaseResult) {
       res.status(409).json({ error: "no machine available — all at capacity" });
       return;
     }
+    const { lease, machine } = leaseResult;
     const project = db.getProject(issue.project_id)!;
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) {
+      releaseLease(lease.id);
       res.status(409).json({ error: "no model specified — set model_id on the project or machine" });
       return;
     }
@@ -326,9 +329,11 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     // Fire-and-forget: pipeline creates its own run records per stage
     if (options?.pipelineCtx) {
       const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
-      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses).catch((err) => {
-        console.error(`Pipeline error (approve):`, err);
-      });
+      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses)
+        .catch((err) => { console.error(`Pipeline error (approve):`, err); })
+        .finally(() => releaseLease(lease.id));
+    } else {
+      releaseLease(lease.id);
     }
   });
 
@@ -525,19 +530,22 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry stage for issue in status '${issue.status}'` });
       return;
     }
-    const machine = db.getAvailableMachine();
-    if (!machine) {
+    const leaseResult = acquireLease(db, "pipeline", `retry: ${issue.title}`, { machineType: "inference" });
+    if (!leaseResult) {
       res.status(409).json({ error: "no machine available — all at capacity" });
       return;
     }
+    const { lease, machine } = leaseResult;
     const project = db.getProject(issue.project_id)!;
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
 
     if (options?.pipelineCtx) {
-      executeStageRetry(options.pipelineCtx, machine, freshIssue, project).catch((err) => {
-        console.error(`Pipeline error (retry-stage):`, err);
-      });
+      executeStageRetry(options.pipelineCtx, machine, freshIssue, project)
+        .catch((err) => { console.error(`Pipeline error (retry-stage):`, err); })
+        .finally(() => releaseLease(lease.id));
+    } else {
+      releaseLease(lease.id);
     }
   });
 
