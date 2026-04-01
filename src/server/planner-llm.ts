@@ -30,23 +30,32 @@ export function isGenerating(conversationId: string): boolean {
 
 // ─── Machine selection ───────────────────────────────────────────────────────
 
-export function selectPlannerMachine(db: Db, project: Project): { machine: Machine; modelId: string } | null {
+export function selectPlannerMachine(db: Db, project?: Project): { machine: Machine; modelId: string } | null {
   const machines = db.getMachines().filter((m: Machine) => m.enabled === 1);
   if (machines.length === 0) return null;
 
-  // Resolve model: project model_id takes priority, then machine default
-  // For planner, prefer a machine that matches the project's model
-  if (project.model_id) {
+  // 1. Check for Director-specific machine in foreman config
+  const config = db.getForemanConfig();
+  if (config?.director_machine_id) {
+    const directorMachine = machines.find((m: Machine) => m.id === config.director_machine_id);
+    if (directorMachine) {
+      const modelId = config.director_model_id ?? directorMachine.model_id;
+      if (modelId) return { machine: directorMachine, modelId };
+    }
+  }
+
+  // 2. Project model_id override
+  if (project?.model_id) {
     const match = machines.find((m: Machine) => m.model_id === project.model_id);
     if (match) return { machine: match, modelId: project.model_id };
-    // No exact match — use any machine with this model via the project override
     return { machine: machines[0], modelId: project.model_id };
   }
 
-  // Fallback: use the first enabled machine with its own model
-  const machine = machines[0];
+  // 3. Fallback: first enabled inference machine
+  const inferenceMachines = machines.filter((m: Machine) => m.machine_type === "inference");
+  const machine = inferenceMachines[0] ?? machines[0];
   const modelId = machine.model_id;
-  if (!modelId) return null; // no model available
+  if (!modelId) return null;
   return { machine, modelId };
 }
 

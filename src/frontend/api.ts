@@ -219,6 +219,10 @@ export function deleteProject(id: string): Promise<void> {
 
 // ─── Machines ─────────────────────────────────────────────────────────────────
 
+export function getMachines(): Promise<Machine[]> {
+  return json("/api/machines");
+}
+
 export function createMachine(data: {
   name?: string;
   base_url: string;
@@ -492,6 +496,8 @@ export interface ForemanConfig {
   tasks_dir: string | null;
   priority_mode: string;
   tick_interval_ms: number;
+  director_machine_id: string | null;
+  director_model_id: string | null;
   created_at: string;
 }
 

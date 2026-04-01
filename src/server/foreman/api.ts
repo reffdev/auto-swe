@@ -226,7 +226,7 @@ export function createForemanRouter(db: Db): Router {
   });
 
   router.patch("/config", (req, res) => {
-    const allowed = ["enabled", "project_id", "tasks_dir", "priority_mode", "tick_interval_ms"];
+    const allowed = ["enabled", "project_id", "tasks_dir", "priority_mode", "tick_interval_ms", "director_machine_id", "director_model_id"];
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];

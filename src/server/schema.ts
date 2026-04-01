@@ -278,5 +278,7 @@ export const foremanConfig = sqliteTable("foreman_config", {
   tasks_dir: text("tasks_dir"),                                 // abs path to tasks/backlog/
   priority_mode: text("priority_mode").notNull().default("parallel"), // yield|parallel|exclusive
   tick_interval_ms: integer("tick_interval_ms").notNull().default(30000),
+  director_machine_id: text("director_machine_id"),             // machine for Director LLM calls
+  director_model_id: text("director_model_id"),                 // model override for Director
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
