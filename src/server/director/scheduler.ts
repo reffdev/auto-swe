@@ -20,7 +20,7 @@ import { nudgeForeman } from "../foreman/scheduler";
 import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
-import { acquireLease, releaseLease } from "../machine-manager";
+import { acquireLease, releaseLease, hasCapacity } from "../machine-manager";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -445,7 +445,8 @@ function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): 
     const hasWork = activeTasks.some(t => taskTypes.has(t.type));
     if (!hasWork) {
       // Verify the machine type actually has available capacity
-      const available = db.getAvailableMachine(undefined, machineType);
+      const candidates = db.getMachines().filter(m => m.enabled && m.machine_type === machineType);
+      const available = candidates.find(m => hasCapacity(m));
       if (available) {
         idleTypes.push(machineType);
       }

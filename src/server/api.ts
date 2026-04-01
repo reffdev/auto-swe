@@ -460,11 +460,12 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry issue in status '${issue.status}'` });
       return;
     }
-    const machine = db.getAvailableMachine();
-    if (!machine) {
+    const leaseResult = acquireLease(db, "pipeline", `retry: ${issue.title}`, { machineType: "inference" });
+    if (!leaseResult) {
       res.status(409).json({ error: "no machine available — all at capacity" });
       return;
     }
+    const { lease, machine } = leaseResult;
     db.updateIssue(issue.id, {
       status: "approved",
       git_branch: null,
@@ -478,12 +479,13 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
 
-    // Fire-and-forget: pipeline creates its own run records per stage
     if (options?.pipelineCtx) {
       const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
-      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses).catch((err) => {
-        console.error(`Pipeline error (retry):`, err);
-      });
+      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses)
+        .catch((err) => { console.error(`Pipeline error (retry):`, err); })
+        .finally(() => releaseLease(lease.id));
+    } else {
+      releaseLease(lease.id);
     }
   });
 
