@@ -37,12 +37,21 @@ export async function executeComfyUIWorkflow(
   const url = baseUrl.replace(/\/$/, "");
 
   // 1. Submit the workflow
-  const submitRes = await fetch(`${url}/prompt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: workflow }),
-    signal,
-  });
+  console.log(`ComfyUI: submitting to ${url}/prompt (${Object.keys(workflow).length} nodes)`);
+  let submitRes: Response;
+  try {
+    submitRes = await fetch(`${url}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: workflow }),
+      signal,
+    });
+  } catch (fetchErr) {
+    const cause = fetchErr instanceof Error && (fetchErr as any).cause
+      ? (fetchErr as any).cause.message ?? String((fetchErr as any).cause)
+      : "unknown";
+    throw new Error(`ComfyUI fetch failed to ${url}/prompt: ${fetchErr instanceof Error ? fetchErr.message : fetchErr} (cause: ${cause})`);
+  }
 
   if (!submitRes.ok) {
     const body = await submitRes.text();

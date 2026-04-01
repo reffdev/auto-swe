@@ -165,6 +165,8 @@ export async function executeComfyUITask(
     const variationCount = variationCountTag ? parseInt(variationCountTag, 10) : 1;
     const isStyleExploration = task.type === "style_exploration" || variationCount > 1;
 
+    console.log(`ComfyUI: submitting workflow to ${machine.base_url} (preset: ${resolvedPreset ?? workflowFile ?? "template"}, type: ${task.type})`);
+
     const outputDir = resolve(project.workdir, ".comfyui-output", task.id);
     const allOutputFiles: Array<{ filename: string; localPath: string }> = [];
 
@@ -189,8 +191,14 @@ export async function executeComfyUITask(
         );
         allOutputFiles.push(...result.outputFiles);
       } catch (varErr) {
-        console.warn(`ComfyUI: variation ${vi + 1}/${variationCount} failed: ${varErr instanceof Error ? varErr.message : varErr}`);
-        // Continue with remaining variations
+        const errMsg = varErr instanceof Error ? varErr.message : String(varErr);
+        const cause = varErr instanceof Error && (varErr as any).cause ? ` (cause: ${(varErr as any).cause.message ?? (varErr as any).cause})` : "";
+        console.warn(`ComfyUI: variation ${vi + 1}/${variationCount} failed: ${errMsg}${cause}`);
+        // If it's a connection error (not a workflow error), stop trying — server is probably down
+        if (errMsg === "fetch failed" || errMsg.includes("ECONNREFUSED") || errMsg.includes("ETIMEDOUT")) {
+          console.error(`ComfyUI: server unreachable — aborting remaining ${variationCount - vi - 1} variation(s)`);
+          break;
+        }
       }
       if (vi < variationCount - 1) {
         console.log(`ComfyUI: variation ${vi + 1}/${variationCount} complete (${allOutputFiles.length} total files)`);

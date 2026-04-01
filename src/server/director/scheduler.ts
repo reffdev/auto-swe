@@ -69,12 +69,20 @@ export function startDirectorScheduler(db: Db): void {
 function ensureStyleExploration(db: Db, project: import("../db").Project): void {
   if (isStyleLocked(project.workdir)) return;
 
-  // Check if any style_exploration task already exists for this project
-  const existing = db.getForemanTasks(project.id).filter(
-    (t: { type: string; status: string }) => t.type === "style_exploration" &&
-      t.status !== "completed" && t.status !== "failed"
+  // Check if any style_exploration task already exists for this project (any status)
+  const allStyleTasks = db.getForemanTasks(project.id).filter(
+    (t: { type: string }) => t.type === "style_exploration"
   );
-  if (existing.length > 0) return;
+  if (allStyleTasks.length > 0) {
+    // If there's a failed one, re-queue it instead of creating a new one
+    const failed = allStyleTasks.find((t: { status: string }) => t.status === "failed");
+    if (failed) {
+      db.updateForemanTask(failed.id, { status: "queued", retry_count: 0, error_message: null });
+      console.log("Director: re-queued failed style exploration task");
+      nudgeForeman(db);
+    }
+    return;
+  }
 
   // Check if comfyui machines exist
   const comfyMachines = db.getMachines().filter(m => m.machine_type === "comfyui");
@@ -95,8 +103,8 @@ function ensureStyleExploration(db: Db, project: import("../db").Project): void 
       "Generate visual style variations for the project so the user can select and lock an art style.",
       "This must be completed before any production art assets are generated.",
       "",
-      "[preset: concept]",
-      "[prompt: pixel art style exploration, varied color palettes, different line weights and shading approaches, game asset examples]",
+      "[preset: fast_draft]",
+      "[prompt: pixel art style exploration sheet, varied color palettes, different line weights and shading approaches, sample game sprites and icons, dark fantasy occult theme]",
       "[variation_count: 6]",
     ].join("\n"),
     priority: 1,

@@ -76,12 +76,20 @@ export function scheduleReindex(projectWorkdir: string): void {
   }, 60_000);
 }
 
+let indexing = false;
+
 /**
  * Index all markdown files in the project's .swe/ directory.
  * Should be called on startup and after writing new memories.
+ * Only one index operation runs at a time — concurrent calls are skipped.
  */
 export async function indexMemories(projectWorkdir: string): Promise<boolean> {
   if (!isMemsearchAvailable()) return false;
+  if (indexing) {
+    console.log("MemSearch: index already running, skipping");
+    return false;
+  }
+  indexing = true;
 
   // Ensure dirs exist before indexing
   const { ensureMemoryDirs } = await import("./persistent-memory");
@@ -98,13 +106,14 @@ export async function indexMemories(projectWorkdir: string): Promise<boolean> {
     proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
 
     proc.on("close", (code) => {
+      indexing = false;
       if (code !== 0 && stderr) {
         console.warn(`MemSearch index failed (code ${code}): ${stderr.slice(0, 200)}`);
       }
       resolve(code === 0);
     });
 
-    proc.on("error", () => resolve(false));
+    proc.on("error", () => { indexing = false; resolve(false); });
   });
 }
 
