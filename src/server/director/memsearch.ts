@@ -65,6 +65,10 @@ function getMemoryPaths(projectWorkdir: string): string[] {
 export async function indexMemories(projectWorkdir: string): Promise<boolean> {
   if (!isMemsearchAvailable()) return false;
 
+  // Ensure dirs exist before indexing
+  const { ensureMemoryDirs } = await import("./persistent-memory");
+  ensureMemoryDirs(projectWorkdir);
+
   const paths = getMemoryPaths(projectWorkdir);
 
   return new Promise((resolve) => {

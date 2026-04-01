@@ -13,6 +13,7 @@ import { assembleDirectorContext } from "./memory";
 import { webSearchTool } from "../tools/web-search";
 import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
+import { makeFilesystemTools, makeBuildCheckTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 
 // ─── In-memory streaming state ──────────────────────────────────────────────
@@ -97,7 +98,15 @@ export async function generateDirectorResponse(opts: {
         webSearch: webSearchTool,
         fetchUrl: fetchUrlTool,
         lookupDocs,
-        ...(project ? makeMemoryTools(project.workdir) : {}),
+        ...(project ? {
+          ...makeFilesystemTools(project.workdir),
+          ...makeBuildCheckTools(project.workdir, {
+            buildCommand: project.build_command,
+            testCommand: project.test_command,
+            lintCommand: project.lint_command,
+          }),
+          ...makeMemoryTools(project.workdir),
+        } : {}),
       },
       maxSteps: 50,
     });
