@@ -82,23 +82,35 @@ export async function executeComfyUIWorkflow(
     mkdirSync(outputDir, { recursive: true });
 
     for (const [_nodeId, nodeOutput] of Object.entries(entry.outputs)) {
-      const images = nodeOutput.images ?? [];
-      for (const img of images) {
+      // Collect output files from all known output keys (images, audio, gifs, etc.)
+      const fileEntries: Array<{ filename: string; subfolder: string; type: string }> = [];
+      for (const key of ["images", "audio", "gifs", "files"]) {
+        const items = (nodeOutput as Record<string, unknown>)[key];
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            if (item && typeof item === "object" && "filename" in item) {
+              fileEntries.push(item as { filename: string; subfolder: string; type: string });
+            }
+          }
+        }
+      }
+
+      for (const file of fileEntries) {
         const params = new URLSearchParams({
-          filename: img.filename,
-          subfolder: img.subfolder || "",
-          type: img.type || "output",
+          filename: file.filename,
+          subfolder: file.subfolder || "",
+          type: file.type || "output",
         });
 
         const fileRes = await fetch(`${url}/view?${params}`, { signal });
         if (!fileRes.ok) continue;
 
         const buffer = Buffer.from(await fileRes.arrayBuffer());
-        const localPath = resolve(outputDir, img.filename);
+        const localPath = resolve(outputDir, file.filename);
         mkdirSync(dirname(localPath), { recursive: true });
         writeFileSync(localPath, buffer);
 
-        outputFiles.push({ filename: img.filename, localPath });
+        outputFiles.push({ filename: file.filename, localPath });
       }
     }
 

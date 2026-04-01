@@ -256,33 +256,77 @@ export interface AudioWorkflowOptions {
 }
 
 /**
- * ACE-Step music workflow: native ComfyUI audio generation for music.
- * Generates full songs, loops, and genre-specific music.
+ * ACE-Step 1.5 music workflow: native ComfyUI audio generation.
+ *
+ * Pipeline: UNETLoader → TextEncodeAceStepAudio1.5 (conditioning)
+ *         → EmptyAceStep1.5LatentAudio → KSampler → VAEDecodeAudio → SaveAudio
  */
 export function buildACEStepWorkflow(opts: AudioWorkflowOptions): Workflow {
   const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
 
   return {
+    // Load ACE-Step model
     "1": {
-      class_type: "ACEStepModelLoader",
-      inputs: {},
+      class_type: "UNETLoader",
+      inputs: { unet_name: "ace_step_v1.5.safetensors", weight_dtype: "default" },
     },
+    // Load CLIP for ACE-Step
     "2": {
-      class_type: "ACEStepSampler",
+      class_type: "CLIPLoader",
+      inputs: { clip_name: "ace_step_v1.5_clip.safetensors", type: "ace" },
+    },
+    // Load VAE for audio decoding
+    "3": {
+      class_type: "VAELoader",
+      inputs: { vae_name: "ace_step_v1.5_vae.safetensors" },
+    },
+    // Text encode with tags and optional lyrics
+    "4": {
+      class_type: "TextEncodeAceStepAudio1.5",
+      inputs: {
+        clip: ["2", 0],
+        tags: opts.prompt,
+        lyrics: "",
+        lyrics_strength: 1.0,
+      },
+    },
+    // Empty latent audio
+    "5": {
+      class_type: "EmptyAceStep1.5LatentAudio",
+      inputs: {
+        seconds: opts.duration ?? 30,
+        batch_size: 1,
+      },
+    },
+    // KSampler
+    "6": {
+      class_type: "KSampler",
       inputs: {
         model: ["1", 0],
-        lyrics: "",
-        prompt: opts.prompt,
-        duration: opts.duration ?? 30,
+        positive: ["4", 0],
+        negative: ["4", 0],
+        latent_image: ["5", 0],
         seed,
         steps: 60,
         cfg: 3.0,
+        sampler_name: "euler",
+        scheduler: "normal",
+        denoise: 1.0,
       },
     },
-    "3": {
+    // Decode audio from latent
+    "7": {
+      class_type: "VAEDecodeAudio",
+      inputs: {
+        samples: ["6", 0],
+        vae: ["3", 0],
+      },
+    },
+    // Save as FLAC
+    "8": {
       class_type: "SaveAudio",
       inputs: {
-        audio: ["2", 0],
+        audio: ["7", 0],
         filename_prefix: "comfyui_music",
       },
     },
@@ -290,59 +334,38 @@ export function buildACEStepWorkflow(opts: AudioWorkflowOptions): Workflow {
 }
 
 /**
- * Stable Audio Open workflow: for sound effects generation.
- * Native ComfyUI support. Generates up to 47 seconds of audio.
+ * AudioGen workflow (via eigenpunk/ComfyUI-audio custom node).
+ * Uses MusicgenLoader + MusicgenGenerate with audiogen-medium model for SFX.
  */
-export function buildStableAudioWorkflow(opts: AudioWorkflowOptions): Workflow {
+export function buildAudioGenWorkflow(opts: AudioWorkflowOptions): Workflow {
   const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
 
   return {
+    // Load AudioGen model
     "1": {
-      class_type: "StableAudioModelLoader",
-      inputs: {
-        model: "stable_audio_open_1.0.safetensors",
-      },
+      class_type: "MusicgenLoader",
+      inputs: { model_name: "audiogen-medium" },
     },
+    // Generate audio from text
     "2": {
-      class_type: "StableAudioSampler",
+      class_type: "MusicgenGenerate",
       inputs: {
         model: ["1", 0],
-        positive_prompt: opts.prompt,
-        negative_prompt: "low quality, distorted, noise",
-        duration: Math.min(opts.duration ?? 5, 47),
+        text: opts.prompt,
+        batch_size: 1,
+        duration: opts.duration ?? 5,
+        cfg: 3.0,
+        top_k: 250,
+        top_p: 0.0,
+        temperature: 1.0,
         seed,
-        steps: 100,
-        cfg: 7.0,
       },
     },
+    // Save output
     "3": {
       class_type: "SaveAudio",
       inputs: {
         audio: ["2", 0],
-        filename_prefix: "comfyui_sfx",
-      },
-    },
-  };
-}
-
-/**
- * AudioGen workflow (via eigenpunk/ComfyUI-audio custom node).
- * Fallback for SFX if Stable Audio Open is not installed.
- */
-export function buildAudioGenWorkflow(opts: AudioWorkflowOptions): Workflow {
-  return {
-    "1": {
-      class_type: "AudioGen",
-      inputs: {
-        prompt: opts.prompt,
-        duration: opts.duration ?? 5,
-        model_size: "medium",
-      },
-    },
-    "2": {
-      class_type: "SaveAudio",
-      inputs: {
-        audio: ["1", 0],
         filename_prefix: "comfyui_sfx",
       },
     },
