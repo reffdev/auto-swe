@@ -352,14 +352,23 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       try {
         fullText = await Promise.race([agentPromise, cancelPromise]);
       } catch (err) {
-        // Reasoning loop detected — force a compaction to break out of the loop
+        // Reasoning loop detected — inject a nudge message to break the loop
         let loopTriggeredCompaction = false;
         if (reasoningLoopDetected && !abortSignal?.aborted) {
+          reasoningLoopDetected = false;
           if (compactionCount < MAX_COMPACTIONS) {
-            reasoningLoopDetected = false;
-            compactionNeeded = true;
+            compactionNeeded = true; // reuses compaction restart mechanism (but with nudge, not checkpoint)
             loopTriggeredCompaction = true;
-            console.log(`Pipeline [${stageName}]: reasoning loop detected — forcing compaction to break out`);
+            currentUserPrompt = `${currentUserPrompt}\n\n` +
+              `STOP — You are stuck in a reasoning loop. You have produced ${MAX_TEXT_ONLY_STEPS} consecutive ` +
+              `text-only responses without calling any tools. This means you are analyzing instead of acting.\n\n` +
+              `REQUIRED: On your very next response, you MUST call a tool. Do NOT write analysis or explanation.\n` +
+              `- If you need to read a file, call readFile\n` +
+              `- If you need to write code, call writeFile or replaceInFile\n` +
+              `- If you need to check something, call searchFiles or listDirectory\n` +
+              `- If you are done, call submitVerdict or the appropriate completion tool\n\n` +
+              `If you genuinely cannot proceed, call writeFile to create a file explaining what you're stuck on.`;
+            console.log(`Pipeline [${stageName}]: reasoning loop detected — injecting nudge to force tool use`);
           } else {
             throw new Error(`Agent stuck in reasoning loop after all compactions exhausted — ${MAX_TEXT_ONLY_STEPS} consecutive steps with no tool calls`);
           }
@@ -385,6 +394,22 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           currentPreloads = pendingExpandFiles;
           pendingExpandFiles = [];
           continue; // restart the while loop
+        }
+
+        // If this was a loop nudge (not full compaction), skip checkpoint — just restart with nudge
+        if (loopTriggeredCompaction && !abortSignal?.aborted) {
+          compactionCount++;
+          console.log(`Pipeline [${stageName}]: loop nudge ${compactionCount}/${MAX_COMPACTIONS} — restarting with anti-loop prompt`);
+          liveSteps.push({
+            step: stepCount + 1,
+            text: `**Reasoning loop detected** — restarting with anti-loop nudge (${compactionCount}/${MAX_COMPACTIONS})`,
+            tokens: { prompt: 0, completion: 0 },
+            durationMs: 0,
+          });
+          try { updateRun({ output: JSON.stringify(liveSteps) }); } catch { /* non-critical */ }
+          // currentUserPrompt already has the nudge appended — just restart
+          currentPreloads = undefined;
+          continue;
         }
 
         // If this was a compaction abort (not a cancel), handle it
