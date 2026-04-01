@@ -18,7 +18,7 @@ export const ROUTE_PATHS = [
   '/director/:directiveId',
   '/director/:directiveId/conversation',
   '/director/review/:reviewId',
-  '/terminal',
+  '/terminal/:projectId',
 ] as const;
 
 /** Route names for view discrimination */

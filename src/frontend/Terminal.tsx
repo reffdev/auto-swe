@@ -4,27 +4,21 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, RotateCcw } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import * as api from './api'
 
-export function TerminalView({ onBack }: { onBack: () => void }) {
+export function TerminalView({ projectId, onBack }: { projectId: string; onBack: () => void }) {
+  const navigate = useNavigate()
   const termRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerm | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const [connected, setConnected] = useState(false)
-  const [projectId, setProjectId] = useState<string>('')
   const [projects, setProjects] = useState<api.Project[]>([])
 
-  // Load projects
+  // Load projects for the dropdown
   useEffect(() => {
-    api.poll().then(d => {
-      setProjects(d.projects)
-      // Default to foreman config project
-      api.getForemanConfig().then(config => {
-        if (config?.project_id) setProjectId(config.project_id)
-        else if (d.projects.length > 0) setProjectId(d.projects[0].id)
-      }).catch(() => {})
-    }).catch(() => {})
+    api.poll().then(d => setProjects(d.projects)).catch(() => {})
   }, [])
 
   const connect = () => {
@@ -157,7 +151,7 @@ export function TerminalView({ onBack }: { onBack: () => void }) {
         <div className="ml-auto flex items-center gap-2">
           <select
             value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
+            onChange={(e) => { if (e.target.value) void navigate(`/terminal/${e.target.value}`) }}
             className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground"
           >
             <option value="">Select project...</option>
