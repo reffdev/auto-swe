@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -311,6 +311,49 @@ function NewMachineDialog({ open, onClose, onCreated }: {
   )
 }
 
+// ─── Foreman Toggle ─────────────────────────────────────────────────────────
+
+function ForemanHeader() {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+
+  const refresh = useCallback(() => {
+    api.getForemanConfig().then(config => {
+      setEnabled(!!config?.enabled)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const toggle = () => {
+    const next = !enabled
+    setEnabled(next)
+    void api.updateForemanConfig({ enabled: next ? 1 : 0 } as any)
+  }
+
+  return (
+    <div className="px-3 pt-3 pb-1 flex items-center justify-between">
+      <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Foreman</span>
+      {enabled !== null && (
+        <button
+          onClick={toggle}
+          className={cn(
+            'relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            enabled ? 'bg-emerald-500' : 'bg-muted-foreground/30'
+          )}
+          role="switch"
+          aria-checked={enabled}
+          title={enabled ? 'Foreman enabled' : 'Foreman disabled'}
+        >
+          <span className={cn(
+            'pointer-events-none block h-3 w-3 rounded-full bg-white shadow-sm transition-transform',
+            enabled ? 'translate-x-3' : 'translate-x-0'
+          )} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 interface SidebarProps {
@@ -517,9 +560,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       </nav>
 
       {/* Foreman */}
-      <div className="px-3 pt-3 pb-1">
-        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Foreman</span>
-      </div>
+      <ForemanHeader />
       <nav className="px-1 pb-2">
         {(() => {
           const path = location.pathname
