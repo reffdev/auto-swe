@@ -250,6 +250,18 @@ export function createForemanRouter(db: Db): Router {
     }
     const config = db.upsertForemanConfig(updates);
     nudgeForeman(db);
+
+    // If enabled was just turned on, nudge the Director and run style exploration check
+    if (updates.enabled === 1 || updates.enabled === true) {
+      import("../director/scheduler").then(({ nudgeDirector: nudge, ensureStyleExploration }) => {
+        nudge(db);
+        if (config.project_id) {
+          const project = db.getProject(config.project_id);
+          if (project) ensureStyleExploration(db, project);
+        }
+      }).catch(err => console.warn("Failed to nudge Director on enable:", err instanceof Error ? err.message : err));
+    }
+
     res.json(config);
   });
 

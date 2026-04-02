@@ -70,7 +70,7 @@ export function startDirectorScheduler(db: Db): void {
  * If style not locked and no style_exploration task exists, triggers the
  * Director planner to generate one (so it uses conventions and project context).
  */
-function ensureStyleExploration(db: Db, project: import("../db").Project): void {
+export function ensureStyleExploration(db: Db, project: import("../db").Project): void {
   if (isStyleLocked(project.workdir)) return;
 
   // Check if any style_exploration task already exists for this project (any status)
