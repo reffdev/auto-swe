@@ -112,7 +112,7 @@ async function revisePromptWithLLM(
       prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
     }),
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Art feedback LLM timeout (60s)")), 60_000)
+      setTimeout(() => reject(new Error(`Art feedback LLM timeout (180s) — machine may be busy (${machineInfo.machine.base_url})`)), 180_000)
     ),
   ]);
 

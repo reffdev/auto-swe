@@ -11,7 +11,7 @@ import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
-import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
+import { isComfyUITaskType, processArtFeedback, injectFeedbackIntoArtTask } from "./art-feedback";
 import { extractTag } from "./task-types";
 import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
 
@@ -162,20 +162,19 @@ export function createForemanRouter(db: Db): Router {
       }
     }
 
-    let description = task.description;
+    // Record feedback immediately — never mangle the [prompt:] tag synchronously
+    let description = injectFeedbackIntoArtTask(task.description, feedback);
 
-    // For art tasks, use LLM to properly revise the prompt before queuing.
-    // We await the revision so the task doesn't start with a mangled prompt.
+    // For art tasks, kick off LLM revision in background to properly rewrite the prompt.
+    // The task stays queued; the Foreman won't pick it up instantly, giving the LLM time.
     if (isComfyUITaskType(task.type)) {
-      try {
-        description = await processArtFeedback(db, description, feedback);
-        console.log(`Foreman reject: prompt revised for task ${task.id}`);
-      } catch (err) {
+      void processArtFeedback(db, task.description, feedback).then(revised => {
+        db.updateForemanTask(task.id, { description: revised });
+        console.log(`Foreman reject: prompt revised in background for task ${task.id}`);
+      }).catch(err => {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`Foreman reject: LLM prompt revision FAILED for task ${task.id}: ${errMsg}`);
-        // Still queue the task but with feedback recorded — prompt stays intact
-        description = description + `\n[feedback: ${feedback}]`;
-      }
+      });
     }
 
     db.updateForemanTask(task.id, {
