@@ -20,6 +20,7 @@ import type { Db, Machine, Project, ForemanTask } from "../db";
 import { executeComfyUIWorkflow, buildWorkflowFromTemplate } from "./comfyui";
 import { buildWorkflow, buildAudioWorkflow, applyIPAdapter, PRESETS, AUDIO_PRESETS, type PresetName } from "./comfyui-workflows";
 import { getWorkflowDir } from "./workflow-manifest";
+import { extractTag } from "./task-types";
 import { getStyleLock, getStyleReferencePath } from "../director/style-lock";
 import { postProcessImage } from "./post-process";
 import { getBreaker } from "./circuit-breaker";
@@ -329,8 +330,3 @@ export async function executeComfyUITask(
   }
 }
 
-/** Extract a [tag: value] from task description */
-function extractTag(description: string, tag: string): string | null {
-  const match = description.match(new RegExp(`\\[${tag}:\\s*(.+?)\\]`, "i"));
-  return match ? match[1].trim() : null;
-}

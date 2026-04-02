@@ -18,7 +18,8 @@ import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
-import { isComfyUITaskType, processArtFeedback } from "../foreman/art-feedback";
+import { processArtFeedback } from "../foreman/art-feedback";
+import { isComfyUITaskType, MACHINE_TYPE_TASK_TYPES, extractTag } from "../foreman/task-types";
 import { isStyleLocked } from "./style-lock";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
@@ -64,7 +65,8 @@ export function startDirectorScheduler(db: Db): void {
 
 /**
  * On startup, check if the project needs a style exploration task.
- * Creates one if: style not locked, no style_exploration task exists (any status).
+ * If style not locked and no style_exploration task exists, triggers the
+ * Director planner to generate one (so it uses conventions and project context).
  */
 function ensureStyleExploration(db: Db, project: import("../db").Project): void {
   if (isStyleLocked(project.workdir)) return;
@@ -93,31 +95,27 @@ function ensureStyleExploration(db: Db, project: import("../db").Project): void 
   const activeDirective = directives.find(d =>
     d.status === "active" || d.status === "paused" || d.status === "planning"
   );
+  if (!activeDirective) return;
 
-  console.log("Director: art style not locked — creating style exploration task");
+  const activeMilestone = db.getActiveMilestone(activeDirective.id);
+  if (!activeMilestone) return;
 
-  db.createForemanTask({
-    project_id: project.id,
-    title: "Explore art styles",
-    description: [
-      "Generate visual style variations for the project so the user can select and lock an art style.",
-      "This must be completed before any production art assets are generated.",
-      "",
-      "[preset: fast_draft]",
-      "[prompt: pixel art style exploration sheet, varied color palettes, different line weights and shading approaches, sample game sprites and icons, dark fantasy occult theme]",
-      "[variation_count: 6]",
-    ].join("\n"),
-    priority: 1,
-    type: "style_exploration",
-    model: "auto",
-    max_retries: 3,
-    status: "queued",
-    directive_id: activeDirective?.id,
-    milestone_id: activeDirective ? db.getActiveMilestone(activeDirective.id)?.id : undefined,
-  });
+  // Trigger the planner to generate a style exploration task
+  // The planner sees conventions (including comfyui-prompt-engineering.md),
+  // the design doc, and the "style not locked" flag — it will generate
+  // a properly-prompted style_exploration task.
+  console.log("Director: art style not locked — triggering planner for style exploration");
+  logEpisodic(project.workdir, "Style not locked — requesting planner to generate style exploration task");
 
-  logEpisodic(project.workdir, "Auto-created style exploration task", "Art style not locked on startup");
-  nudgeForeman(db);
+  // Fire and forget — planner runs asynchronously
+  planNextTasks(db, activeDirective, project, activeMilestone, ["comfyui"])
+    .then(created => {
+      if (created > 0) {
+        console.log(`Director: planner generated ${created} task(s) for style exploration`);
+        nudgeForeman(db);
+      }
+    })
+    .catch(err => console.warn("Director: style exploration planning failed:", err instanceof Error ? err.message : err));
 }
 
 export function stopDirectorScheduler(): void {
@@ -182,23 +180,20 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
 }
 
 /**
- * Plan tasks. Director doesn't compete for machine leases — its LLM calls
- * are short bursts (10-30s) that piggyback on the same endpoint. Ollama
- * queues them internally. This prevents the Director from being blocked
- * for the entire duration of a long Foreman task (5-30min).
+ * Generate tasks for a milestone via the Director planner LLM.
+ * Director LLM calls piggyback on the inference endpoint without leases —
+ * llama.cpp queues short bursts alongside running foreman tasks.
+ * Returns: number of tasks created, or -1 if no machine available.
  */
-async function planWithLease(
+async function generateDirectorTasks(
   db: Db, directive: DirectorDirective, project: import("../db").Project,
-  milestone: import("../db").DirectorMilestone, _preferredMachine?: string,
-  idleTypes?: string[],
+  milestone: import("../db").DirectorMilestone,
+  idleMachineTypes?: string[],
 ): Promise<number> {
-  return await planNextTasks(db, directive, project, milestone, idleTypes);
+  return await planNextTasks(db, directive, project, milestone, idleMachineTypes);
 }
 
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
-  const config = db.getForemanConfig();
-  const preferredMachine = config?.director_machine_id ?? undefined;
-
   // 1. Handle tasks awaiting review (auto-verify)
   const awaitingReview = db.getDirectiveTasksAwaitingReview(directive.id);
   for (const task of awaitingReview) {
@@ -371,7 +366,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
 
           // Generate tasks for next milestone (unless paused by review gate)
           if (!shouldPauseDirective(db, directive)) {
-            try { await planWithLease(db, directive, project, nextMilestone, preferredMachine); } catch (err) {
+            try { await generateDirectorTasks(db, directive, project, nextMilestone); } catch (err) {
               console.error(`Director: planning for next milestone failed:`, err instanceof Error ? err.message : err);
             }
           }
@@ -389,18 +384,18 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
         db.updateDirectorMilestone(activeMilestone.id, { status: "active" });
         console.log(`Director: milestone "${activeMilestone.title}" verification failed: ${verification.issues.join("; ")}`);
         logEpisodic(project.workdir, `Milestone verification failed: "${activeMilestone.title}"`, verification.issues.join("; "));
-        try { await planWithLease(db, directive, project, activeMilestone, preferredMachine); } catch (err) {
+        try { await generateDirectorTasks(db, directive, project, activeMilestone); } catch (err) {
           console.error(`Director: corrective planning failed:`, err instanceof Error ? err.message : err);
         }
       }
     } else if (!hasQueued && milestoneTasks.length === 0) {
       // No tasks at all for this milestone — generate some
-      try { await planWithLease(db, directive, project, activeMilestone, preferredMachine); } catch (err) {
+      try { await generateDirectorTasks(db, directive, project, activeMilestone); } catch (err) {
         console.error(`Director: initial planning failed:`, err instanceof Error ? err.message : err);
       }
     } else if (!hasQueued && milestoneTasks.some(t => t.status === "failed")) {
       // All tasks done but some failed — need more tasks
-      try { await planWithLease(db, directive, project, activeMilestone, preferredMachine); } catch (err) {
+      try { await generateDirectorTasks(db, directive, project, activeMilestone); } catch (err) {
         console.error(`Director: failure recovery planning failed:`, err instanceof Error ? err.message : err);
       }
     } else if (hasActiveWork && !planningInProgress) {
@@ -414,7 +409,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
           console.log(`Director: machine type(s) idle with no queued work: ${idleTypes.join(", ")} — requesting top-up tasks`);
           planningInProgress = true;
           try {
-            const created = await planWithLease(db, directive, project, activeMilestone, preferredMachine, idleTypes);
+            const created = await generateDirectorTasks(db, directive, project, activeMilestone, idleTypes);
             if (created === 0) {
               // Planner ran but generated nothing — count toward backoff
               zeroTaskCounts.set(activeMilestone.id, zeroCount + 1);
@@ -498,10 +493,10 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
       case "generate_tasks": {
         shouldResume = true;
         if (result.context) addKeyDecision(db, directive, result.context);
-        const config2 = db.getForemanConfig();
+        const foremanConfig = db.getForemanConfig();
         const activeMilestone = db.getActiveMilestone(directive.id);
         if (activeMilestone) {
-          try { await planWithLease(db, directive, project, activeMilestone, config2?.director_machine_id ?? undefined); }
+          try { await generateDirectorTasks(db, directive, project, activeMilestone); }
           catch (err) { console.error("Director: generate_tasks planning failed:", err instanceof Error ? err.message : err); }
         }
         break;
@@ -543,12 +538,17 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
                 console.log(`Director: art style locked from variation ${selectedIndex + 1}`);
               }
             }
+            // Complete the style exploration task only on success
+            db.updateForemanTask(review.task_id, { status: "completed", completed_at: new Date().toISOString() });
           } catch (err) {
             console.error("Director: style lock failed:", err instanceof Error ? err.message : err);
+            // Don't complete the task — re-queue for another attempt
+            db.updateForemanTask(review.task_id, {
+              status: "queued",
+              retry_count: 0,
+              error_message: `Style lock failed: ${err instanceof Error ? err.message : String(err)}`,
+            });
           }
-
-          // Complete the style exploration task
-          db.updateForemanTask(review.task_id, { status: "completed", completed_at: new Date().toISOString() });
         }
         break;
       }
@@ -566,12 +566,6 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 }
 
 // ─── Idle machine detection ─────────────────────────────────────────────────
-
-/** Task types that route to each machine type */
-const MACHINE_TYPE_TASK_TYPES: Record<string, Set<string>> = {
-  inference: new Set(["code", "review", "content", "claude"]),
-  comfyui: new Set(["art", "music", "sfx", "style_exploration"]),
-};
 
 /**
  * Detect machine types that have available capacity but no queued/running tasks
@@ -605,9 +599,4 @@ function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): 
   return idleTypes;
 }
 
-/** Extract a [tag: value] from a task description */
-function extractTag(description: string, tag: string): string | null {
-  const match = description.match(new RegExp(`\\[${tag}:\\s*(.+?)\\]`, "i"));
-  return match ? match[1].trim() : null;
-}
 

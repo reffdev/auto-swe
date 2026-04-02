@@ -12,6 +12,7 @@ import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
 import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
+import { extractTag } from "./task-types";
 
 export function createForemanRouter(db: Db): Router {
   const router = Router();
@@ -265,9 +266,9 @@ export function createForemanRouter(db: Db): Router {
     } catch { /* fall through */ }
 
     // Fall back to single asset
-    const outputMatch = task.description.match(/\[output:\s*(.+?)\]/i);
-    if (outputMatch) {
-      res.json({ files: [outputMatch[1].trim().split("/").pop()!], basePath: outputMatch[1].trim().replace(/\/[^/]+$/, "") });
+    const outputPath = extractTag(task.description, "output");
+    if (outputPath) {
+      res.json({ files: [outputPath.split("/").pop()!], basePath: outputPath.replace(/\/[^/]+$/, "") });
     } else {
       res.json({ files: [] });
     }
@@ -306,8 +307,8 @@ export function createForemanRouter(db: Db): Router {
     if (!task) return res.status(404).json({ error: "Task not found" });
 
     // Extract output path from task description
-    const outputMatch = task.description.match(/\[output:\s*(.+?)\]/i);
-    if (!outputMatch) return res.status(404).json({ error: "No output path in task" });
+    const outputPath2 = extractTag(task.description, "output");
+    if (!outputPath2) return res.status(404).json({ error: "No output path in task" });
 
     const config = db.getForemanConfig();
     const projectId = task.project_id || config?.project_id;
@@ -316,7 +317,7 @@ export function createForemanRouter(db: Db): Router {
     const project = db.getProject(projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    const assetPath = resolve(project.workdir, outputMatch[1].trim());
+    const assetPath = resolve(project.workdir, outputPath2);
 
     // Security: ensure the resolved path is within the project workdir
     // Normalize separators for cross-platform compatibility

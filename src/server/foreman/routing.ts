@@ -7,6 +7,7 @@
  */
 
 import type { ForemanTask } from "../db";
+import { isComfyUITaskType } from "./task-types";
 
 export interface RouteResult {
   modelId: string;
@@ -27,12 +28,11 @@ export function resolveModel(task: ForemanTask): RouteResult {
   }
 
   // Auto-route by task type
+  if (isComfyUITaskType(task.type)) {
+    return { modelId: "comfyui", machineType: "comfyui" };
+  }
+
   switch (task.type) {
-    case "art":
-    case "music":
-    case "sfx":
-    case "style_exploration":
-      return { modelId: "comfyui", machineType: "comfyui" };
     case "content":
       return { modelId: "qwen3.5:9b", machineType: "inference" };
     case "review":

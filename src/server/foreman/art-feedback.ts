@@ -12,11 +12,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { selectPlannerMachine } from "../planner-llm";
 import type { Db } from "../db";
 
-const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx", "style_exploration"]);
-
-export function isComfyUITaskType(type: string): boolean {
-  return COMFYUI_TASK_TYPES.has(type);
-}
+export { isComfyUITaskType } from "./task-types";
 
 /**
  * Process user feedback on a rejected art task via LLM.

@@ -18,10 +18,9 @@ import {
   type WorkflowManifest,
   type WorkflowEntry,
 } from "../foreman/workflow-manifest";
-// PRESETS used indirectly via selectPreset() mapping to preset names
+import { isComfyUITaskType, extractTag, COMFYUI_TASK_TYPES } from "../foreman/task-types";
 import { getStyleLock } from "./style-lock";
 
-const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx", "style_exploration"]);
 
 /**
  * Post-process parsed tasks: inject ComfyUI tags into art/music/sfx tasks.
@@ -88,9 +87,9 @@ export function postProcessArtTasks(
  * Inject [preset:], [prompt:], and [output:] tags using built-in presets.
  */
 function injectPresetTags(task: ParsedTask): ParsedTask {
-  const assetType = extractHint(task.description, "asset_type") ?? inferAssetType(task);
-  const prompt = extractHint(task.description, "prompt") ?? task.title;
-  const outputPath = extractHint(task.description, "output_path") ?? inferOutputPath(task, assetType);
+  const assetType = extractTag(task.description, "asset_type") ?? inferAssetType(task);
+  const prompt = extractTag(task.description, "prompt") ?? task.title;
+  const outputPath = extractTag(task.description, "output_path") ?? inferOutputPath(task, assetType);
 
   const presetName = selectPreset(assetType);
   if (!presetName) {
@@ -144,9 +143,9 @@ function selectPreset(assetType: string): string | null {
  * Inject [workflow:], [params:], and [output:] tags from manifest.
  */
 function injectManifestTags(task: ParsedTask, manifest: WorkflowManifest): ParsedTask {
-  const assetType = extractHint(task.description, "asset_type") ?? inferAssetType(task);
-  const prompt = extractHint(task.description, "prompt") ?? task.title;
-  const outputPath = extractHint(task.description, "output_path") ?? inferOutputPath(task, assetType, manifest);
+  const assetType = extractTag(task.description, "asset_type") ?? inferAssetType(task);
+  const prompt = extractTag(task.description, "prompt") ?? task.title;
+  const outputPath = extractTag(task.description, "output_path") ?? inferOutputPath(task, assetType, manifest);
 
   const match = findWorkflowForAssetType(manifest, assetType);
   if (!match) {
@@ -253,8 +252,3 @@ function inferOutputPath(
   return `${base}/${subdir}/${slug}.${ext}`;
 }
 
-function extractHint(description: string, hint: string): string | null {
-  const regex = new RegExp(`\\[${hint}:\\s*(.+?)\\]`, "i");
-  const match = description.match(regex);
-  return match ? match[1].trim() : null;
-}
