@@ -11,7 +11,7 @@ import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
-import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
+import { isComfyUITaskType, processArtFeedback, injectFeedbackIntoArtTask } from "./art-feedback";
 import { extractTag } from "./task-types";
 
 export function createForemanRouter(db: Db): Router {
@@ -149,7 +149,6 @@ export function createForemanRouter(db: Db): Router {
     // For art tasks, revise the prompt asynchronously in the background
     if (isComfyUITaskType(task.type)) {
       // Immediate: append feedback tag so it's visible
-      const { injectFeedbackIntoArtTask } = await import("./art-feedback");
       description = injectFeedbackIntoArtTask(description, feedback);
 
       // Background: LLM revision replaces the simple append with a better prompt
