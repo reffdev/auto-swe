@@ -168,12 +168,15 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
 
     // Attach to DOM
     const container = termRef.current
-    // xterm needs a fresh container — if already opened elsewhere, reopen
-    if (!container.querySelector('.xterm')) {
-      session.term.open(container)
-    } else {
-      // Already has xterm element — just refocus
+    // If the terminal was already opened (navigated away and back),
+    // its DOM element is detached — re-parent it into the new container.
+    // xterm's open() can only be called once per instance.
+    const existingEl = (session.term as any).element as HTMLElement | undefined
+    if (existingEl) {
+      container.appendChild(existingEl)
       session.term.focus()
+    } else {
+      session.term.open(container)
     }
 
     // Fit after layout settles, then connect
