@@ -152,6 +152,13 @@ export async function executeComfyUIWorkflow(
       }
     }
 
+    if (outputFiles.length === 0 && totalFiles > 0) {
+      throw new Error(
+        `ComfyUI workflow produced ${totalFiles} file(s) but all downloads failed (prompt_id: ${prompt_id}). ` +
+        `Check that the ComfyUI /view endpoint is accessible at ${url}/view`
+      );
+    }
+
     return { outputFiles, promptId: prompt_id };
   }
 

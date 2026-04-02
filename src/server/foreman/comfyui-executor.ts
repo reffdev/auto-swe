@@ -170,6 +170,7 @@ export async function executeComfyUITask(
 
     const outputDir = resolve(project.workdir, ".comfyui-output", task.id);
     const allOutputFiles: Array<{ filename: string; localPath: string }> = [];
+    const variationErrors: string[] = [];
 
     for (let vi = 0; vi < variationCount; vi++) {
       // For variations, use different seeds
@@ -194,6 +195,7 @@ export async function executeComfyUITask(
       } catch (varErr) {
         const errMsg = varErr instanceof Error ? varErr.message : String(varErr);
         const cause = varErr instanceof Error && (varErr as any).cause ? ` (cause: ${(varErr as any).cause.message ?? (varErr as any).cause})` : "";
+        variationErrors.push(`var ${vi + 1}: ${errMsg}${cause}`);
         console.warn(`ComfyUI: variation ${vi + 1}/${variationCount} failed: ${errMsg}${cause}`);
         // If it's a connection error (not a workflow error), stop trying — server is probably down
         if (errMsg === "fetch failed" || errMsg.includes("ECONNREFUSED") || errMsg.includes("ETIMEDOUT")) {
@@ -210,7 +212,10 @@ export async function executeComfyUITask(
     breaker.recordSuccess();
 
     if (allOutputFiles.length === 0) {
-      throw new Error("ComfyUI workflow produced no output files");
+      const detail = variationErrors.length > 0
+        ? ` All ${variationErrors.length} variation(s) failed: ${variationErrors.join("; ")}`
+        : ` ${variationCount} variation(s) returned empty results.`;
+      throw new Error(`ComfyUI workflow produced no output files.${detail}`);
     }
 
     const { mkdirSync, copyFileSync } = await import("fs");
