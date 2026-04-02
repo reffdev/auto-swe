@@ -8,7 +8,7 @@
  */
 
 import { generateText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "../pipeline/index";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
@@ -95,11 +95,7 @@ export async function createStyleExplorationTask(
 
   console.log(`Style exploration: generating art prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
 
-  const provider = createOpenAICompatible({
-    name: "style-exploration",
-    baseURL: machineInfo.machine.base_url,
-    apiKey: machineInfo.machine.api_key || undefined,
-  });
+  const provider = createModelProvider(machineInfo.machine);
   const model = provider(machineInfo.modelId);
 
   let stylePrompts: string[];
@@ -109,6 +105,7 @@ export async function createStyleExplorationTask(
         model,
         system: STYLE_PROMPT_SYSTEM,
         prompt: `Generate 6 style exploration prompts for this project:\n\n${context}`,
+        maxRetries: 6,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`Style exploration prompt generation timeout (600s) — machine: ${machineInfo.machine.base_url}`)), 600_000)
