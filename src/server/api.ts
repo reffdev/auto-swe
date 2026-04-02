@@ -20,6 +20,8 @@ import { constructDecomposePrompt } from "./prompts/planner";
 import { generateText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { acquireLease, releaseLease } from "./machine-manager";
+import { isDirectorBusy, isDirectorPlanning } from "./director/scheduler";
+import { getActiveAnalysisCount } from "./analysis";
 
 /** Base directory for auto-created project clones */
 const PROJECTS_BASE = resolve(process.env.PROJECTS_BASE ?? "./.projects");
@@ -717,14 +719,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   router.get("/stats", (_req, res) => {
     const machines = db.getMachines().filter(m => m.enabled === 1);
-    const active = machines.filter(m => m.status === "working").length;
+    const activeMachines = machines.filter(m => m.status === "working").length;
 
+    // Pipeline issues (standalone, not conflated with foreman)
     const issues = db.getIssues();
     const issueQueued = issues.filter(i => i.status === "pending" || i.status === "approved").length;
+    const issueRunning = issues.filter(i => ["scouting", "implementing", "building", "testing", "reviewing", "gitops"].includes(i.status)).length;
     const issuePrOpen = issues.filter(i => i.status === "awaiting_review").length;
     const issueFailed = issues.filter(i => i.status === "failed" || i.status === "cancelled").length;
+    const issueCompleted = issues.filter(i => i.status === "completed" || i.status === "merged").length;
 
-    // Foreman task counts
+    // Foreman tasks
     const foremanTasks = db.getForemanTasks();
     const fQueued = foremanTasks.filter(t => t.status === "queued").length;
     const fRunning = foremanTasks.filter(t => t.status === "running").length;
@@ -732,15 +737,27 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const fCompleted = foremanTasks.filter(t => t.status === "completed").length;
     const fFailed = foremanTasks.filter(t => t.status === "failed").length;
 
+    // Director activity
+    const directives = db.getDirectorDirectives();
+    const activeDirectives = directives.filter(d => d.status === "active").length;
+    const pendingReviews = db.getDirectorReviews(undefined, "pending").length;
+
+    // Analysis
+    const analysisRunning = getActiveAnalysisCount();
+    const foremanConfig = db.getForemanConfig();
+    const analysisEnabled = !!(foremanConfig?.analysis_enabled ?? 1);
+
     const speed = getGenerationSpeed();
 
     res.json({
-      machines: { active, total: machines.length },
+      machines: { active: activeMachines, total: machines.length },
       issues: {
-        queued: issueQueued + fQueued + fRunning,
-        pr_open: issuePrOpen + fReview,
-        failed: issueFailed + fFailed,
-        completed: fCompleted,
+        queued: issueQueued,
+        running: issueRunning,
+        pr_open: issuePrOpen,
+        failed: issueFailed,
+        completed: issueCompleted,
+        total: issues.length,
       },
       foreman: {
         queued: fQueued,
@@ -749,6 +766,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         completed: fCompleted,
         failed: fFailed,
         total: foremanTasks.length,
+      },
+      director: {
+        active: activeDirectives,
+        reviews: pendingReviews,
+        busy: isDirectorBusy(),
+        planning: isDirectorPlanning(),
+      },
+      analysis: {
+        running: analysisRunning,
+        enabled: analysisEnabled,
       },
       speed,
       machineSpeed: getAllMachineSpeeds(),

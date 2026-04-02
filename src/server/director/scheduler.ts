@@ -35,6 +35,7 @@ let planningInProgress = false;
 /** When true, the Foreman scheduler pauses dispatch until the Director finishes. */
 let directorBusy = false;
 export function isDirectorBusy(): boolean { return directorBusy; }
+export function isDirectorPlanning(): boolean { return planningInProgress; }
 const zeroTaskCounts = new Map<string, number>(); // milestoneId → consecutive zero-task plan attempts
 let lastPlanError: { timestamp: number; message: string } | null = null;
 

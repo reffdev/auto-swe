@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -95,8 +95,10 @@ interface SpeedResult {
 
 interface Stats {
   machines: { active: number; total: number };
-  issues: { queued: number; pr_open: number; failed: number; completed?: number };
+  issues: { queued: number; running: number; pr_open: number; failed: number; completed: number; total: number };
   foreman?: { queued: number; running: number; review: number; completed: number; failed: number; total: number };
+  director?: { active: number; reviews: number; busy: boolean; planning: boolean };
+  analysis?: { running: number; enabled: boolean };
   speed: SpeedResult;
   machineSpeed: Record<string, SpeedResult>;
 }
@@ -128,6 +130,9 @@ function StatsPanel({ stats }: { stats: Stats | null }) {
   const promptTps = stats.speed.prompt_tokens_per_sec
   const completionTps = stats.speed.completion_tokens_per_sec
   const f = stats.foreman
+  const d = stats.director
+  const a = stats.analysis
+  const iss = stats.issues
 
   return (
     <div className="px-3 py-2 border-t border-border space-y-1.5">
@@ -141,11 +146,25 @@ function StatsPanel({ stats }: { stats: Stats | null }) {
           <span className="text-muted-foreground">/{stats.machines.total}</span>
         </span>
 
+        {d && (d.active > 0 || d.reviews > 0 || d.busy) && (
+          <>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Target className="size-3 shrink-0" />
+              <span>Director</span>
+            </div>
+            <span className="text-right font-mono text-[10px]">
+              {d.busy && <span className="text-emerald-400">{d.planning ? 'planning' : 'active'} </span>}
+              {!d.busy && d.active > 0 && <span>{d.active}d </span>}
+              {d.reviews > 0 && <span className="text-blue-400">{d.reviews}r</span>}
+            </span>
+          </>
+        )}
+
         {f && f.total > 0 && (
           <>
             <div className="flex items-center gap-1.5 text-muted-foreground">
               <Hammer className="size-3 shrink-0" />
-              <span>Tasks</span>
+              <span>Foreman</span>
             </div>
             <span className="text-right font-mono text-[10px]">
               {f.running > 0 && <span className="text-emerald-400">{f.running}r </span>}
@@ -157,13 +176,34 @@ function StatsPanel({ stats }: { stats: Stats | null }) {
           </>
         )}
 
-        {stats.issues.failed > 0 && (
+        {iss.total > 0 && (
           <>
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <AlertTriangle className="size-3 shrink-0" />
-              <span>Failed</span>
+              <GitPullRequest className="size-3 shrink-0" />
+              <span>Issues</span>
             </div>
-            <span className="text-right font-mono text-destructive">{stats.issues.failed}</span>
+            <span className="text-right font-mono text-[10px]">
+              {iss.running > 0 && <span className="text-emerald-400">{iss.running}r </span>}
+              {iss.queued > 0 && <span>{iss.queued}q </span>}
+              {iss.pr_open > 0 && <span className="text-blue-400">{iss.pr_open}w </span>}
+              {iss.completed > 0 && <span className="text-muted-foreground">{iss.completed}d </span>}
+              {iss.failed > 0 && <span className="text-destructive">{iss.failed}f</span>}
+            </span>
+          </>
+        )}
+
+        {a && (a.running > 0 || a.enabled) && (
+          <>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Microscope className="size-3 shrink-0" />
+              <span>Analysis</span>
+            </div>
+            <span className="text-right font-mono text-[10px]">
+              {a.running > 0
+                ? <span className="text-emerald-400">{a.running} running</span>
+                : <span className="text-muted-foreground">idle</span>
+              }
+            </span>
           </>
         )}
       </div>
@@ -485,14 +525,20 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
               <button onClick={() => { void navigate(`/project/${p.id}`); }} className={navClass(isIssues)}>
                 <FolderGit2 className="size-3" />
                 Issues
+                {stats?.issues && stats.issues.running > 0 && (
+                  <span className="size-2 rounded-full bg-emerald-400 animate-pulse ml-auto" title={`${stats.issues.running} running`} />
+                )}
               </button>
               <button onClick={() => { void navigate(`/project/${p.id}/llm-logs`); }} className={navClass(isLlmLogs)}>
                 <Activity className="size-3" />
                 LLM Logs
               </button>
               <button onClick={() => { void navigate(`/project/${p.id}/analysis`); }} className={navClass(isAnalysis)}>
-                <Activity className="size-3" />
+                <Microscope className="size-3" />
                 Analysis
+                {stats?.analysis && stats.analysis.running > 0 && (
+                  <span className="size-2 rounded-full bg-emerald-400 animate-pulse ml-auto" title={`${stats.analysis.running} running`} />
+                )}
               </button>
               <button onClick={() => { void navigate(`/project/${p.id}/settings`); }} className={navClass(isSettings)}>
                 <Activity className="size-3" />
@@ -618,6 +664,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
         {(() => {
           const path = location.pathname
           const isDirector = path.startsWith('/director')
+          const d = stats?.director
           const navClass = (active: boolean) => cn(
             'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
@@ -626,6 +673,14 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
             <button onClick={() => { void navigate('/director'); }} className={navClass(isDirector)}>
               <Target className="size-3" />
               Directives
+              {d && (d.busy || d.planning) && (
+                <span className="size-2 rounded-full bg-emerald-400 animate-pulse ml-auto" title={d.planning ? 'Planning...' : 'Processing...'} />
+              )}
+              {d && d.reviews > 0 && !(d.busy || d.planning) && (
+                <span className="ml-auto text-[10px] font-mono bg-blue-500/20 text-blue-400 px-1.5 rounded-full" title={`${d.reviews} pending review(s)`}>
+                  {d.reviews}
+                </span>
+              )}
             </button>
           )
         })()}
@@ -649,6 +704,14 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
               <button onClick={() => { void navigate('/foreman'); }} className={navClass(isForeman)}>
                 <Hammer className="size-3" />
                 Task Queue
+                {stats?.foreman && stats.foreman.running > 0 && (
+                  <span className="size-2 rounded-full bg-emerald-400 animate-pulse ml-auto" title={`${stats.foreman.running} running`} />
+                )}
+                {stats?.foreman && stats.foreman.review > 0 && !(stats.foreman.running > 0) && (
+                  <span className="ml-auto text-[10px] font-mono bg-blue-500/20 text-blue-400 px-1.5 rounded-full" title={`${stats.foreman.review} awaiting review`}>
+                    {stats.foreman.review}
+                  </span>
+                )}
               </button>
               <button onClick={() => { void navigate('/foreman/config'); }} className={navClass(isForemanConfig)}>
                 <Settings className="size-3" />
