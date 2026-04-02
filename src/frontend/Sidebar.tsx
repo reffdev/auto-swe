@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope, LayoutDashboard } from 'lucide-react'
+import { Plus, FolderGit2, RefreshCw, Activity, Cpu, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -459,7 +459,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
   working: 'bg-green-500 animate-pulse',
 }
 
-export function Sidebar({ projects, machines, issues, selectedProjectId, selectedMachineId, onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
+export function Sidebar({ projects, machines, issues, selectedProjectId, selectedMachineId, onSelectProject: _onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const [showNewProject, setShowNewProject] = useState(false)
@@ -477,9 +477,9 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       <div className="p-4 border-b border-border">
         <button
           onClick={() => navigate('/')}
-          className="block text-left"
+          className="block text-left cursor-pointer"
         >
-          <h1 className="text-lg font-semibold tracking-tight hover:text-primary transition-colors cursor-pointer">Auto-SWE</h1>
+          <h1 className="text-lg font-semibold tracking-tight hover:text-primary transition-colors">Auto-SWE</h1>
           <p className="text-xs text-muted-foreground">Agentic Wrangling</p>
         </button>
       </div>
@@ -498,7 +498,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
         {projects.map((p) => {
           const isSelected = selectedProjectId === p.id
           const navClass = (active: boolean) => cn(
-            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
           // Detect which sub-page is active via positive path matching
@@ -516,19 +516,16 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
             <button
               onClick={() => { void navigate(`/project/${p.id}/overview`); }}
               className={cn(
-                'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
+                'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 cursor-pointer',
                 'hover:bg-accent',
                 isSelected && 'font-medium',
+                isOverview && 'bg-accent font-medium',
               )}
             >
               <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="truncate flex-1">{p.name}</span>
             </button>
             <div className="pl-5 space-y-0.5 mt-0.5">
-              <button onClick={() => { void navigate(`/project/${p.id}/overview`); }} className={navClass(isOverview)}>
-                <LayoutDashboard className="size-3" />
-                Overview
-              </button>
               <button onClick={() => { void navigate(`/project/${p.id}`); }} className={navClass(isIssues)}>
                 <FolderGit2 className="size-3" />
                 Issues
@@ -548,7 +545,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 )}
               </button>
               <button onClick={() => { void navigate(`/project/${p.id}/settings`); }} className={navClass(isSettings)}>
-                <Activity className="size-3" />
+                <Settings className="size-3" />
                 Settings
               </button>
               <button onClick={() => { void navigate(`/terminal/${p.id}`); }} className={navClass(isTerminal)}>
@@ -576,7 +573,6 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
         )}
         {machines.map((m) => {
           const activeIds = m.active_issue_ids ?? []
-          const activeIssues = activeIds.map(id => issues.find(i => i.id === id)).filter(Boolean) as Issue[]
           const machineSpd = stats?.machineSpeed?.[m.id]
           const outTps = machineSpd?.completion_tokens_per_sec
 
@@ -616,7 +612,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 <button
                   onClick={() => { onSelectMachine(m.id === selectedMachineId ? null : m.id); }}
                   className={cn(
-                    'flex-1 text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
+                    'flex-1 text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 cursor-pointer',
                     'hover:bg-accent',
                     selectedMachineId === m.id && 'bg-accent font-medium',
                   )}
@@ -652,7 +648,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     // analysis has no detail page — arrow just indicates activity
                   }}
                   title={nextTarget.type === 'issue' ? nextTarget.issue.title : nextTarget.type === 'task' ? 'Foreman task' : 'Analysis running'}
-                  className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
+                  className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0 cursor-pointer"
                 >
                   <ArrowRight className="size-3.5" />
                 </button>
@@ -673,7 +669,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const isDirector = path.startsWith('/director')
           const d = stats?.director
           const navClass = (active: boolean) => cn(
-            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
           return (
@@ -703,7 +699,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const isForeman = path === '/foreman' || path.startsWith('/foreman/task')
           const isForemanConfig = path === '/foreman/config'
           const navClass = (active: boolean) => cn(
-            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
           return (
@@ -753,7 +749,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
               await api.updateAndRestart()
             } catch { /* server will disconnect during restart */ }
           }}
-          className="w-full px-3 py-1.5 text-xs rounded-md font-medium text-center bg-muted text-muted-foreground hover:bg-muted/80 transition-colors flex items-center justify-center gap-1.5"
+          className="w-full px-3 py-1.5 text-xs rounded-md font-medium text-center bg-muted text-muted-foreground hover:bg-muted/80 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
         >
           <RefreshCw className="size-3" />
           Update & Restart
