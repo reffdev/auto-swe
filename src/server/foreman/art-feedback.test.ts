@@ -42,17 +42,18 @@ describe("injectFeedbackIntoArtTask", () => {
     "[output: assets/sprites/fire.png]",
   ].join("\n");
 
-  it("updates [prompt:] hint with feedback", () => {
+  it("does NOT modify [prompt:] tag", () => {
     const result = injectFeedbackIntoArtTask(baseDescription, "make it brighter");
-    expect(result).toContain("[prompt: pixel art fire symbol, 64x64 (revision: make it brighter)]");
+    expect(result).toContain("[prompt: pixel art fire symbol, 64x64]");
+    expect(result).not.toContain("(revision:");
   });
 
-  it("updates text field in [params:]", () => {
+  it("does NOT modify [params:] text field", () => {
     const result = injectFeedbackIntoArtTask(baseDescription, "make it brighter");
     const paramsMatch = result.match(/\[params:\s*(\{.+?\})\]/);
     expect(paramsMatch).not.toBeNull();
     const params = JSON.parse(paramsMatch![1]);
-    expect(params["6"].text).toBe("pixel art fire symbol, 64x64 (revision: make it brighter)");
+    expect(params["6"].text).toBe("pixel art fire symbol, 64x64");
   });
 
   it("appends [feedback:] note", () => {
@@ -67,14 +68,6 @@ describe("injectFeedbackIntoArtTask", () => {
     expect(result).toContain("[output: assets/sprites/fire.png]");
   });
 
-  it("replaces prior revision instead of nesting on second rejection", () => {
-    const firstReject = injectFeedbackIntoArtTask(baseDescription, "too dark");
-    const secondReject = injectFeedbackIntoArtTask(firstReject, "wrong colors");
-    expect(secondReject).toContain("[prompt: pixel art fire symbol, 64x64 (revision: wrong colors)]");
-    // Should NOT contain nested revisions
-    expect(secondReject).not.toContain("(revision: too dark");
-  });
-
   it("replaces prior [feedback:] note instead of stacking", () => {
     const firstReject = injectFeedbackIntoArtTask(baseDescription, "too dark");
     const secondReject = injectFeedbackIntoArtTask(firstReject, "wrong colors");
@@ -84,39 +77,10 @@ describe("injectFeedbackIntoArtTask", () => {
     expect(secondReject).not.toContain("[feedback: too dark]");
   });
 
-  it("handles description with no [prompt:] tag gracefully", () => {
-    const desc = 'Create a fire sprite.\n[params: {"6":{"text":"fire"}}]\n[output: fire.png]';
-    const result = injectFeedbackIntoArtTask(desc, "brighter");
-    expect(result).toContain("[feedback: brighter]");
-    // Params should still be updated
-    const params = JSON.parse(result.match(/\[params:\s*(\{.+?\})\]/)![1]);
-    expect(params["6"].text).toBe("fire (revision: brighter)");
-  });
-
-  it("handles description with no [params:] tag gracefully", () => {
-    const desc = "Create a fire sprite.\n[prompt: fire symbol]\n[output: fire.png]";
-    const result = injectFeedbackIntoArtTask(desc, "brighter");
-    expect(result).toContain("[prompt: fire symbol (revision: brighter)]");
-    expect(result).toContain("[feedback: brighter]");
-  });
-
   it("handles description with no ComfyUI tags at all", () => {
     const desc = "Just a plain description of what to create.";
     const result = injectFeedbackIntoArtTask(desc, "brighter");
     expect(result).toContain("Just a plain description");
     expect(result).toContain("[feedback: brighter]");
-  });
-
-  it("handles params with multiple nodes — only updates first text node", () => {
-    const desc = [
-      "[prompt: fire]",
-      '[params: {"4":{"ckpt_name":"sd15.safetensors"},"6":{"text":"fire"},"7":{"text":"bad quality"}}]',
-      "[output: fire.png]",
-    ].join("\n");
-    const result = injectFeedbackIntoArtTask(desc, "add glow");
-    const params = JSON.parse(result.match(/\[params:\s*(\{.+?\})\]/)![1]);
-    expect(params["6"].text).toBe("fire (revision: add glow)");
-    // Second text node should be untouched
-    expect(params["7"].text).toBe("bad quality");
   });
 });

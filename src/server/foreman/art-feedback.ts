@@ -42,12 +42,7 @@ export async function processArtFeedback(
     // Update [params:] text field to match
     description = updateParamsText(description, revisedPrompt);
   } else {
-    // LLM unavailable — fall back to simple append
-    description = description.replace(
-      promptMatch![0],
-      `[prompt: ${currentPrompt} (revision: ${feedback})]`,
-    );
-    description = updateParamsText(description, `${currentPrompt} (revision: ${feedback})`);
+    // LLM unavailable — leave the prompt intact, just record feedback
   }
 
   // Always record the feedback
@@ -57,16 +52,11 @@ export async function processArtFeedback(
 }
 
 /**
- * Simple synchronous feedback injection — used when LLM is not available
- * or for non-art tasks.
+ * Simple synchronous feedback injection — used when LLM is not available.
+ * Records feedback as a [feedback:] tag but NEVER modifies the [prompt:] tag.
+ * Only the LLM revision path should rewrite the actual generation prompt.
  */
 export function injectFeedbackIntoArtTask(description: string, feedback: string): string {
-  const promptMatch = description.match(/\[prompt:\s*(.+?)\]/i);
-  if (promptMatch) {
-    const original = stripRevision(promptMatch[1].trim());
-    description = description.replace(promptMatch[0], `[prompt: ${original} (revision: ${feedback})]`);
-  }
-  description = updateParamsTextWithFeedback(description, feedback);
   description = updateFeedbackNote(description, feedback);
   return description;
 }
@@ -100,38 +90,44 @@ async function revisePromptWithLLM(
   currentPrompt: string,
   feedback: string,
 ): Promise<string | null> {
-  try {
-    const machineInfo = selectPlannerMachine(db);
-    if (!machineInfo) return null;
-
-    const provider = createOpenAICompatible({
-      name: "art-feedback",
-      baseURL: machineInfo.machine.base_url,
-      apiKey: machineInfo.machine.api_key || undefined,
-    });
-    const model = provider(machineInfo.modelId);
-
-    const result = await Promise.race([
-      generateText({
-        model,
-        system: REVISION_SYSTEM_PROMPT,
-        prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Art feedback LLM timeout (60s)")), 60_000)
-      ),
-    ]);
-
-    const revised = result.text.trim();
-    if (revised && revised.length > 5 && revised.length < 2000) {
-      console.log(`Art feedback: revised prompt "${currentPrompt}" → "${revised}" (feedback: "${feedback}")`);
-      return revised;
-    }
-    return null;
-  } catch (err) {
-    console.warn("Art feedback LLM revision failed:", err instanceof Error ? err.message : String(err));
+  const machineInfo = selectPlannerMachine(db);
+  if (!machineInfo) {
+    console.error("Art feedback: no machine available for LLM prompt revision — selectPlannerMachine returned null");
     return null;
   }
+
+  console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
+
+  const provider = createOpenAICompatible({
+    name: "art-feedback",
+    baseURL: machineInfo.machine.base_url,
+    apiKey: machineInfo.machine.api_key || undefined,
+  });
+  const model = provider(machineInfo.modelId);
+
+  const result = await Promise.race([
+    generateText({
+      model,
+      system: REVISION_SYSTEM_PROMPT,
+      prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
+    }),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Art feedback LLM timeout (60s)")), 60_000)
+    ),
+  ]);
+
+  const revised = result.text.trim();
+  if (!revised || revised.length <= 5) {
+    console.error(`Art feedback: LLM returned empty/too-short response (${revised.length} chars): "${revised}"`);
+    return null;
+  }
+  if (revised.length >= 2000) {
+    console.error(`Art feedback: LLM returned oversized response (${revised.length} chars), truncating`);
+    return null;
+  }
+
+  console.log(`Art feedback: revised prompt "${currentPrompt}" → "${revised}" (feedback: "${feedback}")`);
+  return revised;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
