@@ -36,8 +36,6 @@ export async function planNextTasks(
   milestone: DirectorMilestone,
   /** Machine types that are idle and need work. When set, the planner prioritizes generating tasks for these types. */
   idleMachineTypes?: string[],
-  /** When true, the planner MUST generate a style_exploration task */
-  forceStyleExploration?: boolean,
 ): Promise<number> {
   const planStartTime = Date.now();
   console.log(`Director planner: starting for milestone "${milestone.title}" (idleMachineTypes: ${idleMachineTypes?.join(", ") ?? "none"})`);
@@ -80,7 +78,6 @@ export async function planNextTasks(
     workflowSummary,
     idleMachineTypes,
     styleLocked,
-    forceStyleExploration,
   });
 
   const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];

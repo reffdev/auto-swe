@@ -156,10 +156,10 @@ export async function assembleDirectorContext(
       parts.push("# Recent Task Results\n\n" + summaries.join("\n"));
     }
 
-    // Show in-progress tasks
-    const inProgress = tasks.filter(t => t.status === "running" || t.status === "queued");
-    if (inProgress.length > 0) {
-      parts.push("# Tasks In Progress\n\n" + inProgress.map(t => `- [${t.status}] ${t.title}`).join("\n"));
+    // Show all non-completed tasks so the planner doesn't create duplicates
+    const active = tasks.filter(t => t.status !== "completed");
+    if (active.length > 0) {
+      parts.push("# Current Tasks (do NOT duplicate these)\n\n" + active.map(t => `- [${t.status}] ${t.title} (${t.type})`).join("\n"));
     }
   }
 

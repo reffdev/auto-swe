@@ -68,8 +68,8 @@ export function startDirectorScheduler(db: Db): void {
 
 /**
  * On startup, check if the project needs a style exploration task.
- * If style not locked and no style_exploration task exists, triggers the
- * Director planner to generate one (so it uses conventions and project context).
+ * If style not locked and no style_exploration task exists, creates one
+ * via a dedicated focused LLM call (separate from the general planner).
  */
 export function ensureStyleExploration(db: Db, project: import("../db").Project): void {
   if (isStyleLocked(project.workdir)) return;
@@ -103,22 +103,20 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
   const activeMilestone = db.getActiveMilestone(activeDirective.id);
   if (!activeMilestone) return;
 
-  // Trigger the planner to generate a style exploration task
-  // The planner sees conventions (including comfyui-prompt-engineering.md),
-  // the design doc, and the "style not locked" flag — it will generate
-  // a properly-prompted style_exploration task.
-  console.log("Director: art style not locked — triggering planner for style exploration");
-  logEpisodic(project.workdir, "Style not locked — requesting planner to generate style exploration task");
+  console.log("Director: art style not locked — creating style exploration task");
 
-  // Fire and forget — planner runs asynchronously
-  planNextTasks(db, activeDirective, project, activeMilestone, ["comfyui"], true)
-    .then(created => {
-      if (created > 0) {
-        console.log(`Director: planner generated ${created} task(s) for style exploration`);
-        nudgeForeman(db);
-      }
-    })
-    .catch(err => console.warn("Director: style exploration planning failed:", err instanceof Error ? err.message : err));
+  // Dedicated style exploration creator — focused LLM call, not the full planner
+  import("./style-exploration").then(({ createStyleExplorationTask }) => {
+    return createStyleExplorationTask(db, activeDirective, project, activeMilestone);
+  }).then(taskId => {
+    if (taskId) {
+      console.log(`Director: style exploration task created: ${taskId}`);
+    } else {
+      console.error("Director: style exploration task creation returned null — check logs above");
+    }
+  }).catch(err => {
+    console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
+  });
 }
 
 export function stopDirectorScheduler(): void {
