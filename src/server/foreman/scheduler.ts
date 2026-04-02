@@ -84,6 +84,7 @@ async function schedulerTick(db: Db): Promise<void> {
 
   // Dispatch loop — fill all available machine slots
   let dispatched = 0;
+  const exhaustedMachineTypes = new Set<string>(); // track types with no capacity to avoid log spam
   for (;;) {
     // Get tasks ready for dispatch (re-query each iteration since we change status)
     const ready = db.getForemanTasksReadyToRun();
@@ -97,12 +98,16 @@ async function schedulerTick(db: Db): Promise<void> {
     let leaseResult: { lease: MachineLease; machine: import("../db").Machine } | null = null;
     for (const candidate of sorted) {
       const route = resolveModel(candidate);
+      // Skip machine types we already know are at capacity this tick
+      if (exhaustedMachineTypes.has(route.machineType)) continue;
       const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
       if (result) {
         task = candidate;
         leaseResult = result;
         break;
       }
+      // Mark this machine type as exhausted so we don't retry (and log) for every remaining task
+      exhaustedMachineTypes.add(route.machineType);
     }
     if (!task || !leaseResult) break; // no dispatchable task+machine pair
 

@@ -501,12 +501,14 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
             'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
-          // Detect which sub-page is active
+          // Detect which sub-page is active via positive path matching
           const path = location.pathname
-          const isIssues = isSelected && !path.includes('/llm-logs') && !path.includes('/analysis') && !path.includes('/settings') && !path.includes('/planner')
-          const isLlmLogs = isSelected && path.includes('/llm-logs')
-          const isAnalysis = isSelected && path.includes('/analysis')
-          const isSettings = isSelected && path.includes('/settings')
+          const projectBase = `/project/${p.id}`
+          const isIssues = path === projectBase || path.startsWith(`${projectBase}/issue/`)
+          const isLlmLogs = path.startsWith(`${projectBase}/llm-logs`)
+          const isAnalysis = path.startsWith(`${projectBase}/analysis`)
+          const isSettings = path.startsWith(`${projectBase}/settings`)
+          const isTerminal = path === `/terminal/${p.id}`
 
           return (
           <div key={p.id} className="mb-2">
@@ -544,7 +546,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 <Activity className="size-3" />
                 Settings
               </button>
-              <button onClick={() => { void navigate(`/terminal/${p.id}`); }} className={navClass(location.pathname === `/terminal/${p.id}`)}>
+              <button onClick={() => { void navigate(`/terminal/${p.id}`); }} className={navClass(isTerminal)}>
                 <span className="font-mono text-[10px]">&gt;_</span>
                 Terminal
               </button>
