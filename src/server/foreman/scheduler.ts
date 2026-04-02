@@ -18,6 +18,27 @@ let lastOllamaModel: string | null = null;
 let pendingNudge = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Machine types that had no capacity on the last tick.
+ * Persists across ticks so we don't keep retrying (and logging) when nothing
+ * has changed. Cleared when capacity becomes available (lease released,
+ * machine config changed).
+ */
+const exhaustedMachineTypes = new Set<string>();
+
+/**
+ * Call when machine capacity may have changed — clears exhaustion tracking
+ * for a specific machine type (or all types) and nudges the scheduler.
+ */
+export function notifyCapacityChange(machineType?: string): void {
+  if (machineType) {
+    exhaustedMachineTypes.delete(machineType);
+  } else {
+    exhaustedMachineTypes.clear();
+  }
+  nudgeForeman();
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /** Register the DB instance so nudge() can be called without passing it. */
@@ -32,6 +53,7 @@ export function startForemanScheduler(db: Db): void {
 
 export function stopForemanScheduler(): void {
   schedulerDb = null;
+  exhaustedMachineTypes.clear();
   if (retryTimer) {
     clearTimeout(retryTimer);
     retryTimer = null;
@@ -84,7 +106,6 @@ async function schedulerTick(db: Db): Promise<void> {
 
   // Dispatch loop — fill all available machine slots
   let dispatched = 0;
-  const exhaustedMachineTypes = new Set<string>(); // track types with no capacity to avoid log spam
   for (;;) {
     // Get tasks ready for dispatch (re-query each iteration since we change status)
     const ready = db.getForemanTasksReadyToRun();
@@ -128,7 +149,8 @@ async function schedulerTick(db: Db): Promise<void> {
         const resolved = task.resolved_model;
         if (resolved) lastOllamaModel = resolved;
 
-        // Task finished — nudge to fill the freed slot
+        // Capacity freed — clear exhaustion for this machine type and nudge
+        exhaustedMachineTypes.delete(machine.machine_type);
         nudgeForeman(db);
       });
 

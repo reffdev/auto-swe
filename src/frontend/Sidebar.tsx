@@ -6,7 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import * as api from './api'
 import type { Project, Machine, Issue } from './api'
 
@@ -460,7 +460,6 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
 }
 
 export function Sidebar({ projects, machines, issues, selectedProjectId, selectedMachineId, onSelectProject: _onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
-  const navigate = useNavigate()
   const location = useLocation()
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
@@ -475,13 +474,13 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
   return (
     <aside className="w-72 border-r border-border flex flex-col shrink-0">
       <div className="p-4 border-b border-border">
-        <button
-          onClick={() => navigate('/')}
-          className="block text-left cursor-pointer"
+        <Link
+          to="/"
+          className="block text-left"
         >
           <h1 className="text-lg font-semibold tracking-tight hover:text-primary transition-colors">Auto-SWE</h1>
           <p className="text-xs text-muted-foreground">Agentic Wrangling</p>
-        </button>
+        </Link>
       </div>
 
       {/* Projects */}
@@ -498,7 +497,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
         {projects.map((p) => {
           const isSelected = selectedProjectId === p.id
           const navClass = (active: boolean) => cn(
-            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer',
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
           // Detect which sub-page is active via positive path matching
@@ -513,10 +512,10 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
 
           return (
           <div key={p.id} className="mb-2">
-            <button
-              onClick={() => { void navigate(`/project/${p.id}/overview`); }}
+            <Link
+              to={`/project/${p.id}/overview`}
               className={cn(
-                'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2 cursor-pointer',
+                'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
                 'hover:bg-accent',
                 isSelected && 'font-medium',
                 isOverview && 'bg-accent font-medium',
@@ -524,34 +523,34 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
             >
               <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="truncate flex-1">{p.name}</span>
-            </button>
+            </Link>
             <div className="pl-5 space-y-0.5 mt-0.5">
-              <button onClick={() => { void navigate(`/project/${p.id}`); }} className={navClass(isIssues)}>
+              <Link to={`/project/${p.id}`} className={navClass(isIssues)}>
                 <FolderGit2 className="size-3" />
                 Issues
                 {stats?.issues && stats.issues.running > 0 && (
                   <span className="size-2 rounded-full bg-emerald-400 animate-pulse ml-auto" title={`${stats.issues.running} running`} />
                 )}
-              </button>
-              <button onClick={() => { void navigate(`/project/${p.id}/llm-logs`); }} className={navClass(isLlmLogs)}>
+              </Link>
+              <Link to={`/project/${p.id}/llm-logs`} className={navClass(isLlmLogs)}>
                 <Activity className="size-3" />
                 LLM Logs
-              </button>
-              <button onClick={() => { void navigate(`/project/${p.id}/analysis`); }} className={navClass(isAnalysis)}>
+              </Link>
+              <Link to={`/project/${p.id}/analysis`} className={navClass(isAnalysis)}>
                 <Microscope className="size-3" />
                 Analysis
                 {stats?.analysis && stats.analysis.running > 0 && (
                   <span className="size-2 rounded-full bg-emerald-400 animate-pulse ml-auto" title={`${stats.analysis.running} running`} />
                 )}
-              </button>
-              <button onClick={() => { void navigate(`/project/${p.id}/settings`); }} className={navClass(isSettings)}>
+              </Link>
+              <Link to={`/project/${p.id}/settings`} className={navClass(isSettings)}>
                 <Settings className="size-3" />
                 Settings
-              </button>
-              <button onClick={() => { void navigate(`/terminal/${p.id}`); }} className={navClass(isTerminal)}>
+              </Link>
+              <Link to={`/terminal/${p.id}`} className={navClass(isTerminal)}>
                 <span className="font-mono text-[10px]">&gt;_</span>
                 Terminal
-              </button>
+              </Link>
             </div>
           </div>
           )
@@ -636,22 +635,25 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
                   )}
                 </button>
-              {nextTarget && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (nextTarget.type === 'issue') {
-                      void navigate(`/project/${nextTarget.issue.project_id}/issue/${nextTarget.issue.id}`)
-                    } else if (nextTarget.type === 'task') {
-                      void navigate(`/foreman/task/${nextTarget.taskId}`)
-                    }
-                    // analysis has no detail page — arrow just indicates activity
-                  }}
-                  title={nextTarget.type === 'issue' ? nextTarget.issue.title : nextTarget.type === 'task' ? 'Foreman task' : 'Analysis running'}
-                  className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0 cursor-pointer"
+              {nextTarget && nextTarget.type !== 'analysis' && (
+                <Link
+                  to={nextTarget.type === 'issue'
+                    ? `/project/${nextTarget.issue.project_id}/issue/${nextTarget.issue.id}`
+                    : `/foreman/task/${nextTarget.taskId}`
+                  }
+                  title={nextTarget.type === 'issue' ? nextTarget.issue.title : 'Foreman task'}
+                  className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-accent transition-colors shrink-0"
                 >
                   <ArrowRight className="size-3.5" />
-                </button>
+                </Link>
+              )}
+              {nextTarget && nextTarget.type === 'analysis' && (
+                <span
+                  title="Analysis running"
+                  className="p-1.5 text-muted-foreground shrink-0"
+                >
+                  <ArrowRight className="size-3.5" />
+                </span>
               )}
               </div>
             </div>
@@ -669,11 +671,11 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const isDirector = path.startsWith('/director')
           const d = stats?.director
           const navClass = (active: boolean) => cn(
-            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer',
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
           return (
-            <button onClick={() => { void navigate('/director'); }} className={navClass(isDirector)}>
+            <Link to="/director" className={navClass(isDirector)}>
               <Target className="size-3" />
               Directives
               {d && (d.busy || d.planning) && (
@@ -684,7 +686,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                   {d.reviews}
                 </span>
               )}
-            </button>
+            </Link>
           )
         })()}
       </nav>
@@ -699,12 +701,12 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const isForeman = path === '/foreman' || path.startsWith('/foreman/task')
           const isForemanConfig = path === '/foreman/config'
           const navClass = (active: boolean) => cn(
-            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2 cursor-pointer',
+            'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
             active ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
           )
           return (
             <>
-              <button onClick={() => { void navigate('/foreman'); }} className={navClass(isForeman)}>
+              <Link to="/foreman" className={navClass(isForeman)}>
                 <Hammer className="size-3" />
                 Task Queue
                 {stats?.foreman && stats.foreman.running > 0 && (
@@ -715,11 +717,11 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     {stats.foreman.review}
                   </span>
                 )}
-              </button>
-              <button onClick={() => { void navigate('/foreman/config'); }} className={navClass(isForemanConfig)}>
+              </Link>
+              <Link to="/foreman/config" className={navClass(isForemanConfig)}>
                 <Settings className="size-3" />
                 Config
-              </button>
+              </Link>
             </>
           )
         })()}

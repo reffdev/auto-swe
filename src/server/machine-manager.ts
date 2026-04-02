@@ -32,6 +32,10 @@ export interface MachineLease {
 const activeLeases = new Map<string, MachineLease[]>();
 let leaseCounter = 0;
 
+/** Rate-limit "no machine available" logs: key = machineType, value = last log timestamp */
+const lastNoMachineLog = new Map<string, number>();
+const NO_MACHINE_LOG_INTERVAL_MS = 60_000;
+
 /** Clear all leases — call on server startup to prevent stale state. */
 export function clearAllLeases(): void {
   const count = getActiveLeases().length;
@@ -100,8 +104,14 @@ export function acquireLease(
   );
 
   if (candidates.length === 0) {
-    const allOfType = machines.filter(m => m.machine_type === machineType);
-    console.log(`Machine manager: no ${machineType} machine available for ${consumer}/${label}. Total: ${allOfType.length}, enabled: ${allOfType.filter(m => m.enabled).length}, with capacity: ${allOfType.filter(m => hasCapacity(m)).length}, breaker ok: ${allOfType.filter(m => getBreaker(m.id).canExecute()).length}`);
+    // Rate-limit this log to once per machine type per minute
+    const now = Date.now();
+    const lastLog = lastNoMachineLog.get(machineType) ?? 0;
+    if (now - lastLog >= NO_MACHINE_LOG_INTERVAL_MS) {
+      lastNoMachineLog.set(machineType, now);
+      const allOfType = machines.filter(m => m.machine_type === machineType);
+      console.log(`Machine manager: no ${machineType} machine available for ${consumer}/${label}. Total: ${allOfType.length}, enabled: ${allOfType.filter(m => m.enabled).length}, with capacity: ${allOfType.filter(m => hasCapacity(m)).length}, breaker ok: ${allOfType.filter(m => getBreaker(m.id).canExecute()).length}`);
+    }
     return null;
   }
 

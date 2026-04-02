@@ -21,6 +21,7 @@ import { generateText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { acquireLease, releaseLease } from "./machine-manager";
 import { isDirectorBusy, isDirectorPlanning } from "./director/scheduler";
+import { notifyCapacityChange } from "./foreman/scheduler";
 import { getActiveAnalysisCount } from "./analysis";
 
 /** Base directory for auto-created project clones */
@@ -204,6 +205,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       }
     }
 
+    notifyCapacityChange(); // new machine — clear all exhaustion
     res.status(201).json(machine);
   });
 
@@ -215,6 +217,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type } = req.body;
     db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type });
+    // Machine config changed — may have freed capacity
+    notifyCapacityChange(machine.machine_type);
     res.json(db.getMachine(req.params.id));
   });
 
