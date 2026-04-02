@@ -258,7 +258,7 @@ describe('Sidebar', () => {
     const projectButton = screen.getByText('Test Project')
     fireEvent.click(projectButton)
 
-    expect(mockNavigate).toHaveBeenCalledWith('/project/proj1')
+    expect(mockNavigate).toHaveBeenCalledWith('/project/proj1/overview')
   })
 
   it('shows sub-links for all projects', () => {

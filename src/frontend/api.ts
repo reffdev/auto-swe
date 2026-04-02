@@ -705,3 +705,34 @@ export function respondToReview(reviewId: string, response: string): Promise<Dir
 export function dismissReview(reviewId: string): Promise<DirectorReview> {
   return json(`/api/director/reviews/${reviewId}/dismiss`, { method: "POST" });
 }
+
+// ─── Project Overview ────────────────────────────────────────────────────────
+
+export interface ProjectOverviewData {
+  project: Project;
+  issueCounts: Record<string, number>;
+  activeRuns: Array<{
+    run_id: string; stage: string | null; run_status: string; started_at: string | null;
+    issue_id: string; issue_title: string; issue_status: string; machine_id: string | null;
+  }>;
+  activeForemanTasks: Array<{
+    id: string; title: string; type: string; status: string;
+    machine_id: string | null; started_at: string | null;
+  }>;
+  recentActivity: Array<{
+    source: string; id: string; title: string; detail: string | null;
+    status: string; timestamp: string;
+  }>;
+  tokenStats: {
+    total_prompt_tokens: number; total_completion_tokens: number;
+    total_runs: number; avg_duration_ms: number;
+  };
+  activeDirectives: Array<{
+    id: string; directive: string; status: string; progress: string | null;
+    total_milestones: number; completed_milestones: number;
+  }>;
+}
+
+export function getProjectOverview(projectId: string): Promise<ProjectOverviewData> {
+  return json(`/api/projects/${projectId}/overview`);
+}

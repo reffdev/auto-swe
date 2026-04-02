@@ -4,6 +4,7 @@
  */
 export const ROUTE_PATHS = [
   '/',
+  '/project/:projectId/overview',
   '/project/:projectId',
   '/project/:projectId/issue/:issueId',
   '/project/:projectId/planner/:conversationId?',
@@ -24,6 +25,7 @@ export const ROUTE_PATHS = [
 /** Route names for view discrimination */
 export type ViewName =
   | 'landing'
+  | 'project-overview'
   | 'issue-list'
   | 'issue-detail'
   | 'planner'

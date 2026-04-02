@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope } from 'lucide-react'
+import { Plus, Server, FolderGit2, RefreshCw, Activity, Cpu, AlertTriangle, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope, LayoutDashboard } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -504,6 +504,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           // Detect which sub-page is active via positive path matching
           const path = location.pathname
           const projectBase = `/project/${p.id}`
+          const isOverview = path === `${projectBase}/overview`
           const isIssues = path === projectBase || path.startsWith(`${projectBase}/issue/`)
           const isLlmLogs = path.startsWith(`${projectBase}/llm-logs`)
           const isAnalysis = path.startsWith(`${projectBase}/analysis`)
@@ -513,7 +514,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           return (
           <div key={p.id} className="mb-2">
             <button
-              onClick={() => { void navigate(`/project/${p.id}`); }}
+              onClick={() => { void navigate(`/project/${p.id}/overview`); }}
               className={cn(
                 'w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center gap-2',
                 'hover:bg-accent',
@@ -524,6 +525,10 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
               <span className="truncate flex-1">{p.name}</span>
             </button>
             <div className="pl-5 space-y-0.5 mt-0.5">
+              <button onClick={() => { void navigate(`/project/${p.id}/overview`); }} className={navClass(isOverview)}>
+                <LayoutDashboard className="size-3" />
+                Overview
+              </button>
               <button onClick={() => { void navigate(`/project/${p.id}`); }} className={navClass(isIssues)}>
                 <FolderGit2 className="size-3" />
                 Issues

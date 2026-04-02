@@ -954,5 +954,113 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     });
   });
 
+  // ─── Project Overview ────────────────────────────────────────────────
+
+  router.get("/projects/:id/overview", (req, res) => {
+    const project = db.getProject(req.params.id);
+    if (!project) {
+      res.status(404).json({ error: "project not found" });
+      return;
+    }
+    const pid = req.params.id;
+    const sqlite = (db as any).sqlite; // raw sqlite for aggregation
+
+    // Issue counts by status
+    const issueCounts = sqlite
+      .prepare("SELECT status, COUNT(*) as count FROM issues WHERE project_id = ? GROUP BY status")
+      .all(pid) as Array<{ status: string; count: number }>;
+
+    // Active runs (running issues + their current stage)
+    const activeRuns = sqlite
+      .prepare(`
+        SELECT r.id as run_id, r.stage, r.status as run_status, r.started_at,
+               i.id as issue_id, i.title as issue_title, i.status as issue_status,
+               r.machine_id
+        FROM runs r
+        JOIN issues i ON r.issue_id = i.id
+        WHERE i.project_id = ? AND r.status = 'running'
+        ORDER BY r.started_at DESC
+      `)
+      .all(pid) as Array<{
+        run_id: string; stage: string | null; run_status: string; started_at: string | null;
+        issue_id: string; issue_title: string; issue_status: string; machine_id: string | null;
+      }>;
+
+    // Active foreman tasks
+    const activeForemanTasks = sqlite
+      .prepare(`
+        SELECT id, title, type, status, machine_id, started_at
+        FROM foreman_tasks
+        WHERE project_id = ? AND status IN ('running', 'validating', 'queued')
+        ORDER BY started_at DESC
+        LIMIT 10
+      `)
+      .all(pid) as Array<{
+        id: string; title: string; type: string; status: string;
+        machine_id: string | null; started_at: string | null;
+      }>;
+
+    // Recent activity: completed/failed runs and tasks (last 15)
+    const recentActivity = sqlite
+      .prepare(`
+        SELECT * FROM (
+          SELECT 'issue_run' as source, r.id, i.title, r.stage as detail,
+                 r.status, r.completed_at as timestamp
+          FROM runs r JOIN issues i ON r.issue_id = i.id
+          WHERE i.project_id = ? AND r.status IN ('pass', 'fail') AND r.completed_at IS NOT NULL
+          UNION ALL
+          SELECT 'foreman_task' as source, ft.id, ft.title, ft.type as detail,
+                 ft.status, ft.completed_at as timestamp
+          FROM foreman_tasks ft
+          WHERE ft.project_id = ? AND ft.status IN ('completed', 'failed') AND ft.completed_at IS NOT NULL
+        ) ORDER BY timestamp DESC LIMIT 15
+      `)
+      .all(pid, pid) as Array<{
+        source: string; id: string; title: string; detail: string | null;
+        status: string; timestamp: string;
+      }>;
+
+    // Token stats
+    const tokenStats = sqlite
+      .prepare(`
+        SELECT
+          COALESCE(SUM(prompt_tokens), 0) as total_prompt_tokens,
+          COALESCE(SUM(completion_tokens), 0) as total_completion_tokens,
+          COUNT(*) as total_runs,
+          COALESCE(AVG(duration_ms), 0) as avg_duration_ms
+        FROM runs r JOIN issues i ON r.issue_id = i.id
+        WHERE i.project_id = ? AND r.status IN ('pass', 'fail')
+      `)
+      .get(pid) as {
+        total_prompt_tokens: number; total_completion_tokens: number;
+        total_runs: number; avg_duration_ms: number;
+      };
+
+    // Active directives
+    const activeDirectives = sqlite
+      .prepare(`
+        SELECT dd.id, dd.directive, dd.status, dd.progress,
+               (SELECT COUNT(*) FROM director_milestones dm WHERE dm.directive_id = dd.id) as total_milestones,
+               (SELECT COUNT(*) FROM director_milestones dm WHERE dm.directive_id = dd.id AND dm.status = 'completed') as completed_milestones
+        FROM director_directives dd
+        WHERE dd.project_id = ? AND dd.status NOT IN ('completed', 'failed')
+        ORDER BY dd.created_at DESC
+      `)
+      .all(pid) as Array<{
+        id: string; directive: string; status: string; progress: string | null;
+        total_milestones: number; completed_milestones: number;
+      }>;
+
+    res.json({
+      project,
+      issueCounts: Object.fromEntries(issueCounts.map(r => [r.status, r.count])),
+      activeRuns,
+      activeForemanTasks,
+      recentActivity,
+      tokenStats,
+      activeDirectives,
+    });
+  });
+
   return router;
 }

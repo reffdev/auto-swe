@@ -17,6 +17,7 @@ import { ForemanConfig } from './ForemanConfig'
 import { DirectorDashboard } from './DirectorDashboard'
 import { DirectorConversation } from './DirectorConversation'
 import { DirectorReview } from './DirectorReview'
+import { ProjectOverview } from './ProjectOverview'
 import { TerminalView } from './Terminal'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
@@ -88,7 +89,7 @@ export function DashboardLayout({ view }: { view: ViewName }) {
         selectedProjectId={selectedProjectId}
         selectedMachineId={selectedMachineId}
         onSelectProject={(id) => {
-          if (id) void navigate(`/project/${id}`)
+          if (id) void navigate(`/project/${id}/overview`)
           else void navigate('/')
         }}
         onSelectMachine={(id) => {
@@ -112,6 +113,8 @@ export function DashboardLayout({ view }: { view: ViewName }) {
           switch (view) {
             case 'landing':
               return <DashboardLanding counts={{ projects: projects.length, machines: machines.length, issues: issues.length }} onRefresh={refresh} />
+            case 'project-overview':
+              return selectedProjectId ? <ProjectOverview projectId={selectedProjectId} onDataChange={refresh} /> : null
             case 'issue-list':
               return <IssueList issues={filteredIssues} runByIssue={runByIssue} statusFilter={statusFilter} onStatusFilter={setStatusFilter} onSelectIssue={(id) => navigate(`/project/${selectedProjectId}/issue/${id}`)} projectId={selectedProjectId!} onDataChange={refresh} />
             case 'issue-detail':

@@ -8,6 +8,7 @@ import type { ViewName } from './routes'
 /** Each route maps to a view name — the layout renders the right component */
 const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/', view: 'landing' },
+  { path: '/project/:projectId/overview', view: 'project-overview' },
   { path: '/project/:projectId', view: 'issue-list' },
   { path: '/project/:projectId/issue/:issueId', view: 'issue-detail' },
   { path: '/project/:projectId/planner/:conversationId?', view: 'planner' },
