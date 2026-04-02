@@ -10,6 +10,7 @@ import * as api from './api'
 // ─── Persistent session store ───────────────────────────────────────────────
 
 interface TermSession {
+  projectId: string
   ws: WebSocket | null
   term: XTerm
   fit: FitAddon
@@ -39,7 +40,7 @@ function getOrCreateSession(projectId: string): TermSession {
   const fit = new FitAddon()
   term.loadAddon(fit)
 
-  const session: TermSession = { ws: null, term, fit, buffer: '', onDataDisposable: null }
+  const session: TermSession = { projectId, ws: null, term, fit, buffer: '', onDataDisposable: null }
   sessions.set(projectId, session)
   return session
 }
@@ -86,7 +87,7 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const params = new URLSearchParams()
-    params.set('project', projectId)
+    params.set('project', session.projectId)
     params.set('cols', String(session.term.cols))
     params.set('rows', String(session.term.rows))
     const wsUrl = `${proto}//${window.location.host}/ws/terminal?${params}`
@@ -96,7 +97,7 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     let intentionalClose = false
 
     ws.onopen = () => {
-      setConnected(true)
+      if (sessionRef.current === session) setConnected(true)
       session.term.focus()
       // Re-fit and sync dimensions after connection establishes
       setTimeout(() => {
@@ -118,13 +119,13 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
           case 'exit':
             session.term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`)
             intentionalClose = true
-            setConnected(false)
+            if (sessionRef.current === session) setConnected(false)
             session.ws = null
             break
           case 'error':
             session.term.write(`\r\n\x1b[31m${msg.data}\x1b[0m\r\n`)
             intentionalClose = true
-            setConnected(false)
+            if (sessionRef.current === session) setConnected(false)
             session.ws = null
             break
         }
@@ -135,7 +136,7 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     }
 
     ws.onclose = () => {
-      setConnected(false)
+      if (sessionRef.current === session) setConnected(false)
       session.ws = null
       // Auto-reconnect on unexpected close (not process exit/error)
       if (!intentionalClose) {
@@ -146,7 +147,7 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     }
     ws.onerror = () => {
       // onclose will fire after this — let it handle reconnection
-      setConnected(false)
+      if (sessionRef.current === session) setConnected(false)
       session.ws = null
     }
 
@@ -166,8 +167,10 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     const session = getOrCreateSession(projectId)
     sessionRef.current = session
 
-    // Attach to DOM
+    // Attach to DOM — clear any leftover elements from a previous project first
     const container = termRef.current
+    while (container.firstChild) container.removeChild(container.firstChild)
+
     // If the terminal was already opened (navigated away and back),
     // its DOM element is detached — re-parent it into the new container.
     // xterm's open() can only be called once per instance.
@@ -208,7 +211,10 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (fitTimerRef.current) clearTimeout(fitTimerRef.current)
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
-      // DON'T destroy the session on unmount — keep it alive
+      // Detach the terminal element from the container but keep the session alive —
+      // it will be re-parented when the user navigates back to this project's terminal.
+      const el = (session.term as any).element as HTMLElement | undefined
+      if (el?.parentNode) el.parentNode.removeChild(el)
     }
   }, [projectId])
 
