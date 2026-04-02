@@ -79,12 +79,19 @@ Given an original prompt and user feedback about the generated result, produce a
 1. Addresses the user's feedback directly
 2. Preserves the original intent and style
 3. Is a complete, standalone prompt (not appended feedback)
-4. Uses proper generation prompt conventions (descriptive, specific)
+4. Describes ONE subject in ONE image — never multiple items, grids, or style sheets
+5. Is descriptive and specific: subject, style, colors, lighting, composition
+6. Includes 'transparent background' if the original had it
+
+Rules:
+- Each prompt produces ONE cohesive image — not a collection or sheet
+- Be specific about visual details: palette, shading, line weight, perspective
+- Include resolution hints where relevant (e.g., '64x64 pixel art')
 
 Examples:
-- Original: "pixel art fire symbol, 64x64" + Feedback: "too dark" → "pixel art fire symbol, 64x64, bright colors, well-lit, high contrast"
-- Original: "fantasy forest background" + Feedback: "needs more purple tones" → "fantasy forest background, purple and violet color palette, mystical atmosphere, purple-tinted lighting"
-- Original: "explosion sound effect" + Feedback: "too long and boomy" → "short punchy explosion sound effect, quick burst, sharp impact"
+- Original: "pixel art fire symbol, 64x64" + Feedback: "too dark" → "pixel art fire symbol, 64x64, bright orange and yellow flames, well-lit, high contrast, transparent background"
+- Original: "fantasy forest background" + Feedback: "needs more purple tones" → "fantasy forest background, purple and violet color palette, mystical atmosphere, purple-tinted moonlight filtering through trees"
+- Original: "explosion sound effect" + Feedback: "too long and boomy" → "short punchy explosion sound effect, quick burst, sharp impact, 1 second"
 
 Respond with ONLY the revised prompt text. No explanation, no quotes, no formatting.`;
 
