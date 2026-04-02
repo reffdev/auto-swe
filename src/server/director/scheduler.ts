@@ -120,6 +120,8 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
     console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
   }).finally(() => {
     directorBusy = false;
+    // Re-nudge so the Director tick runs now that the LLM is free
+    nudgeDirector(db);
   });
 }
 
@@ -151,7 +153,8 @@ async function directorTick(db: Db): Promise<void> {
   if (!config?.enabled) return;
 
   // Prevent concurrent ticks (the director tick may take time due to LLM calls)
-  if (processing) return;
+  // Also wait if directorBusy (e.g. style exploration LLM call in progress)
+  if (processing || directorBusy) return;
   processing = true;
 
   try {

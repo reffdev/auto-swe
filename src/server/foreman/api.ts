@@ -280,14 +280,18 @@ export function createForemanRouter(db: Db): Router {
     const config = db.upsertForemanConfig(updates);
     nudgeForeman(db);
 
-    // If enabled was just turned on, nudge the Director and run style exploration check
+    // If enabled was just turned on, check style exploration first (holds directorBusy),
+    // then nudge the Director. Order matters — style exploration must finish before
+    // the planner runs, otherwise they compete for the same LLM machine.
     if (updates.enabled === 1 || updates.enabled === true) {
       import("../director/scheduler").then(({ nudgeDirector: nudge, ensureStyleExploration }) => {
-        nudge(db);
         if (config.project_id) {
           const project = db.getProject(config.project_id);
           if (project) ensureStyleExploration(db, project);
         }
+        // nudgeDirector uses queueMicrotask internally, and ensureStyleExploration
+        // sets directorBusy=true synchronously — so the Director tick will wait.
+        nudge(db);
       }).catch(err => console.warn("Failed to nudge Director on enable:", err instanceof Error ? err.message : err));
     }
 
