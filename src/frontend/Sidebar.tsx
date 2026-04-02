@@ -563,7 +563,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           <Plus className="size-3.5" />
         </Button>
       </div>
-      <nav className="px-1 pb-2 flex-1 overflow-y-auto">
+      <nav className="px-1 pb-2">
         {machines.length === 0 && (
           <p className="px-3 py-2 text-xs text-muted-foreground">No machines yet</p>
         )}
