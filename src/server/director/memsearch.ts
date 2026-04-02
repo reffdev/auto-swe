@@ -57,6 +57,34 @@ function getMemoryPaths(projectWorkdir: string): string[] {
 
 // ─── Indexing ───────────────────────────────────────────────────────────────
 
+// ─── Serialization ──────────────────────────────────────────────────────────
+// Milvus Lite doesn't support concurrent access from separate processes.
+// All memsearch CLI calls must be serialized through this queue.
+
+let memsearchBusy = false;
+const memsearchQueue: Array<() => Promise<void>> = [];
+
+async function withMemsearchLock<T>(fn: () => Promise<T>): Promise<T | null> {
+  if (memsearchBusy) {
+    // Queue it — will run when current operation finishes
+    return new Promise<T | null>((resolve) => {
+      memsearchQueue.push(async () => {
+        try { resolve(await fn()); } catch { resolve(null); }
+      });
+    });
+  }
+
+  memsearchBusy = true;
+  try {
+    return await fn();
+  } finally {
+    memsearchBusy = false;
+    // Process next queued operation
+    const next = memsearchQueue.shift();
+    if (next) void next();
+  }
+}
+
 // ─── Debounced re-indexing ───────────────────────────────────────────────────
 
 let reindexTimer: ReturnType<typeof setTimeout> | null = null;
@@ -76,20 +104,17 @@ export function scheduleReindex(projectWorkdir: string): void {
   }, 60_000);
 }
 
-let indexing = false;
-
 /**
  * Index all markdown files in the project's .swe/ directory.
- * Should be called on startup and after writing new memories.
- * Only one index operation runs at a time — concurrent calls are skipped.
+ * Serialized via memsearch lock — only one CLI call at a time.
  */
 export async function indexMemories(projectWorkdir: string): Promise<boolean> {
   if (!isMemsearchAvailable()) return false;
-  if (indexing) {
-    console.log("MemSearch: index already running, skipping");
-    return false;
-  }
-  indexing = true;
+
+  return (await withMemsearchLock(() => doIndex(projectWorkdir))) ?? false;
+}
+
+async function doIndex(projectWorkdir: string): Promise<boolean> {
 
   // Ensure dirs exist before indexing
   const { ensureMemoryDirs } = await import("./persistent-memory");
@@ -106,14 +131,13 @@ export async function indexMemories(projectWorkdir: string): Promise<boolean> {
     proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
 
     proc.on("close", (code) => {
-      indexing = false;
       if (code !== 0 && stderr) {
         console.warn(`MemSearch index failed (code ${code}): ${stderr.slice(0, 200)}`);
       }
       resolve(code === 0);
     });
 
-    proc.on("error", () => { indexing = false; resolve(false); });
+    proc.on("error", () => { resolve(false); });
   });
 }
 
@@ -129,6 +153,15 @@ export async function searchMemories(
   topK: number = 5,
 ): Promise<SearchResult[]> {
   if (!isMemsearchAvailable()) return [];
+
+  return (await withMemsearchLock(() => doSearch(projectWorkdir, query, topK))) ?? [];
+}
+
+async function doSearch(
+  projectWorkdir: string,
+  query: string,
+  topK: number,
+): Promise<SearchResult[]> {
 
   return new Promise((resolve) => {
     const proc = spawn(
