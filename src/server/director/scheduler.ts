@@ -184,6 +184,9 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     await processDirectiveWork(db, directive, project);
   } finally {
     directorBusy = false;
+    // Re-nudge Foreman now that the LLM is free — nudges during processing
+    // were blocked by directorBusy and got swallowed
+    nudgeForeman(db);
   }
 }
 
