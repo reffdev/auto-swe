@@ -7,7 +7,7 @@
  * - After a milestone transitions (new milestone tasks)
  */
 
-import { generateText } from "ai";
+import { streamText } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
@@ -93,9 +93,9 @@ export async function planNextTasks(
   });
   const model = provider(modelId);
 
-  let result;
+  let resultText: string;
   try {
-    result = await generateText({
+    const stream = streamText({
       model,
       system,
       prompt: user,
@@ -108,7 +108,14 @@ export async function planNextTasks(
       },
       maxSteps: 50,
     });
-    console.log(`Director planner: [7/8] LLM responded in ${Date.now() - llmStartTime}ms — ${result.text.length} chars, ${result.steps?.length ?? 0} steps`);
+    // Consume the stream to get the full text
+    let text = "";
+    for await (const chunk of stream.textStream) {
+      text += chunk;
+    }
+    resultText = text;
+    const steps = await stream.steps;
+    console.log(`Director planner: [7/8] LLM responded in ${Date.now() - llmStartTime}ms — ${resultText.length} chars, ${steps.length} steps`);
   } catch (llmErr) {
     const errMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
     console.error(`Director planner: [7/8] LLM FAILED after ${Date.now() - llmStartTime}ms: ${errMsg}`);
@@ -117,7 +124,7 @@ export async function planNextTasks(
 
   // Parse tasks from LLM output and post-process art tasks
   console.log(`Director planner: [8/8] parsing tasks from output...`);
-  const rawTasks = parseNextTasks(result.text);
+  const rawTasks = parseNextTasks(resultText);
   console.log(`Director planner: [8/8] parsed ${rawTasks.length} raw task(s): ${rawTasks.map(t => `"${t.title}" (${t.type})`).join(", ") || "none"}`);
   const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
