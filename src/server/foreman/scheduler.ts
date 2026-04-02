@@ -26,6 +26,17 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
  */
 const exhaustedMachineTypes = new Set<string>();
 
+/** Check if code tasks should be blocked pending art style lock. */
+function styleGateActive(db: Db, project: import("../db").Project): boolean {
+  const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
+  if (!hasComfyUI) return false;
+  const { isStyleLocked } = require("../director/style-lock") as typeof import("../director/style-lock");
+  if (isStyleLocked(project.workdir)) return false;
+  return db.getDirectorDirectives(project.id).some(
+    d => d.status === "active" || d.status === "paused" || d.status === "planning"
+  );
+}
+
 /**
  * Call when machine capacity may have changed — clears exhaustion tracking
  * for a specific machine type (or all types) and nudges the scheduler.
@@ -91,6 +102,15 @@ async function schedulerTick(db: Db): Promise<void> {
   const { isDirectorBusy } = require("../director/scheduler") as typeof import("../director/scheduler");
   if (isDirectorBusy()) return;
 
+  const project = db.getProject(config.project_id);
+  if (!project) {
+    console.error(`Foreman: project ${config.project_id} not found`);
+    return;
+  }
+
+  // Style gate: block code tasks until art style is locked (if ComfyUI machines exist)
+  const needsStyleLock = styleGateActive(db, project);
+
   // Priority mode check
   if (config.priority_mode === "yield") {
     const issues = db.getIssues();
@@ -98,18 +118,18 @@ async function schedulerTick(db: Db): Promise<void> {
     if (running.length > 0) return;
   }
 
-  const project = db.getProject(config.project_id);
-  if (!project) {
-    console.error(`Foreman: project ${config.project_id} not found`);
-    return;
-  }
-
   // Dispatch loop — fill all available machine slots
   let dispatched = 0;
   for (;;) {
     // Get tasks ready for dispatch (re-query each iteration since we change status)
-    const ready = db.getForemanTasksReadyToRun();
+    let ready = db.getForemanTasksReadyToRun();
     if (ready.length === 0) break;
+
+    // If style isn't locked, only allow style_exploration tasks through
+    if (needsStyleLock) {
+      ready = ready.filter(t => t.type === "style_exploration");
+      if (ready.length === 0) break;
+    }
 
     // Sort by model affinity then priority
     const sorted = sortByModelAffinity(ready, lastOllamaModel);

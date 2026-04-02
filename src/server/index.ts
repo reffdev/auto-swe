@@ -97,8 +97,8 @@ import { clearAllLeases } from "./machine-manager";
 clearAllLeases();
 startStatsCollector(db);
 startAnalysisScheduler(db);
+startDirectorScheduler(db);  // Director first — creates style exploration before foreman dispatches
 startForemanScheduler(db);
-startDirectorScheduler(db);
 
 // 8. Start server
 const server = app.listen(PORT, () => {

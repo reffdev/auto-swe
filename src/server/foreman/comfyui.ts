@@ -89,9 +89,9 @@ export async function executeComfyUIWorkflow(
     if (signal?.aborted) throw new Error("ComfyUI execution aborted");
 
     await sleep(POLL_INTERVAL_MS);
+    const elapsed = Date.now() - startTime;
 
     // Periodically check queue status for diagnostics
-    const elapsed = Date.now() - startTime;
     if (elapsed - lastQueueLog > 30_000) {
       try {
         const queueRes = await fetch(`${url}/queue`, { signal: timeoutSignal(FETCH_TIMEOUT_MS, signal) });
@@ -116,7 +116,6 @@ export async function executeComfyUIWorkflow(
       continue;
     }
     if (!historyRes.ok) {
-      const elapsed = Date.now() - startTime;
       if (elapsed - lastLogTime > 30_000) {
         console.warn(`ComfyUI: history/${prompt_id} returned ${historyRes.status} (${Math.round(elapsed / 1000)}s elapsed)`);
         lastLogTime = elapsed;
@@ -131,7 +130,6 @@ export async function executeComfyUIWorkflow(
 
     const entry = history[prompt_id];
     if (!entry) {
-      const elapsed = Date.now() - startTime;
       if (elapsed - lastLogTime > 60_000) {
         console.log(`ComfyUI: prompt ${prompt_id} not in history yet (${Math.round(elapsed / 1000)}s elapsed, queued or running)`);
         lastLogTime = elapsed;
@@ -139,7 +137,6 @@ export async function executeComfyUIWorkflow(
       continue;
     }
     if (!entry.outputs) {
-      const elapsed = Date.now() - startTime;
       if (elapsed - lastLogTime > 60_000) {
         const status = (entry as Record<string, unknown>).status;
         console.log(`ComfyUI: prompt ${prompt_id} in history but no outputs yet (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
@@ -179,7 +176,6 @@ export async function executeComfyUIWorkflow(
         throw new Error(`ComfyUI workflow completed but produced no output files (${outputNodeIds.length} output nodes, status: ${status.status_str}, prompt_id: ${prompt_id})`);
       }
       // Still in progress — log periodically
-      const elapsed = Date.now() - startTime;
       if (elapsed - lastLogTime > 60_000) {
         console.log(`ComfyUI: prompt ${prompt_id} has ${outputNodeIds.length} output nodes but 0 files (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
         lastLogTime = elapsed;

@@ -37,6 +37,34 @@ let directorBusy = false;
 export function isDirectorBusy(): boolean { return directorBusy; }
 export function isDirectorPlanning(): boolean { return planningInProgress; }
 const zeroTaskCounts = new Map<string, number>(); // milestoneId → consecutive zero-task plan attempts
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** Check if the project needs a style lock before code work can proceed. */
+function needsStyleLock(db: Db, project: import("../db").Project): boolean {
+  const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
+  return hasComfyUI && !isStyleLocked(project.workdir);
+}
+
+/** Create a review gate for a completed art/comfyui task if one doesn't already exist. */
+function ensureArtReviewGate(db: Db, directiveId: string, task: import("../db").ForemanTask): void {
+  const existing = db.getDirectorReviews(directiveId).filter(
+    r => r.task_id === task.id && r.status === "pending"
+  );
+  if (existing.length > 0) return;
+
+  const isStyle = task.type === "style_exploration";
+  createReviewGate(db, {
+    directive_id: directiveId,
+    task_id: task.id,
+    review_type: isStyle ? "style_selection" : "task_verify",
+    question: isStyle
+      ? `Style exploration "${task.title}" is ready. Review the variations and select your preferred style.`
+      : `Art task "${task.title}" is ready for review. Please check the generated asset.`,
+    context: { type: task.type, task_id: task.id },
+  });
+  console.log(`Director: ${isStyle ? "style exploration" : "art task"} "${task.title}" sent to human review`);
+}
 let lastPlanError: { timestamp: number; message: string } | null = null;
 
 /** Expose DB for episodic extractor (avoids circular import of full scheduler) */
@@ -205,10 +233,19 @@ async function generateDirectorTasks(
 }
 
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
-  // 0. Ensure style exploration exists if needed (handles deleted/missing tasks)
-  if (!isStyleLocked(project.workdir) && !directorBusy) {
-    ensureStyleExploration(db, project);
-    if (directorBusy) return; // style exploration LLM call in progress — wait
+  // 0. Style gate — block all non-art work until style is locked
+  if (needsStyleLock(db, project)) {
+    if (!directorBusy) {
+      ensureStyleExploration(db, project);
+      if (directorBusy) return;
+    }
+    // Only create review gates for completed art tasks while waiting for style lock
+    for (const task of db.getDirectiveTasksAwaitingReview(directive.id)) {
+      if (isComfyUITaskType(task.type)) {
+        ensureArtReviewGate(db, directive.id, task);
+      }
+    }
+    return;
   }
 
   // 1. Handle tasks awaiting review (auto-verify)
@@ -217,22 +254,7 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
     try {
       // Art/music/sfx tasks skip automated verification — go straight to human review
       if (isComfyUITaskType(task.type)) {
-        const existingReviews = db.getDirectorReviews(directive.id).filter(
-          r => r.task_id === task.id && r.status === "pending"
-        );
-        if (existingReviews.length === 0) {
-          const isStyleExploration = task.type === "style_exploration";
-          createReviewGate(db, {
-            directive_id: directive.id,
-            task_id: task.id,
-            review_type: isStyleExploration ? "style_selection" : "task_verify",
-            question: isStyleExploration
-              ? `Style exploration "${task.title}" is ready. Review the variations and select your preferred style.`
-              : `Art task "${task.title}" is ready for review. Please check the generated asset.`,
-            context: { type: task.type, task_id: task.id },
-          });
-          console.log(`Director: ${isStyleExploration ? "style exploration" : "art task"} "${task.title}" sent to human review`);
-        }
+        ensureArtReviewGate(db, directive.id, task);
         continue;
       }
 

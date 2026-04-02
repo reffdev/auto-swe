@@ -60,10 +60,9 @@ export async function verifyTask(
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
-  console.log(`Verifier: task "${task.title}" — workdir: ${workdir} (worktree: ${isWorktree}), branch: ${task.git_branch}, diff length: ${gitDiff.length}, files: ${targetFiles.length}`);
-  if (gitDiff.length < 50) {
-    console.warn(`Verifier: suspiciously short diff for "${task.title}": ${JSON.stringify(gitDiff)}`);
-  }
+  // Diagnostic: log what the verifier is working with
+  console.log(`Verifier: "${task.title}" — ${isWorktree ? "worktree" : "project"}, branch: ${task.git_branch}, diff: ${gitDiff.length} chars, files: ${targetFiles.length}`);
+  if (gitDiff.length < 50) console.warn(`Verifier: empty/short diff: ${JSON.stringify(gitDiff)}`);
 
   // Build verification prompt
   const { system, user } = buildVerificationPrompt({
@@ -200,27 +199,24 @@ export async function verifyMilestone(
 function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "main", isWorktree = false): string {
   if (!branch) return "(no branch)";
   try {
-    // Fetch so we have the latest base branch ref
     spawnSync("git", ["fetch", "origin"], { cwd: workdir, timeout: 30_000 });
 
     const base = `origin/${defaultBranch}`;
-    // In a worktree, the branch is checked out locally — use HEAD.
-    // Otherwise the branch only exists on origin after foreman pushes.
     const head = isWorktree ? "HEAD" : `origin/${branch}`;
-    const result = spawnSync("git", ["diff", `${base}...${head}`, "--stat"], { cwd: workdir, timeout: 10_000 });
-    const fullDiff = spawnSync("git", ["diff", `${base}...${head}`], { cwd: workdir, timeout: 10_000 });
-    const output = (result.stdout?.toString() ?? "") + "\n\n" + (fullDiff.stdout?.toString() ?? "").slice(0, 10000);
-    if (output.trim().length > 0) return output;
+    const stat = spawnSync("git", ["diff", `${base}...${head}`, "--stat"], { cwd: workdir, timeout: 10_000 });
+    const diff = spawnSync("git", ["diff", `${base}...${head}`], { cwd: workdir, timeout: 10_000 });
+    const committed = (stat.stdout?.toString() ?? "") + "\n\n" + (diff.stdout?.toString() ?? "").slice(0, 10000);
 
-    // Fallback: diff against HEAD directly (worktree may have uncommitted changes)
+    // In worktrees, also capture uncommitted work (agent may not have committed everything)
     if (isWorktree) {
-      const uncommitted = spawnSync("git", ["diff", "HEAD"], { cwd: workdir, timeout: 10_000 });
-      const staged = spawnSync("git", ["diff", "--cached"], { cwd: workdir, timeout: 10_000 });
-      const extra = (uncommitted.stdout?.toString() ?? "") + (staged.stdout?.toString() ?? "");
-      if (extra.trim().length > 0) return output + "\n\n(uncommitted changes)\n" + extra.slice(0, 5000);
+      const wc = spawnSync("git", ["diff", "HEAD"], { cwd: workdir, timeout: 10_000 });
+      const uncommitted = wc.stdout?.toString() ?? "";
+      if (uncommitted.trim()) {
+        return committed + "\n\n--- uncommitted changes ---\n" + uncommitted.slice(0, 5000);
+      }
     }
 
-    return output || "(empty diff)";
+    return committed.trim() ? committed : "(empty diff)";
   } catch {
     return "(could not generate diff)";
   }
