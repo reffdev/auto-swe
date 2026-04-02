@@ -105,7 +105,9 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
 
   console.log("Director: art style not locked — creating style exploration task");
 
-  // Dedicated style exploration creator — focused LLM call, not the full planner
+  // Hold the Foreman while the LLM generates the art prompt
+  directorBusy = true;
+
   import("./style-exploration").then(({ createStyleExplorationTask }) => {
     return createStyleExplorationTask(db, activeDirective, project, activeMilestone);
   }).then(taskId => {
@@ -116,6 +118,8 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
     }
   }).catch(err => {
     console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
+  }).finally(() => {
+    directorBusy = false;
   });
 }
 
