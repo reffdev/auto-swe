@@ -205,6 +205,12 @@ async function generateDirectorTasks(
 }
 
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
+  // 0. Ensure style exploration exists if needed (handles deleted/missing tasks)
+  if (!isStyleLocked(project.workdir) && !directorBusy) {
+    ensureStyleExploration(db, project);
+    if (directorBusy) return; // style exploration LLM call in progress — wait
+  }
+
   // 1. Handle tasks awaiting review (auto-verify)
   const awaitingReview = db.getDirectiveTasksAwaitingReview(directive.id);
   for (const task of awaitingReview) {
