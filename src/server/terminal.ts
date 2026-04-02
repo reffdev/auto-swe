@@ -41,7 +41,24 @@ export function attachTerminalServer(server: Server, db: Db): void {
   let activeTerminals = 0;
   const MAX_TERMINALS = 5;
 
+  // Heartbeat — detect dead connections before the OS timeout
+  const PING_INTERVAL = 20_000; // 20s
+  const pingTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if ((client as any).__dead) {
+        client.terminate();
+        continue;
+      }
+      (client as any).__dead = true;
+      client.ping();
+    }
+  }, PING_INTERVAL);
+
+  wss.on("close", () => clearInterval(pingTimer));
+
   wss.on("connection", (ws, req) => {
+    // Pong marks the connection as alive
+    ws.on("pong", () => { (ws as any).__dead = false; });
     if (!pty) {
       ws.send(JSON.stringify({ type: "error", data: "Terminal not available — node-pty failed to load" }));
       ws.close();

@@ -14,6 +14,7 @@ interface TermSession {
   term: XTerm
   fit: FitAddon
   buffer: string  // accumulated output for replay on reattach
+  onDataDisposable: { dispose(): void } | null  // prevent duplicate listeners
 }
 
 const sessions = new Map<string, TermSession>()
@@ -38,7 +39,7 @@ function getOrCreateSession(projectId: string): TermSession {
   const fit = new FitAddon()
   term.loadAddon(fit)
 
-  const session: TermSession = { ws: null, term, fit, buffer: '' }
+  const session: TermSession = { ws: null, term, fit, buffer: '', onDataDisposable: null }
   sessions.set(projectId, session)
   return session
 }
@@ -78,6 +79,8 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     }, 100)
   }
 
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const connectWs = (session: TermSession) => {
     if (session.ws && session.ws.readyState <= WebSocket.OPEN) return // already connected
 
@@ -90,6 +93,7 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
 
     const ws = new WebSocket(wsUrl)
     session.ws = ws
+    let intentionalClose = false
 
     ws.onopen = () => {
       setConnected(true)
@@ -113,11 +117,13 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
             break
           case 'exit':
             session.term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`)
+            intentionalClose = true
             setConnected(false)
             session.ws = null
             break
           case 'error':
             session.term.write(`\r\n\x1b[31m${msg.data}\x1b[0m\r\n`)
+            intentionalClose = true
             setConnected(false)
             session.ws = null
             break
@@ -131,14 +137,22 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     ws.onclose = () => {
       setConnected(false)
       session.ws = null
+      // Auto-reconnect on unexpected close (not process exit/error)
+      if (!intentionalClose) {
+        session.term.write(`\r\n\x1b[90m[Connection lost — reconnecting...]\x1b[0m\r\n`)
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = setTimeout(() => connectWs(session), 2000)
+      }
     }
     ws.onerror = () => {
+      // onclose will fire after this — let it handle reconnection
       setConnected(false)
       session.ws = null
     }
 
-    // Terminal → WebSocket
-    session.term.onData((data) => {
+    // Terminal → WebSocket — only register once per session
+    if (session.onDataDisposable) session.onDataDisposable.dispose()
+    session.onDataDisposable = session.term.onData((data) => {
       if (session.ws?.readyState === WebSocket.OPEN) {
         session.ws.send(JSON.stringify({ type: 'input', data }))
       }
@@ -173,9 +187,24 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
     const resizeObserver = new ResizeObserver(() => debouncedFit(session))
     resizeObserver.observe(container)
 
+    // Reconnect when tab regains focus (browsers kill idle WS connections)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && session.ws?.readyState !== WebSocket.OPEN) {
+        // Small delay to let the browser fully resume networking
+        setTimeout(() => {
+          if (session.ws?.readyState !== WebSocket.OPEN) {
+            connectWs(session)
+          }
+        }, 500)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
       resizeObserver.disconnect()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (fitTimerRef.current) clearTimeout(fitTimerRef.current)
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       // DON'T destroy the session on unmount — keep it alive
     }
   }, [projectId])
