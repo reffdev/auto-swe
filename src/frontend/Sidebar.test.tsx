@@ -77,7 +77,7 @@ describe('Sidebar', () => {
     expect(screen.getByText('Agentic Wrangling')).toBeInTheDocument()
   })
 
-  it('renders Auto-SWE as a clickable button', () => {
+  it('renders Auto-SWE as a clickable link', () => {
     render(
       <MemoryRouter>
         <Sidebar
@@ -93,12 +93,12 @@ describe('Sidebar', () => {
       </MemoryRouter>
     )
 
-    const autoSweButton = screen.getByRole('button', { name: /Auto-SWE/i })
-    expect(autoSweButton).toBeInTheDocument()
-    expect(autoSweButton).toHaveClass('block', 'text-left')
+    const autoSweLink = screen.getByRole('link', { name: /Auto-SWE/i })
+    expect(autoSweLink).toBeInTheDocument()
+    expect(autoSweLink).toHaveClass('block', 'text-left')
   })
 
-  it('navigates to root when Auto-SWE button is clicked', () => {
+  it('Auto-SWE link points to root', () => {
     render(
       <MemoryRouter>
         <Sidebar
@@ -114,10 +114,8 @@ describe('Sidebar', () => {
       </MemoryRouter>
     )
 
-    const autoSweButton = screen.getByRole('button', { name: /Auto-SWE/i })
-    fireEvent.click(autoSweButton)
-
-    expect(mockNavigate).toHaveBeenCalledWith('/')
+    const autoSweLink = screen.getByRole('link', { name: /Auto-SWE/i })
+    expect(autoSweLink).toHaveAttribute('href', '/')
   })
 
   it('renders projects section with header', () => {
@@ -255,10 +253,8 @@ describe('Sidebar', () => {
       </MemoryRouter>
     )
 
-    const projectButton = screen.getByText('Test Project')
-    fireEvent.click(projectButton)
-
-    expect(mockNavigate).toHaveBeenCalledWith('/project/proj1/overview')
+    const projectLink = screen.getByRole('link', { name: /Test Project/i })
+    expect(projectLink).toHaveAttribute('href', '/project/proj1/overview')
   })
 
   it('shows sub-links for all projects', () => {
