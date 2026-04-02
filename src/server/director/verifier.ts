@@ -43,14 +43,15 @@ export async function verifyTask(
 
   // Use the task's worktree if it still exists (kept alive for Director verification),
   // otherwise fall back to the main project workdir.
-  const workdir = task.git_worktree && existsSync(task.git_worktree) ? task.git_worktree : project.workdir;
+  const isWorktree = !!(task.git_worktree && existsSync(task.git_worktree));
+  const workdir = isWorktree ? task.git_worktree! : project.workdir;
 
   // Get git diff for the task's branch
-  const gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch);
+  const gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch, isWorktree);
 
   // Read modified files
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
-  const fileContents = readTargetFiles(workdir, targetFiles);
+  const fileContents = readTargetFiles(workdir, targetFiles, task.git_branch);
 
   // Read project conventions
   const claudeMdPath = resolve(workdir, "CLAUDE.md");
@@ -58,6 +59,11 @@ export async function verifyTask(
 
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
+
+  console.log(`Verifier: task "${task.title}" — workdir: ${workdir} (worktree: ${isWorktree}), branch: ${task.git_branch}, diff length: ${gitDiff.length}, files: ${targetFiles.length}`);
+  if (gitDiff.length < 50) {
+    console.warn(`Verifier: suspiciously short diff for "${task.title}": ${JSON.stringify(gitDiff)}`);
+  }
 
   // Build verification prompt
   const { system, user } = buildVerificationPrompt({
@@ -191,28 +197,61 @@ export async function verifyMilestone(
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "main"): string {
+function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "main", isWorktree = false): string {
   if (!branch) return "(no branch)";
   try {
-    const base = defaultBranch;
-    const result = spawnSync("git", ["diff", `${base}...${branch}`, "--stat"], { cwd: workdir, timeout: 10_000 });
-    const fullDiff = spawnSync("git", ["diff", `${base}...${branch}`], { cwd: workdir, timeout: 10_000 });
-    return (result.stdout?.toString() ?? "") + "\n\n" + (fullDiff.stdout?.toString() ?? "").slice(0, 10000);
+    // Fetch so we have the latest base branch ref
+    spawnSync("git", ["fetch", "origin"], { cwd: workdir, timeout: 30_000 });
+
+    const base = `origin/${defaultBranch}`;
+    // In a worktree, the branch is checked out locally — use HEAD.
+    // Otherwise the branch only exists on origin after foreman pushes.
+    const head = isWorktree ? "HEAD" : `origin/${branch}`;
+    const result = spawnSync("git", ["diff", `${base}...${head}`, "--stat"], { cwd: workdir, timeout: 10_000 });
+    const fullDiff = spawnSync("git", ["diff", `${base}...${head}`], { cwd: workdir, timeout: 10_000 });
+    const output = (result.stdout?.toString() ?? "") + "\n\n" + (fullDiff.stdout?.toString() ?? "").slice(0, 10000);
+    if (output.trim().length > 0) return output;
+
+    // Fallback: diff against HEAD directly (worktree may have uncommitted changes)
+    if (isWorktree) {
+      const uncommitted = spawnSync("git", ["diff", "HEAD"], { cwd: workdir, timeout: 10_000 });
+      const staged = spawnSync("git", ["diff", "--cached"], { cwd: workdir, timeout: 10_000 });
+      const extra = (uncommitted.stdout?.toString() ?? "") + (staged.stdout?.toString() ?? "");
+      if (extra.trim().length > 0) return output + "\n\n(uncommitted changes)\n" + extra.slice(0, 5000);
+    }
+
+    return output || "(empty diff)";
   } catch {
     return "(could not generate diff)";
   }
 }
 
-function readTargetFiles(workdir: string, targetFiles: string[]): string {
+function readTargetFiles(workdir: string, targetFiles: string[], branch?: string | null): string {
   const parts: string[] = [];
   for (const f of targetFiles.slice(0, 10)) {
-    const fullPath = resolve(workdir, f);
-    if (existsSync(fullPath)) {
-      try {
-        const content = readFileSync(fullPath, "utf-8");
+    try {
+      let content: string | undefined;
+
+      // First try reading from disk (works if workdir is the correct worktree)
+      const fullPath = resolve(workdir, f);
+      if (existsSync(fullPath)) {
+        content = readFileSync(fullPath, "utf-8");
+      }
+
+      // If file not found on disk and we have a branch, read from git
+      if (!content && branch) {
+        const result = spawnSync("git", ["show", `origin/${branch}:${f}`], {
+          cwd: workdir, timeout: 10_000, encoding: "utf-8",
+        });
+        if (result.status === 0 && result.stdout) {
+          content = result.stdout;
+        }
+      }
+
+      if (content) {
         parts.push(`### ${f}\n\`\`\`\n${content.slice(0, 5000)}\n\`\`\``);
-      } catch { /* skip */ }
-    }
+      }
+    } catch { /* skip */ }
   }
   return parts.join("\n\n") || "(no target files found)";
 }

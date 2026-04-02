@@ -117,7 +117,7 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto p-8">
-      <div className="max-w-4xl mx-auto w-full space-y-8">
+      <div className="max-w-5xl mx-auto w-full space-y-8">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
