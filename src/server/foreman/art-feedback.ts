@@ -111,11 +111,18 @@ async function revisePromptWithLLM(
     });
     const model = provider(machineInfo.modelId);
 
-    const result = await generateText({
-      model,
-      system: REVISION_SYSTEM_PROMPT,
-      prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
-    });
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 60_000); // 60s timeout
+    try {
+      var result = await generateText({
+        model,
+        system: REVISION_SYSTEM_PROMPT,
+        prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
+        abortSignal: abortController.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const revised = result.text.trim();
     if (revised && revised.length > 5 && revised.length < 2000) {

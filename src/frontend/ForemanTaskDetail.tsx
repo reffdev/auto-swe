@@ -119,7 +119,9 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && feedback.trim()) {
-                  void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); void refresh() })
+                  void api.rejectForemanTask(task.id, feedback.trim())
+                    .then(() => { setFeedback(''); setShowFeedback(false); void refresh() })
+                    .catch(err => alert(`Reject failed: ${err instanceof Error ? err.message : err}`))
                 }
               }}
               className="flex-1"
@@ -128,7 +130,10 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               size="sm"
               variant="destructive"
               disabled={!feedback.trim()}
-              onClick={() => void api.rejectForemanTask(task.id, feedback.trim()).then(() => { setFeedback(''); setShowFeedback(false); void refresh() })}
+              onClick={() => void api.rejectForemanTask(task.id, feedback.trim())
+                .then(() => { setFeedback(''); setShowFeedback(false); void refresh() })
+                .catch(err => alert(`Reject failed: ${err instanceof Error ? err.message : err}`))
+              }
             >
               Reject &amp; Retry
             </Button>

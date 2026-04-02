@@ -142,9 +142,17 @@ export function createForemanRouter(db: Db): Router {
     }
 
     // For art/music/sfx tasks, use LLM to intelligently revise the prompt
+    console.log(`Foreman reject: task ${task.id} (${task.type}) with feedback: "${feedback.slice(0, 100)}"`);
     let description = task.description;
     if (isComfyUITaskType(task.type)) {
-      description = await processArtFeedback(db, description, feedback);
+      try {
+        description = await processArtFeedback(db, description, feedback);
+        console.log(`Foreman reject: prompt revised for task ${task.id}`);
+      } catch (err) {
+        console.error(`Foreman reject: art feedback revision failed:`, err instanceof Error ? err.message : err);
+        // Fall back to simple append if LLM revision fails
+        description += `\n\n[feedback: ${feedback}]`;
+      }
     }
 
     db.updateForemanTask(task.id, {
