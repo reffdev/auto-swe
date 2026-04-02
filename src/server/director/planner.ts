@@ -45,6 +45,7 @@ export async function planNextTasks(
   }
 
   const { machine, modelId } = machineInfo;
+  console.log(`Director planner: using machine "${machine.name || machine.id}" at ${machine.base_url} with model ${modelId}`);
 
   // Assemble context
   const directiveContext = await assembleDirectorContext(db, directive, project, {
