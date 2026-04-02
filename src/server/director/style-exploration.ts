@@ -111,7 +111,7 @@ export async function createStyleExplorationTask(
         prompt: `Generate 6 style exploration prompts for this project:\n\n${context}`,
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Style exploration prompt generation timeout (120s) — machine: ${machineInfo.machine.base_url}`)), 120_000)
+        setTimeout(() => reject(new Error(`Style exploration prompt generation timeout (600s) — machine: ${machineInfo.machine.base_url}`)), 600_000)
       ),
     ]);
 
