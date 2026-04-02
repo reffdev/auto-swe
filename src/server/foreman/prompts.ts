@@ -20,7 +20,9 @@ export function buildForemanSystemPrompt(opts: {
     "- Read existing code before modifying it to understand patterns and conventions.",
     "- Create all files listed in target_files if they don't exist.",
     "- Write clean, production-quality code.",
-    "- After completing the task, verify your work meets all acceptance criteria.",
+    "- When you're done, call submitResult with your changed files and summary.",
+    "- submitResult will automatically run build/test/lint checks. If any fail, you'll get the errors back — fix them and call submitResult again.",
+    "- Do NOT call checkBuild/checkTests/checkLint manually before submitting — submitResult handles this.",
   ];
 
   if (opts.targetFiles.length > 0) {

@@ -17,19 +17,23 @@ import { readConventions } from "./persistent-memory";
 import { logEpisodic } from "./persistent-memory";
 import { nudgeForeman } from "../foreman/scheduler";
 
-const STYLE_PROMPT_SYSTEM = `You are an expert art director writing a single image generation prompt for style exploration.
+const STYLE_PROMPT_SYSTEM = `You are an expert art director generating style exploration prompts for a game/project.
 
-Given a game/project description, write ONE detailed prompt that captures the project's visual identity.
+Given a project description, write 6 DIFFERENT art prompts — each exploring a distinct visual style direction.
 
 Rules:
-- Describe a SINGLE representative scene or object — NOT a style sheet, NOT a grid, NOT multiple items
-- Be specific: subject, art style, color palette, lighting, mood, composition
-- The image will be used as an IP-Adapter reference for ALL future art — it must embody the project's aesthetic
+- Each prompt should describe the SAME representative subject (a character, scene, or object from the project)
+- Each prompt should use a DIFFERENT art style (e.g., pixel art, watercolor, cel-shaded, oil painting, flat vector, retro 16-bit)
+- Be specific per prompt: art style, color palette, lighting, mood, rendering technique
 - Include specific colors as descriptive words (e.g., "deep purple shadows", "gold accents", "cyan glow")
-- Do NOT include technical tags like resolution, transparent background, etc. — those are handled separately
-- Keep it under 200 words
+- Do NOT include technical tags like resolution, transparent background, etc.
+- Keep each prompt under 100 words
+- The selected image will become an IP-Adapter style reference — each prompt should clearly embody a distinct aesthetic
 
-Respond with ONLY the prompt text. No explanation, no quotes, no formatting.`;
+Respond with a JSON array of exactly 6 prompt strings. No explanation, no formatting — just the JSON array.
+
+Example format:
+["pixel art knight with golden armor on castle wall, warm sunset palette, clean outlines, 16-bit aesthetic", "watercolor knight in silver armor, soft edges, muted blues and greens, dreamy atmosphere", ...]`;
 
 /**
  * Create a style_exploration task with a focused LLM call for the art prompt.
@@ -98,42 +102,58 @@ export async function createStyleExplorationTask(
   });
   const model = provider(machineInfo.modelId);
 
-  let artPrompt: string;
+  let stylePrompts: string[];
   try {
     const result = await Promise.race([
       generateText({
         model,
         system: STYLE_PROMPT_SYSTEM,
-        prompt: `Generate an art prompt for this project's style exploration:\n\n${context}`,
+        prompt: `Generate 6 style exploration prompts for this project:\n\n${context}`,
       }),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error(`Style exploration prompt generation timeout (120s) — machine: ${machineInfo.machine.base_url}`)), 120_000)
       ),
     ]);
 
-    artPrompt = result.text.trim();
-    if (!artPrompt || artPrompt.length < 10) {
-      console.error(`Style exploration: LLM returned empty/too-short prompt (${artPrompt.length} chars)`);
+    const text = result.text.trim();
+    // Extract JSON array from response (may have markdown fences)
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      console.error(`Style exploration: LLM response is not a JSON array: ${text.slice(0, 200)}`);
       return null;
     }
-    console.log(`Style exploration: generated prompt: "${artPrompt.slice(0, 100)}..."`);
+    const parsed = JSON.parse(jsonMatch[0]) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string")) {
+      console.error(`Style exploration: LLM returned invalid prompt array`);
+      return null;
+    }
+    stylePrompts = parsed.slice(0, 6) as string[];
+    // Pad to 6 if LLM returned fewer
+    while (stylePrompts.length < 6) {
+      stylePrompts.push(stylePrompts[stylePrompts.length - 1]);
+    }
+    console.log(`Style exploration: generated ${stylePrompts.length} style prompts`);
+    for (let i = 0; i < stylePrompts.length; i++) {
+      console.log(`  ${i + 1}. "${stylePrompts[i].slice(0, 80)}..."`);
+    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`Style exploration: prompt generation FAILED: ${errMsg}`);
     return null;
   }
 
-  // Build the task description
+  // Build the task description — use fast_draft (SDXL) for fast iteration,
+  // with different prompts per variation to explore distinct art directions
   const description = [
-    `Generate 6 style variations for visual style exploration.`,
+    `Generate 6 style variations for visual style exploration, each with a different art direction.`,
     ``,
-    `[preset: concept]`,
-    `[prompt: ${artPrompt}]`,
+    `[preset: fast_draft]`,
+    `[prompts: ${JSON.stringify(stylePrompts)}]`,
     `[variation_count: 6]`,
     `[output: assets/style_exploration/]`,
     ``,
-    `Each variation uses a different random seed to produce different visual interpretations.`,
-    `The selected variation will become the IP-Adapter reference for all future art generation.`,
+    `Each variation uses a different prompt exploring a distinct visual style.`,
+    `The selected style will be used as the IP-Adapter reference for all future art generation.`,
     ``,
     `[needs_human_review]`,
   ].join("\n");
@@ -155,7 +175,7 @@ export async function createStyleExplorationTask(
   });
 
   console.log(`Style exploration: created task ${task.id} for project "${project.name}"`);
-  logEpisodic(project.workdir, "Created style exploration task", `Prompt: ${artPrompt.slice(0, 100)}`);
+  logEpisodic(project.workdir, "Created style exploration task", `${stylePrompts.length} style prompts generated`);
   nudgeForeman(db);
 
   return task.id;

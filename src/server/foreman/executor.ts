@@ -18,7 +18,7 @@ import {
   pushBranch,
   createPullRequest,
 } from "../git";
-import { makeFilesystemTools, makeBuildCheckTools, fetchUrlTool, lookupDocs } from "../tools";
+import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrlTool, lookupDocs } from "../tools";
 import { resolveModel } from "./routing";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 import { validateAcceptanceCriteria } from "./validator";
@@ -131,7 +131,14 @@ export async function executeForemanTask(
       testCommand: project.test_command,
       lintCommand: project.lint_command,
     });
-    const tools = { ...fsTools, ...buildTools, fetchUrl: fetchUrlTool, lookupDocs };
+    // Gated submit: runs build/test/lint when agent calls submitResult.
+    // If any fail, errors return to the agent to fix in-conversation.
+    const { submitResult } = makeGatedSubmitTool(worktreePath, {
+      buildCommand: project.build_command,
+      testCommand: project.test_command,
+      lintCommand: project.lint_command,
+    });
+    const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
     // Build prompts
     // Load conventions from .swe/ (uses project.workdir, not worktree)

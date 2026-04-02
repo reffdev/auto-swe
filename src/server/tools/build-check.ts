@@ -125,6 +125,58 @@ export function makeImplementResultTool() {
   return { submitResult };
 }
 
+// ─── Gated submit tool (build/test/lint gate before accepting) ─────────────
+
+/**
+ * A submit tool that runs build, test, and lint checks before accepting.
+ * If any check fails, returns the errors as the tool result so the agent
+ * can fix them in the same conversation — no retry from scratch.
+ */
+export function makeGatedSubmitTool(workdir: string, opts?: {
+  buildCommand?: string | null;
+  testCommand?: string | null;
+  lintCommand?: string | null;
+}) {
+  const buildCmd = opts?.buildCommand || null;
+  const testCmd = opts?.testCommand || null;
+  const lintCmd = opts?.lintCommand || null;
+
+  const gates = [
+    buildCmd ? { name: "Build", cmd: buildCmd } : null,
+    lintCmd ? { name: "Lint", cmd: lintCmd } : null,
+    testCmd ? { name: "Tests", cmd: testCmd } : null,
+  ].filter(Boolean) as Array<{ name: string; cmd: string }>;
+
+  const gateNames = gates.map(g => g.name.toLowerCase()).join(", ");
+
+  const submitResult = tool({
+    description: gates.length > 0
+      ? `Submit your implementation. This will automatically run ${gateNames} checks. If any fail, you'll get the errors back and must fix them before resubmitting. Only call when you believe your changes are complete.`
+      : `Submit your implementation result. Call this exactly once when you are DONE making all changes.`,
+    parameters: z.object({
+      files_changed: z.array(z.string()).describe("List of files you modified or created"),
+      summary: z.string().describe("What was changed and why"),
+    }),
+    execute: async ({ files_changed, summary }) => {
+      // Run each gate in order — stop at first failure
+      for (const gate of gates) {
+        console.log(`Foreman: running ${gate.name.toLowerCase()} gate: ${gate.cmd}`);
+        const result = runAndExtractErrors(gate.cmd, workdir);
+        if (result !== "success") {
+          console.log(`Foreman: ${gate.name.toLowerCase()} gate failed — returning errors to agent`);
+          return `❌ ${gate.name} failed — fix these errors and call submitResult again:\n\n${result}`;
+        }
+        console.log(`Foreman: ${gate.name.toLowerCase()} gate passed`);
+      }
+
+      // All gates passed
+      return `\`\`\`result\nstatus: done\nfiles_changed: ${JSON.stringify(files_changed)}\nsummary: ${summary}\n\`\`\``;
+    },
+  });
+
+  return { submitResult };
+}
+
 // ─── Test-write result tool ─────────────────────────────────────────────────
 
 export function makeTestWriteResultTool() {

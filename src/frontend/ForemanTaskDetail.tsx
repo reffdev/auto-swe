@@ -83,7 +83,7 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
                 <XCircle className="size-3.5 mr-1.5" /> Cancel
               </Button>
             )}
-            {task.status === 'awaiting_review' && (
+            {task.status === 'awaiting_review' && task.type !== 'style_exploration' && (
               <>
                 <Button size="sm" onClick={() => void api.completeForemanTask(task.id).then(refresh)}>
                   <CheckCircle className="size-3.5 mr-1.5" /> Approve
@@ -94,6 +94,9 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
                   </Button>
                 )}
               </>
+            )}
+            {task.status === 'awaiting_review' && task.type === 'style_exploration' && (
+              <span className="text-xs text-muted-foreground">Select a style from the Director review panel</span>
             )}
             {task.status === 'failed' && (
               <Button variant="outline" size="sm" onClick={() => void api.retryForemanTask(task.id).then(refresh)}>

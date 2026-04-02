@@ -23,8 +23,26 @@ export function isComfyUITaskType(type: string): boolean {
   return COMFYUI_TASK_TYPES.has(type);
 }
 
-/** Extract a [tag: value] from a task description */
+/** Extract a [tag: value] from a task description.
+ *  Handles nested brackets (e.g., [prompts: ["a", "b"]]) by counting bracket depth. */
 export function extractTag(description: string, tag: string): string | null {
-  const match = description.match(new RegExp(`\\[${tag}:\\s*(.+?)\\]`, "i"));
-  return match ? match[1].trim() : null;
+  const prefix = new RegExp(`\\[${tag}:\\s*`, "i");
+  const prefixMatch = description.match(prefix);
+  if (!prefixMatch || prefixMatch.index === undefined) return null;
+
+  const start = prefixMatch.index + prefixMatch[0].length;
+  let depth = 1; // we're inside the outer [tag: ...]
+  for (let i = start; i < description.length; i++) {
+    const ch = description[i];
+    if (ch === "[" || ch === "{") depth++;
+    else if (ch === "]" || ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return description.slice(start, i).trim();
+      }
+    }
+  }
+  // Unbalanced — fall back to first ]
+  const end = description.indexOf("]", start);
+  return end >= 0 ? description.slice(start, end).trim() : null;
 }

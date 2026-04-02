@@ -529,7 +529,11 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
               const { readdirSync } = await import("fs");
               const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task2.id.slice(0, 8));
               const galleryDir = parsed.run ? resolve(baseGalleryDir, `run_${parsed.run}`) : baseGalleryDir;
-              const files = readdirSync(galleryDir).filter(f => f.endsWith(".png")).sort();
+              const files = readdirSync(galleryDir).filter(f => f.endsWith(".png")).sort((a, b) => {
+                const aNum = parseInt(a.match(/\d+/)?.[0] ?? "0", 10);
+                const bNum = parseInt(b.match(/\d+/)?.[0] ?? "0", 10);
+                return aNum - bNum;
+              });
               const selectedFile = files[selectedIndex] ?? files[0];
 
               if (selectedFile) {
@@ -537,13 +541,18 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
                 const taskPreset = extractTag(task2.description, "preset") ?? "pixel_sprite";
                 const { PRESETS } = await import("../foreman/comfyui-workflows");
                 const presetConfig = PRESETS[taskPreset as keyof typeof PRESETS];
+                // Don't store the full exploration prompt as a prefix — the IP-Adapter
+                // reference image carries the style. The prefix should be empty or at most
+                // a short style descriptor that the planner can override per task.
+                const stylePrefix = "";
+
                 lockStyle(project.workdir, {
                   checkpoint: presetConfig?.checkpoint ?? "sd_xl_base_1.0.safetensors",
                   preset: taskPreset,
-                  prompt_style_prefix: extractTag(task2.description, "prompt") ?? "",
+                  prompt_style_prefix: stylePrefix,
                   reference_image: "",
                   ip_adapter_model: "ip-adapter-plus_sdxl_vit-h.safetensors",
-                  ip_adapter_weight: 0.75,
+                  ip_adapter_weight: 0.6,
                   locked_at: new Date().toISOString(),
                   locked_by_review_id: review.id,
                 }, resolve(galleryDir, selectedFile));
@@ -558,12 +567,13 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
             db.updateForemanTask(review.task_id, { status: "completed", completed_at: new Date().toISOString() });
           } catch (err) {
             console.error("Director: style lock failed:", err instanceof Error ? err.message : err);
-            // Don't complete the task — re-queue for another attempt
+            // Don't complete the task — re-queue for another attempt and resume directive
             db.updateForemanTask(review.task_id, {
               status: "queued",
               retry_count: 0,
               error_message: `Style lock failed: ${err instanceof Error ? err.message : String(err)}`,
             });
+            shouldResume = true; // ensure directive doesn't stay stuck in paused
           }
         }
         break;

@@ -74,8 +74,20 @@ export async function executeComfyUITask(
     const workflowFile = extractTag(task.description, "workflow");
     const presetName = extractTag(task.description, "preset");
     const promptText = extractTag(task.description, "prompt");
+    const promptsText = extractTag(task.description, "prompts"); // JSON array of per-variation prompts
     const paramsStr = extractTag(task.description, "params");
     const outputPath = extractTag(task.description, "output");
+
+    // Parse per-variation prompts if provided
+    let variationPrompts: string[] | null = null;
+    if (promptsText) {
+      try {
+        const parsed = JSON.parse(promptsText);
+        if (Array.isArray(parsed) && parsed.every((p: unknown) => typeof p === "string")) {
+          variationPrompts = parsed as string[];
+        }
+      } catch { /* fall back to single prompt */ }
+    }
 
     if (!outputPath && task.type !== "style_exploration") {
       throw new Error("ComfyUI task missing [output: ...] tag in description");
@@ -148,12 +160,12 @@ export async function executeComfyUITask(
           });
           if (!uploadRes.ok) {
             const errText = await uploadRes.text().catch(() => "");
-            console.warn(`ComfyUI: reference image upload failed (${uploadRes.status}): ${errText.slice(0, 200)}`);
-          } else {
-            console.log(`ComfyUI: uploaded reference image as ${refFilename}`);
+            throw new Error(`ComfyUI reference image upload failed (${uploadRes.status}): ${errText.slice(0, 200)}`);
           }
+          console.log(`ComfyUI: uploaded reference image as ${refFilename}`);
         } catch (err) {
-          console.warn(`ComfyUI: failed to upload reference image:`, err instanceof Error ? err.message : err);
+          if (err instanceof Error && err.message.includes("reference image upload failed")) throw err;
+          throw new Error(`ComfyUI: failed to upload reference image: ${err instanceof Error ? err.message : err}`);
         }
 
         // Apply IP-Adapter to workflow
@@ -178,8 +190,22 @@ export async function executeComfyUITask(
     const variationErrors: string[] = [];
 
     for (let vi = 0; vi < variationCount; vi++) {
-      // For variations, use different seeds
-      if (vi > 0 && typeof workflow === "object") {
+      // For variations with per-prompt array: rebuild workflow with the variation's prompt
+      if (variationPrompts && vi < variationPrompts.length && resolvedPreset) {
+        const audioPreset = AUDIO_PRESETS[resolvedPreset as keyof typeof AUDIO_PRESETS];
+        if (audioPreset) {
+          const durationTag = extractTag(task.description, "duration");
+          const duration = durationTag ? parseInt(durationTag, 10) : audioPreset.duration;
+          workflow = buildAudioWorkflow(audioPreset.type, variationPrompts[vi], duration);
+        } else {
+          const preset = PRESETS[resolvedPreset as PresetName];
+          if (preset) {
+            workflow = buildWorkflow({ ...preset, prompt: variationPrompts[vi] });
+          }
+        }
+        console.log(`ComfyUI: variation ${vi + 1}/${variationCount} prompt: "${variationPrompts[vi].slice(0, 80)}..."`);
+      } else if (vi > 0 && typeof workflow === "object") {
+        // Fallback: different seeds (for single-prompt variations)
         const wf = workflow as Record<string, { inputs?: Record<string, unknown> }>;
         for (const node of Object.values(wf)) {
           if (node.inputs && typeof node.inputs.seed === "number") {

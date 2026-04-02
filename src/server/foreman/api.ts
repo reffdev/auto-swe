@@ -15,6 +15,13 @@ import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
 import { extractTag } from "./task-types";
 import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
 
+/** Sort filenames numerically by embedded number (variation_1.png, variation_2.png, ...) */
+function numericSort(a: string, b: string): number {
+  const aNum = parseInt(a.match(/\d+/)?.[0] ?? "0", 10);
+  const bNum = parseInt(b.match(/\d+/)?.[0] ?? "0", 10);
+  return aNum - bNum;
+}
+
 export function createForemanRouter(db: Db): Router {
   const router = Router();
 
@@ -207,6 +214,9 @@ export function createForemanRouter(db: Db): Router {
     if (task.status !== "awaiting_review") {
       return res.status(409).json({ error: `Cannot complete task with status "${task.status}"` });
     }
+    if (task.type === "style_exploration") {
+      return res.status(409).json({ error: "Style exploration tasks must be completed through the Director style selection review" });
+    }
     db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
     nudgeForeman(db); // may unblock dependent tasks
     nudgeDirector(db); // may advance milestone
@@ -321,7 +331,7 @@ export function createForemanRouter(db: Db): Router {
       if (existsSync(galleryDir)) {
         const files = readdirSync(galleryDir)
           .filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith("."))
-          .sort();
+          .sort(numericSort);
         const availableRuns = getAvailableRuns(baseGalleryDir);
         const basePath = runParam
           ? `assets/style_exploration/${task.id.slice(0, 8)}/run_${runParam}`
@@ -372,7 +382,7 @@ export function createForemanRouter(db: Db): Router {
     const galleryDir = runParam ? resolve(baseGalleryDir, `run_${runParam}`) : baseGalleryDir;
 
     try {
-      const files = readdirSync(galleryDir).filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort();
+      const files = readdirSync(galleryDir).filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort(numericSort);
       const idx = parseInt(req.params.index, 10);
       if (idx < 0 || idx >= files.length) return res.status(404).json({ error: "Index out of range" });
 
