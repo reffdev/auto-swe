@@ -69,14 +69,28 @@ export async function executeComfyUIWorkflow(
 
   // 2. Poll for completion
   const startTime = Date.now();
+  let lastLogTime = 0;
 
   while (Date.now() - startTime < MAX_POLL_TIME_MS) {
     if (signal?.aborted) throw new Error("ComfyUI execution aborted");
 
     await sleep(POLL_INTERVAL_MS);
 
-    const historyRes = await fetch(`${url}/history/${prompt_id}`, { signal });
-    if (!historyRes.ok) continue;
+    let historyRes: Response;
+    try {
+      historyRes = await fetch(`${url}/history/${prompt_id}`, { signal });
+    } catch (fetchErr) {
+      console.warn(`ComfyUI: history poll failed: ${fetchErr instanceof Error ? fetchErr.message : fetchErr}`);
+      continue;
+    }
+    if (!historyRes.ok) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed - lastLogTime > 30_000) {
+        console.warn(`ComfyUI: history/${prompt_id} returned ${historyRes.status} (${Math.round(elapsed / 1000)}s elapsed)`);
+        lastLogTime = elapsed;
+      }
+      continue;
+    }
 
     const history = await historyRes.json() as Record<string, {
       outputs?: Record<string, { images?: Array<{ filename: string; subfolder: string; type: string }> }>;
@@ -84,7 +98,23 @@ export async function executeComfyUIWorkflow(
     }>;
 
     const entry = history[prompt_id];
-    if (!entry?.outputs) continue;
+    if (!entry) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed - lastLogTime > 60_000) {
+        console.log(`ComfyUI: prompt ${prompt_id} not in history yet (${Math.round(elapsed / 1000)}s elapsed, queued or running)`);
+        lastLogTime = elapsed;
+      }
+      continue;
+    }
+    if (!entry.outputs) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed - lastLogTime > 60_000) {
+        const status = (entry as Record<string, unknown>).status;
+        console.log(`ComfyUI: prompt ${prompt_id} in history but no outputs yet (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
+        lastLogTime = elapsed;
+      }
+      continue;
+    }
 
     // Check if outputs actually have content — empty {} means still processing
     const outputNodeIds = Object.keys(entry.outputs);
@@ -99,9 +129,10 @@ export async function executeComfyUIWorkflow(
       }
     }
     if (totalFiles === 0) {
-      // Output nodes exist but have no files — check if workflow errored
+      // Output nodes exist but have no files — check if workflow errored or completed empty
       const status = (entry as Record<string, unknown>).status as {
         status_str?: string;
+        completed?: boolean;
         messages?: Array<[string, { exception_message?: string; node_type?: string }]>;
       } | undefined;
       if (status?.status_str === "error") {
@@ -111,7 +142,16 @@ export async function executeComfyUIWorkflow(
           .join("; ") ?? "unknown error";
         throw new Error(`ComfyUI workflow failed: ${errorMsg}`);
       }
-      // Might still be in progress
+      // If status says completed/success but no files, the workflow finished empty
+      if (status?.status_str === "success" || status?.completed) {
+        throw new Error(`ComfyUI workflow completed but produced no output files (${outputNodeIds.length} output nodes, status: ${status.status_str}, prompt_id: ${prompt_id})`);
+      }
+      // Still in progress — log periodically
+      const elapsed = Date.now() - startTime;
+      if (elapsed - lastLogTime > 60_000) {
+        console.log(`ComfyUI: prompt ${prompt_id} has ${outputNodeIds.length} output nodes but 0 files (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
+        lastLogTime = elapsed;
+      }
       continue;
     }
 
