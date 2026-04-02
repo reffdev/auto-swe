@@ -37,7 +37,11 @@ export async function planNextTasks(
   /** Machine types that are idle and need work. When set, the planner prioritizes generating tasks for these types. */
   idleMachineTypes?: string[],
 ): Promise<number> {
+  const planStartTime = Date.now();
+  console.log(`Director planner: starting for milestone "${milestone.title}" (idleMachineTypes: ${idleMachineTypes?.join(", ") ?? "none"})`);
+
   // Select machine for planning (uses large model)
+  console.log(`Director planner: [1/8] selecting machine...`);
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) {
     console.error("Director planner: no machine available for planning");
@@ -45,20 +49,27 @@ export async function planNextTasks(
   }
 
   const { machine, modelId } = machineInfo;
-  console.log(`Director planner: using machine "${machine.name || machine.id}" at ${machine.base_url} with model ${modelId}`);
+  console.log(`Director planner: [2/8] machine selected: "${machine.name || machine.id}" at ${machine.base_url} model=${modelId}`);
 
   // Assemble context
+  console.log(`Director planner: [3/8] assembling context...`);
+  const contextStartTime = Date.now();
   const directiveContext = await assembleDirectorContext(db, directive, project, {
     includeTaskSummaries: true,
     maxRecentTasks: 10,
   });
+  console.log(`Director planner: [3/8] context assembled: ${directiveContext.length} chars (${Date.now() - contextStartTime}ms)`);
 
   // Check for ComfyUI workflow manifest
+  console.log(`Director planner: [4/8] loading workflow manifest...`);
   const workflowManifest = loadWorkflowManifest(project.workdir);
   const workflowSummary = workflowManifest ? summarizeManifestForPrompt(workflowManifest) : null;
+  console.log(`Director planner: [4/8] manifest: ${workflowManifest ? "loaded" : "none"}`);
 
   // Build prompt
+  console.log(`Director planner: [5/8] building prompt...`);
   const styleLocked = isStyleLocked(project.workdir);
+  console.log(`Director planner: [5/8] style locked: ${styleLocked}`);
 
   const { system, user } = buildPlanningPrompt({
     directiveContext,
@@ -69,7 +80,12 @@ export async function planNextTasks(
     styleLocked,
   });
 
-  // Call LLM (no streaming needed — planning is a single-shot call)
+  const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];
+  console.log(`Director planner: [6/8] system=${system.length} chars, user=${user.length} chars, tools=${toolNames.length} (${toolNames.join(", ")})`);
+
+  // Call LLM
+  console.log(`Director planner: [7/8] calling LLM at ${machine.base_url}...`);
+  const llmStartTime = Date.now();
   const provider = createOpenAICompatible({
     name: "director-planner",
     baseURL: machine.base_url,
@@ -77,26 +93,36 @@ export async function planNextTasks(
   });
   const model = provider(modelId);
 
-  const result = await generateText({
-    model,
-    system,
-    prompt: user,
-    tools: {
-      webSearch: webSearchTool,
-      fetchUrl: fetchUrlTool,
-      lookupDocs,
-      ...makeReadOnlyTools(project.workdir),
-      ...makeMemoryTools(project.workdir),
-    },
-    maxSteps: 50,
-  });
+  let result;
+  try {
+    result = await generateText({
+      model,
+      system,
+      prompt: user,
+      tools: {
+        webSearch: webSearchTool,
+        fetchUrl: fetchUrlTool,
+        lookupDocs,
+        ...makeReadOnlyTools(project.workdir),
+        ...makeMemoryTools(project.workdir),
+      },
+      maxSteps: 50,
+    });
+    console.log(`Director planner: [7/8] LLM responded in ${Date.now() - llmStartTime}ms — ${result.text.length} chars, ${result.steps?.length ?? 0} steps`);
+  } catch (llmErr) {
+    const errMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
+    console.error(`Director planner: [7/8] LLM FAILED after ${Date.now() - llmStartTime}ms: ${errMsg}`);
+    throw llmErr;
+  }
 
   // Parse tasks from LLM output and post-process art tasks
+  console.log(`Director planner: [8/8] parsing tasks from output...`);
   const rawTasks = parseNextTasks(result.text);
+  console.log(`Director planner: [8/8] parsed ${rawTasks.length} raw task(s): ${rawTasks.map(t => `"${t.title}" (${t.type})`).join(", ") || "none"}`);
   const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
-    console.log("Director planner: no tasks generated (milestone may be complete)");
+    console.log(`Director planner: no tasks generated (milestone may be complete). Total time: ${Date.now() - planStartTime}ms`);
     return 0;
   }
 
@@ -138,9 +164,11 @@ export async function planNextTasks(
 
   if (created > 0) {
     const taskTypes = parsedTasks.map(t => t.type).join(", ");
-    console.log(`Director planner: generated ${created} task(s) for milestone "${milestone.title}"`);
+    console.log(`Director planner: generated ${created} task(s) for milestone "${milestone.title}". Total time: ${Date.now() - planStartTime}ms`);
     logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
     nudgeForeman(db);
+  } else {
+    console.log(`Director planner: 0 new tasks created (all duplicates or empty). Total time: ${Date.now() - planStartTime}ms`);
   }
 
   return created;
