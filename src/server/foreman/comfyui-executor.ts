@@ -41,10 +41,15 @@ export async function executeComfyUITask(
   const { db } = ctx;
   const breaker = getBreaker(machine.id);
 
+  // Derive attempt from existing runs, not retry_count (which resets on manual retry)
+  const existingRuns = db.getForemanRunsForTask(task.id);
+  const nextAttempt = existingRuns.length > 0
+    ? Math.max(...existingRuns.map(r => r.attempt)) + 1
+    : 1;
   const foremanRun = db.createForemanRun({
     task_id: task.id,
     machine_id: machine.id,
-    attempt: task.retry_count + 1,
+    attempt: nextAttempt,
     model_id: "comfyui",
   });
 

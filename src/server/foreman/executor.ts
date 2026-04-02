@@ -73,11 +73,16 @@ export async function executeForemanTask(
   const modelId = machine.model_id || route.modelId;
   const breaker = getBreaker(machine.id);
 
-  // Create a foreman_run for this attempt
+  // Create a foreman_run for this attempt — derive attempt from existing runs,
+  // not retry_count, because retry_count resets on manual retry/re-queue
+  const existingRuns = db.getForemanRunsForTask(task.id);
+  const nextAttempt = existingRuns.length > 0
+    ? Math.max(...existingRuns.map(r => r.attempt)) + 1
+    : 1;
   const foremanRun = db.createForemanRun({
     task_id: task.id,
     machine_id: machine.id,
-    attempt: task.retry_count + 1,
+    attempt: nextAttempt,
     model_id: modelId,
   });
 

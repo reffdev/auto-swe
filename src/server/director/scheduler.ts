@@ -309,16 +309,19 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
     if (existingReviews.length > 0) continue; // already handled
 
     if (shouldEscalate(directive.autonomy_level, "repeated_failure")) {
+      // Use actual run count instead of retry_count (which resets on manual retry)
+      const runs = db.getForemanRunsForTask(task.id);
+      const actualAttempts = runs.length;
       createReviewGate(db, {
         directive_id: directive.id,
         task_id: task.id,
         review_type: "failure_escalation",
-        question: `Task "${task.title}" has failed after ${task.retry_count} retries. Error: ${task.error_message?.slice(0, 300)}. How should we proceed?`,
+        question: `Task "${task.title}" has failed after ${actualAttempts} attempt(s). Error: ${task.error_message?.slice(0, 300)}. How should we proceed?`,
         context: {
           task_title: task.title,
           task_description: task.description,
           error: task.error_message,
-          retry_count: task.retry_count,
+          attempts: actualAttempts,
         },
         options: ["Retry with different approach", "Skip this task", "Provide guidance"],
       });
