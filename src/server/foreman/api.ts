@@ -11,7 +11,7 @@ import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
 import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
-import { isComfyUITaskType, processArtFeedback, injectFeedbackIntoArtTask } from "./art-feedback";
+import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
 import { extractTag } from "./task-types";
 import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
 
@@ -162,34 +162,43 @@ export function createForemanRouter(db: Db): Router {
       }
     }
 
-    // Record feedback immediately — never mangle the [prompt:] tag synchronously
-    let description = injectFeedbackIntoArtTask(task.description, feedback);
-
-    // For art tasks, kick off LLM revision in background to properly rewrite the prompt.
-    // The task stays queued; the Foreman won't pick it up instantly, giving the LLM time.
-    if (isComfyUITaskType(task.type)) {
-      void processArtFeedback(db, task.description, feedback).then(revised => {
-        db.updateForemanTask(task.id, { description: revised });
-        console.log(`Foreman reject: prompt revised in background for task ${task.id}`);
-      }).catch(err => {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`Foreman reject: LLM prompt revision FAILED for task ${task.id}: ${errMsg}`);
-      });
-    }
-
     // Increment retry_count so the next run gets a unique attempt number
     const runs = db.getForemanRunsForTask(task.id);
     const nextRetry = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 0;
-    db.updateForemanTask(task.id, {
-      status: "queued",
-      description,
-      retry_count: nextRetry,
-      error_message: `Rejected: ${feedback}`,
-      next_retry_at: null,
-      machine_id: null,
-    });
-    nudgeForeman(db);
-    res.json(db.getForemanTask(task.id));
+
+    if (isComfyUITaskType(task.type)) {
+      // Set to backlog while LLM revises the prompt — Foreman won't pick it up.
+      // Once revision completes, status moves to queued.
+      db.updateForemanTask(task.id, {
+        status: "backlog",
+        retry_count: nextRetry,
+        error_message: `Rejected: ${feedback} (revising prompt...)`,
+        next_retry_at: null,
+        machine_id: null,
+      });
+      res.json(db.getForemanTask(task.id));
+
+      // Background: revise prompt then queue
+      void processArtFeedback(db, task.description, feedback).then(revised => {
+        db.updateForemanTask(task.id, { status: "queued", description: revised, error_message: `Rejected: ${feedback}` });
+        console.log(`Foreman reject: prompt revised, task ${task.id} now queued`);
+        nudgeForeman(db);
+      }).catch(err => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`Foreman reject: LLM revision FAILED for task ${task.id}: ${errMsg}`);
+        db.updateForemanTask(task.id, { status: "failed", error_message: `Prompt revision failed: ${errMsg}` });
+      });
+    } else {
+      db.updateForemanTask(task.id, {
+        status: "queued",
+        retry_count: nextRetry,
+        error_message: `Rejected: ${feedback}`,
+        next_retry_at: null,
+        machine_id: null,
+      });
+      nudgeForeman(db);
+      res.json(db.getForemanTask(task.id));
+    }
   });
 
   router.post("/tasks/:id/complete", (req, res) => {

@@ -32,20 +32,16 @@ export async function processArtFeedback(
     return description + `\n\n[feedback: ${feedback}]`;
   }
 
-  // Try to get an LLM to revise the prompt
+  // LLM must revise the prompt — throws on failure
   const revisedPrompt = await revisePromptWithLLM(db, currentPrompt, feedback);
 
-  if (revisedPrompt) {
-    // Replace [prompt:] with the revised version
-    description = description.replace(promptMatch![0], `[prompt: ${revisedPrompt}]`);
+  // Replace [prompt:] with the revised version
+  description = description.replace(promptMatch![0], `[prompt: ${revisedPrompt}]`);
 
-    // Update [params:] text field to match
-    description = updateParamsText(description, revisedPrompt);
-  } else {
-    // LLM unavailable — leave the prompt intact, just record feedback
-  }
+  // Update [params:] text field to match
+  description = updateParamsText(description, revisedPrompt);
 
-  // Always record the feedback
+  // Record the feedback for visibility
   description = updateFeedbackNote(description, feedback);
 
   return description;
@@ -89,11 +85,10 @@ async function revisePromptWithLLM(
   db: Db,
   currentPrompt: string,
   feedback: string,
-): Promise<string | null> {
+): Promise<string> {
   const machineInfo = selectPlannerMachine(db);
   if (!machineInfo) {
-    console.error("Art feedback: no machine available for LLM prompt revision — selectPlannerMachine returned null");
-    return null;
+    throw new Error("No machine available for prompt revision (selectPlannerMachine returned null)");
   }
 
   console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
@@ -118,12 +113,10 @@ async function revisePromptWithLLM(
 
   const revised = result.text.trim();
   if (!revised || revised.length <= 5) {
-    console.error(`Art feedback: LLM returned empty/too-short response (${revised.length} chars): "${revised}"`);
-    return null;
+    throw new Error(`LLM returned empty/too-short response (${revised.length} chars): "${revised}"`);
   }
   if (revised.length >= 2000) {
-    console.error(`Art feedback: LLM returned oversized response (${revised.length} chars), truncating`);
-    return null;
+    throw new Error(`LLM returned oversized response (${revised.length} chars)`);
   }
 
   console.log(`Art feedback: revised prompt "${currentPrompt}" → "${revised}" (feedback: "${feedback}")`);
@@ -150,23 +143,6 @@ function updateParamsText(description: string, newPrompt: string): string {
   }
 }
 
-function updateParamsTextWithFeedback(description: string, feedback: string): string {
-  const match = description.match(/\[params:\s*(\{[^[\]]*(?:\{[^}]*\}[^[\]]*)*\})\]/i);
-  if (!match) return description;
-
-  try {
-    const params = JSON.parse(match[1]) as Record<string, Record<string, unknown>>;
-    for (const nodeParams of Object.values(params)) {
-      if (typeof nodeParams.text === "string") {
-        nodeParams.text = stripRevision(nodeParams.text) + ` (revision: ${feedback})`;
-        break;
-      }
-    }
-    return description.replace(match[0], `[params: ${JSON.stringify(params)}]`);
-  } catch {
-    return description;
-  }
-}
 
 function updateFeedbackNote(description: string, feedback: string): string {
   const feedbackTag = `[feedback: ${feedback}]`;
