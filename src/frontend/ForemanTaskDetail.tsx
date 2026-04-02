@@ -17,6 +17,7 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
   const [loading, setLoading] = useState(true)
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedback, setFeedback] = useState('')
+  const [preserveAssets, setPreserveAssets] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -130,8 +131,8 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && feedback.trim()) {
-                  void api.rejectForemanTask(task.id, feedback.trim())
-                    .then(() => { setFeedback(''); setShowFeedback(false); void refresh() })
+                  void api.rejectForemanTask(task.id, feedback.trim(), preserveAssets)
+                    .then(() => { setFeedback(''); setShowFeedback(false); setPreserveAssets(false); void refresh() })
                     .catch(err => alert(`Reject failed: ${err instanceof Error ? err.message : err}`))
                 }
               }}
@@ -141,17 +142,26 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               size="sm"
               variant="destructive"
               disabled={!feedback.trim()}
-              onClick={() => void api.rejectForemanTask(task.id, feedback.trim())
-                .then(() => { setFeedback(''); setShowFeedback(false); void refresh() })
+              onClick={() => void api.rejectForemanTask(task.id, feedback.trim(), preserveAssets)
+                .then(() => { setFeedback(''); setShowFeedback(false); setPreserveAssets(false); void refresh() })
                 .catch(err => alert(`Reject failed: ${err instanceof Error ? err.message : err}`))
               }
             >
               Reject &amp; Retry
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => { setShowFeedback(false); setFeedback('') }}>
+            <Button size="sm" variant="ghost" onClick={() => { setShowFeedback(false); setFeedback(''); setPreserveAssets(false) }}>
               Cancel
             </Button>
           </div>
+          <label className="flex items-center gap-2 mt-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={preserveAssets}
+              onChange={(e) => setPreserveAssets(e.target.checked)}
+              className="rounded border-border"
+            />
+            <span className="text-xs text-muted-foreground">Keep existing assets for comparison</span>
+          </label>
           <p className="text-xs text-muted-foreground mt-1">Your feedback will be injected into the generation prompt for the next attempt.</p>
         </div>
       )}
@@ -296,34 +306,84 @@ function AssetPreview({ taskId, taskType }: { taskId: string; taskType: string }
   )
 }
 
+interface RunInfo { attempt: number; fileCount: number }
+
+function RunTabs({ runs, activeRun, onSelect }: {
+  runs: RunInfo[]
+  activeRun: number | null
+  onSelect: (run: number | null) => void
+}) {
+  if (runs.length === 0) return null
+  return (
+    <div className="flex gap-1 mb-2 flex-wrap">
+      <button
+        onClick={() => onSelect(null)}
+        className={cn(
+          'px-2 py-0.5 text-[10px] rounded-full border transition-colors',
+          activeRun === null
+            ? 'bg-primary text-primary-foreground border-primary'
+            : 'border-border text-muted-foreground hover:border-primary/50',
+        )}
+      >
+        Current
+      </button>
+      {[...runs].reverse().map(r => (
+        <button
+          key={r.attempt}
+          onClick={() => onSelect(r.attempt)}
+          className={cn(
+            'px-2 py-0.5 text-[10px] rounded-full border transition-colors',
+            activeRun === r.attempt
+              ? 'bg-primary text-primary-foreground border-primary'
+              : 'border-border text-muted-foreground hover:border-primary/50',
+          )}
+        >
+          Run {r.attempt} ({r.fileCount})
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function StyleExplorationGrid({ taskId }: { taskId: string }) {
   const [files, setFiles] = useState<string[]>([])
+  const [availableRuns, setAvailableRuns] = useState<RunInfo[]>([])
+  const [activeRun, setActiveRun] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [cacheKey] = useState(() => Date.now())
 
   useEffect(() => {
-    fetch(`/api/foreman/tasks/${taskId}/assets`)
+    setLoading(true)
+    const runParam = activeRun !== null ? `?run=${activeRun}` : ''
+    fetch(`/api/foreman/tasks/${taskId}/assets${runParam}`)
       .then(r => r.json())
-      .then(data => { setFiles(data.files ?? []); setLoading(false) })
+      .then(data => {
+        setFiles(data.files ?? [])
+        if (data.availableRuns) setAvailableRuns(data.availableRuns)
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
-  }, [taskId])
+  }, [taskId, activeRun])
 
-  if (loading) {
+  if (loading && files.length === 0) {
     return <section><h3 className="text-sm font-medium mb-2">Style Variations</h3><p className="text-xs text-muted-foreground">Loading...</p></section>
   }
 
-  if (files.length === 0) {
+  if (files.length === 0 && availableRuns.length === 0) {
     return <section><h3 className="text-sm font-medium mb-2">Style Variations</h3><p className="text-xs text-muted-foreground">No variations generated yet</p></section>
   }
+
+  const runSuffix = activeRun !== null ? `&run=${activeRun}` : ''
 
   return (
     <section>
       <h3 className="text-sm font-medium mb-2">Style Variations ({files.length})</h3>
+      <RunTabs runs={availableRuns} activeRun={activeRun} onSelect={setActiveRun} />
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         {files.map((_, i) => (
           <div key={i} className="relative bg-muted/50 rounded border border-border overflow-hidden">
             <img
-              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}`}
+              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}${runSuffix}`}
               alt={`Variation ${i + 1}`}
               className="w-full aspect-square object-contain"
               style={{ imageRendering: 'pixelated' }}

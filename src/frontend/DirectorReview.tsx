@@ -123,7 +123,7 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
           {review.review_type === 'style_selection' && context.task_id && (
             <StyleSelectionPanel
               taskId={context.task_id ?? ""}
-              onLock={(selectedIndex, feedback) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback }))}
+              onLock={(selectedIndex, feedback, run) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback, run }))}
               onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }))}
               submitting={submitting}
             />
@@ -161,36 +161,79 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
 
 // ─── Style Selection Panel ──────────────────────────────────────────────────
 
+interface RunInfo { attempt: number; fileCount: number }
+
 function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
   taskId: string
-  onLock: (selectedIndex: number, feedback: string) => void
+  onLock: (selectedIndex: number, feedback: string, run?: number) => void
   onRefine: (feedback: string) => void
   submitting: boolean
 }) {
   const [files, setFiles] = useState<string[]>([])
+  const [availableRuns, setAvailableRuns] = useState<RunInfo[]>([])
+  const [activeRun, setActiveRun] = useState<number | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [feedback, setFeedback] = useState('')
   const [loading, setLoading] = useState(true)
   const [cacheKey] = useState(() => Date.now())
 
   useEffect(() => {
-    fetch(`/api/foreman/tasks/${taskId}/assets`)
+    setLoading(true)
+    setSelected(null) // reset selection when switching runs
+    const runParam = activeRun !== null ? `?run=${activeRun}` : ''
+    fetch(`/api/foreman/tasks/${taskId}/assets${runParam}`)
       .then(r => r.json())
-      .then(data => { setFiles(data.files ?? []); setLoading(false) })
+      .then(data => {
+        setFiles(data.files ?? [])
+        if (data.availableRuns) setAvailableRuns(data.availableRuns)
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
-  }, [taskId])
+  }, [taskId, activeRun])
 
-  if (loading) return <p className="text-xs text-muted-foreground">Loading style variations...</p>
-  if (files.length === 0) return <p className="text-xs text-muted-foreground">No variations available</p>
+  if (loading && files.length === 0) return <p className="text-xs text-muted-foreground">Loading style variations...</p>
+  if (files.length === 0 && availableRuns.length === 0) return <p className="text-xs text-muted-foreground">No variations available</p>
+
+  const runSuffix = activeRun !== null ? `&run=${activeRun}` : ''
 
   return (
     <div className="space-y-4">
       <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Select a Style</h3>
 
+      {availableRuns.length > 0 && (
+        <div className="flex gap-1 flex-wrap">
+          <button
+            onClick={() => setActiveRun(null)}
+            className={cn(
+              'px-2.5 py-1 text-xs rounded-full border transition-colors',
+              activeRun === null
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'border-border text-muted-foreground hover:border-primary/50',
+            )}
+          >
+            Current
+          </button>
+          {[...availableRuns].reverse().map(r => (
+            <button
+              key={r.attempt}
+              onClick={() => setActiveRun(r.attempt)}
+              className={cn(
+                'px-2.5 py-1 text-xs rounded-full border transition-colors',
+                activeRun === r.attempt
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'border-border text-muted-foreground hover:border-primary/50',
+              )}
+            >
+              Run {r.attempt} ({r.fileCount})
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {files.map((_, i) => (
           <button
-            key={i}
+            key={`${activeRun}-${i}`}
             onClick={() => setSelected(selected === i ? null : i)}
             className={cn(
               'relative rounded-lg border-2 overflow-hidden transition-colors',
@@ -198,7 +241,7 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
             )}
           >
             <img
-              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}`}
+              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}${runSuffix}`}
               alt={`Variation ${i + 1}`}
               className="w-full aspect-square object-contain bg-muted/30"
               style={{ imageRendering: 'pixelated' }}
@@ -207,7 +250,7 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
               'absolute top-1 left-1 text-[10px] px-1.5 py-0.5 rounded font-medium',
               selected === i ? 'bg-primary text-primary-foreground' : 'bg-black/60 text-white',
             )}>
-              #{i + 1}
+              {activeRun !== null ? `R${activeRun}` : ''}#{i + 1}
             </span>
           </button>
         ))}
@@ -223,18 +266,18 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
 
       <div className="flex gap-2">
         <Button
-          onClick={() => selected !== null && onLock(selected, feedback)}
+          onClick={() => selected !== null && onLock(selected, feedback, activeRun ?? undefined)}
           disabled={selected === null || submitting}
         >
           <Lock className="size-3.5 mr-1.5" />
-          Lock Style #{selected !== null ? selected + 1 : '?'}
+          Lock Style {activeRun !== null ? `R${activeRun}` : ''}#{selected !== null ? selected + 1 : '?'}
         </Button>
         <Button
           variant="outline"
           onClick={() => onRefine(feedback || 'Generate new variations')}
           disabled={submitting}
         >
-          Refine & Try Again
+          Refine &amp; Try Again
         </Button>
       </div>
     </div>

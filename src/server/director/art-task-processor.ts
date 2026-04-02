@@ -195,6 +195,7 @@ function buildParams(
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
 function inferAssetType(task: ParsedTask): string {
+  if (task.type === "style_exploration") return "concept";
   if (task.type === "music") return "music";
   if (task.type === "sfx") return "sfx";
 

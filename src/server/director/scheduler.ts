@@ -509,14 +509,15 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
         shouldResume = true;
         if (review.task_id) {
           try {
-            const parsed = JSON.parse(result.context) as { selected?: number[] };
+            const parsed = JSON.parse(result.context) as { selected?: number[]; run?: number };
             const selectedIndex = parsed.selected?.[0] ?? 0;
 
-            // Find the generated variation image
+            // Find the generated variation image (supports historical runs)
             const task2 = db.getForemanTask(review.task_id);
             if (task2) {
               const { readdirSync } = await import("fs");
-              const galleryDir = resolve(project.workdir, "assets", "style_exploration", task2.id.slice(0, 8));
+              const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task2.id.slice(0, 8));
+              const galleryDir = parsed.run ? resolve(baseGalleryDir, `run_${parsed.run}`) : baseGalleryDir;
               const files = readdirSync(galleryDir).filter(f => f.endsWith(".png")).sort();
               const selectedFile = files[selectedIndex] ?? files[0];
 
@@ -536,9 +537,10 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
                   locked_by_review_id: review.id,
                 }, resolve(galleryDir, selectedFile));
 
-                addKeyDecision(db, directive, `Art style locked from variation ${selectedIndex + 1}`);
-                logEpisodic(project.workdir, `Art style locked`, `Selected variation ${selectedIndex + 1} from "${task2.title}"`);
-                console.log(`Director: art style locked from variation ${selectedIndex + 1}`);
+                const runLabel = parsed.run ? ` (run ${parsed.run})` : '';
+                addKeyDecision(db, directive, `Art style locked from variation ${selectedIndex + 1}${runLabel}`);
+                logEpisodic(project.workdir, `Art style locked`, `Selected variation ${selectedIndex + 1}${runLabel} from "${task2.title}"`);
+                console.log(`Director: art style locked from variation ${selectedIndex + 1}${runLabel}`);
               }
             }
             // Complete the style exploration task only on success

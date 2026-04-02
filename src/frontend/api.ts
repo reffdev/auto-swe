@@ -541,8 +541,8 @@ export function retryForemanTask(id: string): Promise<ForemanTask> {
   return json(`/api/foreman/tasks/${id}/retry`, { method: "POST" });
 }
 
-export function rejectForemanTask(id: string, feedback: string): Promise<ForemanTask> {
-  return json(`/api/foreman/tasks/${id}/reject`, { method: "POST", body: JSON.stringify({ feedback }) });
+export function rejectForemanTask(id: string, feedback: string, preserveAssets?: boolean): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${id}/reject`, { method: "POST", body: JSON.stringify({ feedback, preserveAssets }) });
 }
 
 export function completeForemanTask(id: string): Promise<ForemanTask> {

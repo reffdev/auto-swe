@@ -13,6 +13,7 @@ import { nudgeDirector } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
 import { isComfyUITaskType, processArtFeedback, injectFeedbackIntoArtTask } from "./art-feedback";
 import { extractTag } from "./task-types";
+import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
 
 export function createForemanRouter(db: Db): Router {
   const router = Router();
@@ -133,7 +134,7 @@ export function createForemanRouter(db: Db): Router {
       return res.status(409).json({ error: `Cannot reject task with status "${task.status}"` });
     }
 
-    const { feedback } = req.body;
+    const { feedback, preserveAssets } = req.body;
     if (!feedback || typeof feedback !== "string") {
       return res.status(400).json({ error: "feedback is required" });
     }
@@ -143,7 +144,24 @@ export function createForemanRouter(db: Db): Router {
 
     // Append feedback and re-queue immediately — no LLM call, no waiting
     // The Director/planner will see the feedback when it next processes this task
-    console.log(`Foreman reject: task ${task.id} (${task.type}) with feedback: "${feedback.slice(0, 100)}"`);
+    console.log(`Foreman reject: task ${task.id} (${task.type}) with feedback: "${feedback.slice(0, 100)}"${preserveAssets ? " [preserve]" : ""}`);
+
+    // Archive current assets if user wants to preserve them across retries
+    if (preserveAssets && isComfyUITaskType(task.type)) {
+      const config = db.getForemanConfig();
+      const projectId = task.project_id || config?.project_id;
+      const project = projectId ? db.getProject(projectId) : null;
+      if (project) {
+        const runs = db.getForemanRunsForTask(task.id);
+        const latestRun = runs[runs.length - 1];
+        const attempt = latestRun?.attempt ?? 1;
+        const archived = archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
+        if (archived.length > 0) {
+          console.log(`Foreman reject: archived ${archived.length} asset(s) to run_${attempt}/`);
+        }
+      }
+    }
+
     let description = task.description;
 
     // For art tasks, revise the prompt asynchronously in the background
@@ -278,24 +296,48 @@ export function createForemanRouter(db: Db): Router {
     const project = db.getProject(projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    const runParam = req.query.run ? parseInt(req.query.run as string, 10) : null;
+
     // Check gallery directory for style exploration
-    const galleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+    const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+    const galleryDir = runParam ? resolve(baseGalleryDir, `run_${runParam}`) : baseGalleryDir;
+
     try {
-            if (existsSync(galleryDir)) {
+      if (existsSync(galleryDir)) {
         const files = readdirSync(galleryDir)
-          .filter((f: string) => f.endsWith(".png") || f.endsWith(".jpg"))
+          .filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith("."))
           .sort();
-        res.json({ files, basePath: `assets/style_exploration/${task.id.slice(0, 8)}` });
+        const availableRuns = getAvailableRuns(baseGalleryDir);
+        const basePath = runParam
+          ? `assets/style_exploration/${task.id.slice(0, 8)}/run_${runParam}`
+          : `assets/style_exploration/${task.id.slice(0, 8)}`;
+        res.json({ files, basePath, availableRuns });
         return;
       }
     } catch { /* fall through */ }
 
+    // Check art_history for single-output tasks with run param
+    if (runParam) {
+      const historyDir = resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8), `run_${runParam}`);
+      try {
+        if (existsSync(historyDir)) {
+          const files = readdirSync(historyDir)
+            .filter((f: string) => !f.startsWith("."))
+            .sort();
+          const availableRuns = getAvailableRuns(resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8)));
+          res.json({ files, basePath: `assets/art_history/${task.id.slice(0, 8)}/run_${runParam}`, availableRuns });
+          return;
+        }
+      } catch { /* fall through */ }
+    }
+
     // Fall back to single asset
     const outputPath = extractTag(task.description, "output");
+    const availableRuns = getAvailableRuns(resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8)));
     if (outputPath) {
-      res.json({ files: [outputPath.split("/").pop()!], basePath: outputPath.replace(/\/[^/]+$/, "") });
+      res.json({ files: [outputPath.split("/").pop()!], basePath: outputPath.replace(/\/[^/]+$/, ""), availableRuns });
     } else {
-      res.json({ files: [] });
+      res.json({ files: [], availableRuns });
     }
   });
 
@@ -310,9 +352,12 @@ export function createForemanRouter(db: Db): Router {
     const project = db.getProject(projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    const galleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+    const runParam = req.query.run ? parseInt(req.query.run as string, 10) : null;
+    const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
+    const galleryDir = runParam ? resolve(baseGalleryDir, `run_${runParam}`) : baseGalleryDir;
+
     try {
-      const files = readdirSync(galleryDir).filter((f: string) => f.endsWith(".png") || f.endsWith(".jpg")).sort();
+      const files = readdirSync(galleryDir).filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort();
       const idx = parseInt(req.params.index, 10);
       if (idx < 0 || idx >= files.length) return res.status(404).json({ error: "Index out of range" });
 
@@ -321,6 +366,22 @@ export function createForemanRouter(db: Db): Router {
       res.setHeader("Content-Type", "image/png");
       res.send(buffer);
     } catch {
+      // Try art_history for single-output tasks
+      if (runParam) {
+        try {
+          const historyDir = resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8), `run_${runParam}`);
+          const files = readdirSync(historyDir).filter((f: string) => !f.startsWith(".")).sort();
+          const idx = parseInt(req.params.index, 10);
+          if (idx >= 0 && idx < files.length) {
+            const filePath = resolve(historyDir, files[idx]);
+            const buffer = readFileSync(filePath);
+            const ext2 = extname(filePath).toLowerCase();
+            res.setHeader("Content-Type", ext2 === ".jpg" || ext2 === ".jpeg" ? "image/jpeg" : "image/png");
+            res.send(buffer);
+            return;
+          }
+        } catch { /* fall through */ }
+      }
       res.status(404).json({ error: "Assets not found" });
     }
   });
@@ -331,10 +392,6 @@ export function createForemanRouter(db: Db): Router {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
-    // Extract output path from task description
-    const outputPath2 = extractTag(task.description, "output");
-    if (!outputPath2) return res.status(404).json({ error: "No output path in task" });
-
     const config = db.getForemanConfig();
     const projectId = task.project_id || config?.project_id;
     if (!projectId) return res.status(400).json({ error: "No project context" });
@@ -342,10 +399,39 @@ export function createForemanRouter(db: Db): Router {
     const project = db.getProject(projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
+    const runParam = req.query.run ? parseInt(req.query.run as string, 10) : null;
+
+    // If requesting a historical run, serve from art_history
+    if (runParam) {
+      const historyDir = resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8), `run_${runParam}`);
+      try {
+        if (existsSync(historyDir)) {
+          const files = readdirSync(historyDir).filter((f: string) => !f.startsWith("."));
+          if (files.length > 0) {
+            const filePath = resolve(historyDir, files[0]);
+            const buffer = readFileSync(filePath);
+            const ext = extname(filePath).toLowerCase();
+            const mimeMap: Record<string, string> = {
+              ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".gif": "image/gif", ".webp": "image/webp", ".wav": "audio/wav",
+              ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+            };
+            res.setHeader("Content-Type", mimeMap[ext] ?? "application/octet-stream");
+            res.send(buffer);
+            return;
+          }
+        }
+      } catch { /* fall through */ }
+      return res.status(404).json({ error: "Historical asset not found" });
+    }
+
+    // Current output — extract path from task description
+    const outputPath2 = extractTag(task.description, "output");
+    if (!outputPath2) return res.status(404).json({ error: "No output path in task" });
+
     const assetPath = resolve(project.workdir, outputPath2);
 
     // Security: ensure the resolved path is within the project workdir
-    // Normalize separators for cross-platform compatibility
     const normalizedAsset = assetPath.replace(/\\/g, "/");
     const normalizedWorkdir = resolve(project.workdir).replace(/\\/g, "/");
     if (!normalizedAsset.startsWith(normalizedWorkdir)) {
@@ -356,24 +442,13 @@ export function createForemanRouter(db: Db): Router {
       return res.status(404).json({ error: `Asset file not found: ${assetPath}` });
     }
 
-    console.log(`Asset preview: serving ${assetPath}`);
-
-    // Set content type based on extension
     const ext = extname(assetPath).toLowerCase();
     const mimeMap: Record<string, string> = {
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".gif": "image/gif",
-      ".webp": "image/webp",
-      ".svg": "image/svg+xml",
-      ".wav": "audio/wav",
-      ".mp3": "audio/mpeg",
-      ".ogg": "audio/ogg",
-      ".mp4": "video/mp4",
+      ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+      ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+      ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".mp4": "video/mp4",
     };
     const contentType = mimeMap[ext] ?? "application/octet-stream";
-    // Read and send file directly instead of sendFile (avoids path resolution issues)
     try {
       const buffer = readFileSync(assetPath);
       res.setHeader("Content-Type", contentType);

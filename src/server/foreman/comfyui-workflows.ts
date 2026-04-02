@@ -516,16 +516,15 @@ export const PRESETS = {
     negative: "blurry, watermark, text, complex background",
   },
 
-  /** High quality concept art (SDXL — FLUX available when UNETLoader is configured) */
+  /** High quality concept art (FLUX.2-dev via UNETLoader + DualCLIPLoader) */
   concept: {
-    checkpoint: "sd_xl_base_1.0.safetensors",
+    checkpoint: "flux2-dev.safetensors",
     width: 1024,
     height: 1024,
-    steps: 25,
-    cfg: 7.0,
-    sampler: "dpmpp_2m",
-    scheduler: "karras",
-    negative: "blurry, low quality, watermark, text, signature, ugly",
+    steps: 30,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
   },
 
   /** Portrait / character art (SDXL) */
