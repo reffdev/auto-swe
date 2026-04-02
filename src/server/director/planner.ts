@@ -36,6 +36,8 @@ export async function planNextTasks(
   milestone: DirectorMilestone,
   /** Machine types that are idle and need work. When set, the planner prioritizes generating tasks for these types. */
   idleMachineTypes?: string[],
+  /** When true, the planner MUST generate a style_exploration task */
+  forceStyleExploration?: boolean,
 ): Promise<number> {
   const planStartTime = Date.now();
   console.log(`Director planner: starting for milestone "${milestone.title}" (idleMachineTypes: ${idleMachineTypes?.join(", ") ?? "none"})`);
@@ -78,12 +80,33 @@ export async function planNextTasks(
     workflowSummary,
     idleMachineTypes,
     styleLocked,
+    forceStyleExploration,
   });
 
   const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];
   console.log(`Director planner: [6/8] system=${system.length} chars, user=${user.length} chars, tools=${toolNames.length} (${toolNames.join(", ")})`);
 
   // Call LLM
+  console.log(`Director planner: [6.5/8] constructing tools...`);
+  let tools;
+  try {
+    const readOnlyTools = makeReadOnlyTools(project.workdir);
+    console.log(`Director planner: [6.5/8] readOnlyTools: ${Object.keys(readOnlyTools).join(", ")}`);
+    const memTools = makeMemoryTools(project.workdir);
+    console.log(`Director planner: [6.5/8] memTools: ${Object.keys(memTools).join(", ")}`);
+    tools = {
+      webSearch: webSearchTool,
+      fetchUrl: fetchUrlTool,
+      lookupDocs,
+      ...readOnlyTools,
+      ...memTools,
+    };
+    console.log(`Director planner: [6.5/8] tools constructed: ${Object.keys(tools).length} total`);
+  } catch (toolErr) {
+    console.error(`Director planner: [6.5/8] TOOL CONSTRUCTION FAILED:`, toolErr);
+    throw toolErr;
+  }
+
   console.log(`Director planner: [7/8] calling LLM at ${machine.base_url}...`);
   const llmStartTime = Date.now();
   const provider = createOpenAICompatible({
@@ -95,19 +118,15 @@ export async function planNextTasks(
 
   let resultText: string;
   try {
+    console.log(`Director planner: [7/8] sending streamText request...`);
     const stream = streamText({
       model,
       system,
       prompt: user,
-      tools: {
-        webSearch: webSearchTool,
-        fetchUrl: fetchUrlTool,
-        lookupDocs,
-        ...makeReadOnlyTools(project.workdir),
-        ...makeMemoryTools(project.workdir),
-      },
+      tools,
       maxSteps: 50,
     });
+    console.log(`Director planner: [7/8] streamText created, consuming stream...`);
     // Consume the stream to get the full text
     let text = "";
     for await (const chunk of stream.textStream) {

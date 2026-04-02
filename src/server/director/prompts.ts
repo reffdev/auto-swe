@@ -106,6 +106,8 @@ export function buildPlanningPrompt(opts: {
   idleMachineTypes?: string[];
   /** Whether the project has a locked art style */
   styleLocked?: boolean;
+  /** When true, the planner MUST generate a style_exploration task */
+  forceStyleExploration?: boolean;
 }): { system: string; user: string } {
   const systemParts = [
     "You are a project director generating the next batch of tasks for autonomous execution.",
@@ -264,7 +266,19 @@ export function buildPlanningPrompt(opts: {
     "Focus on what's missing or incomplete.",
   ];
 
-  if (opts.idleMachineTypes?.length) {
+  if (opts.forceStyleExploration) {
+    userParts.push(
+      "",
+      "**🎨 MANDATORY: You MUST generate exactly ONE task with type `style_exploration`.**",
+      "This project has no locked art style. Before any art assets can be generated,",
+      "the user needs to approve a visual style. Generate a style_exploration task with:",
+      "- type: style_exploration",
+      "- A [prompt:] describing a single representative scene/object in the project's art style",
+      "- [variation_count: 6]",
+      "- [preset: fast_draft]",
+      "- Do NOT generate code tasks in this batch — ONLY the style_exploration task.",
+    );
+  } else if (opts.idleMachineTypes?.length) {
     const typeLabels: Record<string, string> = {
       inference: "code/review/content",
       comfyui: "art/music/sfx",

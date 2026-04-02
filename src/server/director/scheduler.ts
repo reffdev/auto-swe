@@ -52,11 +52,13 @@ export function startDirectorScheduler(db: Db): void {
   if (config?.project_id) {
     const project = db.getProject(config.project_id);
     if (project) {
-      // Index memories
+      // Index memories (always, even when disabled)
       indexMemories(project.workdir).catch(() => {});
 
-      // Auto-create style exploration task if style isn't locked and none exists
-      ensureStyleExploration(db, project);
+      // Only run style exploration when enabled
+      if (config.enabled) {
+        ensureStyleExploration(db, project);
+      }
     }
   }
 
@@ -108,7 +110,7 @@ function ensureStyleExploration(db: Db, project: import("../db").Project): void 
   logEpisodic(project.workdir, "Style not locked — requesting planner to generate style exploration task");
 
   // Fire and forget — planner runs asynchronously
-  planNextTasks(db, activeDirective, project, activeMilestone, ["comfyui"])
+  planNextTasks(db, activeDirective, project, activeMilestone, ["comfyui"], true)
     .then(created => {
       if (created > 0) {
         console.log(`Director: planner generated ${created} task(s) for style exploration`);
