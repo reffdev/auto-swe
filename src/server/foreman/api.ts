@@ -177,10 +177,13 @@ export function createForemanRouter(db: Db): Router {
       });
     }
 
+    // Increment retry_count so the next run gets a unique attempt number
+    const runs = db.getForemanRunsForTask(task.id);
+    const nextRetry = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 0;
     db.updateForemanTask(task.id, {
       status: "queued",
       description,
-      retry_count: 0,
+      retry_count: nextRetry,
       error_message: `Rejected: ${feedback}`,
       next_retry_at: null,
       machine_id: null,
