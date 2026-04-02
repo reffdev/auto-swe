@@ -86,6 +86,35 @@ export async function executeComfyUIWorkflow(
     const entry = history[prompt_id];
     if (!entry?.outputs) continue;
 
+    // Check if outputs actually have content — empty {} means still processing
+    const outputNodeIds = Object.keys(entry.outputs);
+    if (outputNodeIds.length === 0) continue; // still running, no output nodes yet
+
+    // Count actual files across all output nodes
+    let totalFiles = 0;
+    for (const nid of outputNodeIds) {
+      const no = entry.outputs[nid] as Record<string, unknown>;
+      for (const key of ["images", "audio", "gifs", "files"]) {
+        if (Array.isArray(no[key])) totalFiles += (no[key] as unknown[]).length;
+      }
+    }
+    if (totalFiles === 0) {
+      // Output nodes exist but have no files — check if workflow errored
+      const status = (entry as Record<string, unknown>).status as {
+        status_str?: string;
+        messages?: Array<[string, { exception_message?: string; node_type?: string }]>;
+      } | undefined;
+      if (status?.status_str === "error") {
+        const errorMsg = status.messages
+          ?.filter(([type]) => type === "execution_error")
+          .map(([, data]) => `${data.node_type}: ${data.exception_message}`)
+          .join("; ") ?? "unknown error";
+        throw new Error(`ComfyUI workflow failed: ${errorMsg}`);
+      }
+      // Might still be in progress
+      continue;
+    }
+
     // 3. Download output files
     const outputFiles: ComfyUIResult["outputFiles"] = [];
     mkdirSync(outputDir, { recursive: true });

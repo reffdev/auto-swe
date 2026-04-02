@@ -550,15 +550,15 @@ export const PRESETS = {
     negative: "blurry, low quality, watermark, text",
   },
 
-  /** Z-Image-Turbo — fast drafts, 8 steps, good prompt adherence */
+  /** Fast drafts — SDXL with fewer steps for quick iterations */
   fast_draft: {
-    checkpoint: "z_image_turbo.safetensors",
+    checkpoint: "sd_xl_base_1.0.safetensors",
     width: 1024,
     height: 1024,
-    steps: 8,
-    cfg: 2.0,
-    sampler: "euler",
-    scheduler: "simple",
+    steps: 12,
+    cfg: 7.0,
+    sampler: "euler_ancestral",
+    scheduler: "normal",
     negative: "blurry, low quality, watermark",
   },
 

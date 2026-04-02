@@ -216,9 +216,9 @@ describe("PRESETS", () => {
     expect(PRESETS.pixel_sprite.lora).toBe("pixel-art-xl.safetensors");
   });
 
-  it("fast_draft uses z_image_turbo with 8 steps", () => {
-    expect(PRESETS.fast_draft.checkpoint).toBe("z_image_turbo.safetensors");
-    expect(PRESETS.fast_draft.steps).toBe(8);
+  it("fast_draft uses SDXL with fewer steps", () => {
+    expect(PRESETS.fast_draft.checkpoint).toBe("sd_xl_base_1.0.safetensors");
+    expect(PRESETS.fast_draft.steps).toBe(12);
   });
 });
 
