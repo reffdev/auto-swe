@@ -329,7 +329,7 @@ function NewMachineDialog({ open, onClose, onCreated }: {
         <div className="grid gap-3">
           <Input placeholder="Name (optional)" value={name} onChange={(e) => { setName(e.target.value); }} />
           <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Type</label>
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Type</span>
             <div className="flex gap-2">
               <button
                 onClick={() => { setMachineType('inference'); }}
