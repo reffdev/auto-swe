@@ -141,18 +141,24 @@ export function createForemanRouter(db: Db): Router {
       return res.status(400).json({ error: "feedback is too long (max 5000 chars)" });
     }
 
-    // For art/music/sfx tasks, use LLM to intelligently revise the prompt
+    // Append feedback and re-queue immediately — no LLM call, no waiting
+    // The Director/planner will see the feedback when it next processes this task
     console.log(`Foreman reject: task ${task.id} (${task.type}) with feedback: "${feedback.slice(0, 100)}"`);
     let description = task.description;
+
+    // For art tasks, revise the prompt asynchronously in the background
     if (isComfyUITaskType(task.type)) {
-      try {
-        description = await processArtFeedback(db, description, feedback);
-        console.log(`Foreman reject: prompt revised for task ${task.id}`);
-      } catch (err) {
-        console.error(`Foreman reject: art feedback revision failed:`, err instanceof Error ? err.message : err);
-        // Fall back to simple append if LLM revision fails
-        description += `\n\n[feedback: ${feedback}]`;
-      }
+      // Immediate: append feedback tag so it's visible
+      const { injectFeedbackIntoArtTask } = await import("./art-feedback");
+      description = injectFeedbackIntoArtTask(description, feedback);
+
+      // Background: LLM revision replaces the simple append with a better prompt
+      void processArtFeedback(db, description, feedback).then(revised => {
+        db.updateForemanTask(task.id, { description: revised });
+        console.log(`Foreman reject: prompt revised in background for task ${task.id}`);
+      }).catch(err => {
+        console.warn(`Foreman reject: background revision failed (using simple feedback):`, err instanceof Error ? err.message : err);
+      });
     }
 
     db.updateForemanTask(task.id, {
