@@ -14,6 +14,19 @@ import { dirname, resolve } from "path";
 
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_TIME_MS = 10 * 60 * 1000; // 10 minutes
+const FETCH_TIMEOUT_MS = 10_000; // per-request timeout for poll fetches
+
+/** Create an AbortSignal that fires after `ms`, combined with an optional parent signal. */
+function timeoutSignal(ms: number, parent?: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  if (parent) {
+    parent.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  // Clean up timer if aborted early
+  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+  return controller.signal;
+}
 
 export interface ComfyUIResult {
   outputFiles: Array<{ filename: string; localPath: string }>;
@@ -70,15 +83,34 @@ export async function executeComfyUIWorkflow(
   // 2. Poll for completion
   const startTime = Date.now();
   let lastLogTime = 0;
+  let lastQueueLog = 0;
 
   while (Date.now() - startTime < MAX_POLL_TIME_MS) {
     if (signal?.aborted) throw new Error("ComfyUI execution aborted");
 
     await sleep(POLL_INTERVAL_MS);
 
+    // Periodically check queue status for diagnostics
+    const elapsed = Date.now() - startTime;
+    if (elapsed - lastQueueLog > 30_000) {
+      try {
+        const queueRes = await fetch(`${url}/queue`, { signal: timeoutSignal(FETCH_TIMEOUT_MS, signal) });
+        if (queueRes.ok) {
+          const queue = await queueRes.json() as {
+            queue_running?: unknown[];
+            queue_pending?: unknown[];
+          };
+          const running = queue.queue_running?.length ?? 0;
+          const pending = queue.queue_pending?.length ?? 0;
+          console.log(`ComfyUI: queue status — ${running} running, ${pending} pending (${Math.round(elapsed / 1000)}s elapsed, prompt_id: ${prompt_id})`);
+        }
+      } catch { /* best effort */ }
+      lastQueueLog = elapsed;
+    }
+
     let historyRes: Response;
     try {
-      historyRes = await fetch(`${url}/history/${prompt_id}`, { signal });
+      historyRes = await fetch(`${url}/history/${prompt_id}`, { signal: timeoutSignal(FETCH_TIMEOUT_MS, signal) });
     } catch (fetchErr) {
       console.warn(`ComfyUI: history poll failed: ${fetchErr instanceof Error ? fetchErr.message : fetchErr}`);
       continue;
@@ -180,7 +212,7 @@ export async function executeComfyUIWorkflow(
           type: file.type || "output",
         });
 
-        const fileRes = await fetch(`${url}/view?${params}`, { signal });
+        const fileRes = await fetch(`${url}/view?${params}`, { signal: timeoutSignal(60_000, signal) });
         if (!fileRes.ok) continue;
 
         const buffer = Buffer.from(await fileRes.arrayBuffer());

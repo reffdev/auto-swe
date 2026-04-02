@@ -98,16 +98,17 @@ describe("buildTxt2ImgWithLoRAWorkflow", () => {
 });
 
 describe("buildFluxTxt2ImgWorkflow", () => {
-  it("uses FLUX-specific nodes", () => {
+  it("uses FLUX.2-specific nodes", () => {
     const wf = buildFluxTxt2ImgWorkflow({
       prompt: "concept art",
       checkpoint: "flux2-dev.safetensors",
     });
 
     expect(wf["10"].class_type).toBe("UNETLoader");
-    expect(wf["11"].class_type).toBe("DualCLIPLoader");
+    expect(wf["11"].class_type).toBe("CLIPLoader");
+    expect(wf["11"].inputs.type).toBe("flux2");
     expect(wf["12"].class_type).toBe("VAELoader");
-    expect(wf["5"].class_type).toBe("EmptySD3LatentImage");
+    expect(wf["5"].class_type).toBe("EmptyFlux2LatentImage");
   });
 
   it("uses cfg 1.0 and euler sampler by default", () => {

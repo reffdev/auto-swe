@@ -155,20 +155,19 @@ export function buildTxt2ImgWithLoRAWorkflow(opts: WorkflowOptions & { lora: str
 }
 
 /**
- * FLUX txt2img workflow: Uses the FLUX-specific dual CLIP + UNET loader pattern.
+ * FLUX.2 txt2img workflow: UNETLoader + CLIPLoader (Mistral 3) + VAELoader.
  *
- * FLUX models use a different architecture:
- * - UNETLoader instead of CheckpointLoaderSimple
- * - DualCLIPLoader for T5 + CLIP-L text encoders
- * - Separate VAELoader
- * - Euler sampler with "simple" scheduler
- * - Higher step count, lower CFG (1.0 guidance)
+ * FLUX.2 uses a completely different text encoder than FLUX.1:
+ * - Single Mistral 3 24B encoder (not dual T5+CLIP-L)
+ * - EmptyFlux2LatentImage (not EmptySD3LatentImage)
+ * - Separate VAE (flux2-vae.safetensors)
+ * - Euler sampler with "simple" scheduler, low CFG (1.0)
  */
 export function buildFluxTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
   const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
 
   return {
-    // Load UNET
+    // Load UNET (diffusion model)
     "10": {
       class_type: "UNETLoader",
       inputs: {
@@ -176,23 +175,22 @@ export function buildFluxTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
         weight_dtype: "default",
       },
     },
-    // Load dual CLIP (T5 + CLIP-L)
+    // Load Mistral 3 text encoder — ComfyUI auto-detects the architecture
     "11": {
-      class_type: "DualCLIPLoader",
+      class_type: "CLIPLoader",
       inputs: {
-        clip_name1: "t5xxl_fp16.safetensors",
-        clip_name2: "clip_l.safetensors",
-        type: "flux",
+        clip_name: "mistral_3_small_flux2_fp8.safetensors",
+        type: "flux2",
       },
     },
     // Load VAE
     "12": {
       class_type: "VAELoader",
       inputs: {
-        vae_name: "ae.safetensors",
+        vae_name: "flux2-vae.safetensors",
       },
     },
-    // CLIP Text Encode (positive)
+    // Positive prompt
     "6": {
       class_type: "CLIPTextEncode",
       inputs: {
@@ -200,9 +198,9 @@ export function buildFluxTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
         clip: ["11", 0],
       },
     },
-    // Empty latent
+    // Empty latent (FLUX.2-specific)
     "5": {
-      class_type: "EmptySD3LatentImage",
+      class_type: "EmptyFlux2LatentImage",
       inputs: {
         width: opts.width ?? 1024,
         height: opts.height ?? 1024,
