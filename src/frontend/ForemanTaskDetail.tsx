@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ArrowLeft, Play, XCircle, CheckCircle, RotateCcw, ExternalLink, ChevronDown, ChevronRight, Image, Volume2, MessageSquare } from 'lucide-react'
+import { ArrowLeft, Play, XCircle, CheckCircle, RotateCcw, ExternalLink, ChevronDown, ChevronRight, Image, Volume2, MessageSquare, Trash2 } from 'lucide-react'
 import * as api from './api'
 import type { ForemanTask, ForemanRun, StepData } from './api'
 
@@ -97,6 +97,17 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
             {task.status === 'failed' && (
               <Button variant="outline" size="sm" onClick={() => void api.retryForemanTask(task.id).then(refresh)}>
                 <RotateCcw className="size-3.5 mr-1.5" /> Retry
+              </Button>
+            )}
+            {task.status !== 'running' && (
+              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive"
+                onClick={() => {
+                  if (confirm(`Delete task "${task.title}"?`)) {
+                    void api.deleteForemanTask(task.id).then(() => onBack())
+                  }
+                }}
+              >
+                <Trash2 className="size-3.5 mr-1.5" /> Delete
               </Button>
             )}
           </div>
