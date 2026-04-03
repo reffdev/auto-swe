@@ -5,10 +5,15 @@ import { ArrowLeft, Send, X, CheckCircle, Lock } from 'lucide-react'
 import * as api from './api'
 import type { DirectorReview as DirectorReviewType } from './api'
 
-export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack: () => void }) {
+export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
+  reviewId: string
+  onBack: () => void
+  onNavigateReview?: (reviewId: string) => void
+}) {
   const [review, setReview] = useState<DirectorReviewType | null>(null)
   const [response, setResponse] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [waitingForRegeneration, setWaitingForRegeneration] = useState(false)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -18,6 +23,31 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
     }).catch(() => {})
   }, [reviewId])
 
+  // Poll for new review gate after regenerate/refine
+  useEffect(() => {
+    if (!waitingForRegeneration || !review) return
+    const taskId = (() => { try { return JSON.parse(review.context)?.task_id } catch { return null } })()
+    if (!taskId) return
+
+    const interval = setInterval(() => {
+      api.getDirectorReviews().then(reviews => {
+        const newReview = reviews.find(r =>
+          r.id !== review.id && r.task_id === taskId && r.status === 'pending'
+        )
+        if (newReview) {
+          setWaitingForRegeneration(false)
+          if (onNavigateReview) {
+            onNavigateReview(newReview.id)
+          } else {
+            // Reload into the new review
+            setReview(newReview)
+          }
+        }
+      }).catch(() => {})
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [waitingForRegeneration, review, onNavigateReview])
+
   if (!review) {
     return <div className="flex-1 flex items-center justify-center text-muted-foreground">Loading review...</div>
   }
@@ -26,16 +56,21 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
   let context: Record<string, unknown> & { issues?: string[]; reasoning?: string; error?: string; task_id?: string } = {}
   try { context = JSON.parse(review.context) } catch { /* ignore */ }
 
-  const handleRespond = async (text: string) => {
+  const handleRespond = async (text: string, awaitRegeneration = false) => {
     setSubmitting(true)
     setError('')
     try {
       await api.respondToReview(review.id, text)
-      onBack()
+      if (awaitRegeneration) {
+        setSubmitting(false)
+        setWaitingForRegeneration(true)
+      } else {
+        onBack()
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setSubmitting(false)
+      if (!awaitRegeneration) setSubmitting(false)
     }
   }
 
@@ -120,14 +155,23 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
           )}
 
           {/* Style selection UI */}
-          {review.review_type === 'style_selection' && context.task_id && (
+          {review.review_type === 'style_selection' && context.task_id && !waitingForRegeneration && (
             <StyleSelectionPanel
               taskId={context.task_id ?? ""}
               onLock={(selectedIndex, feedback, run) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback, run }))}
-              onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }))}
-              onRegenerate={() => handleRespond(JSON.stringify({ action: 'regenerate' }))}
+              onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }), true)}
+              onRegenerate={() => handleRespond(JSON.stringify({ action: 'regenerate' }), true)}
               submitting={submitting}
             />
+          )}
+
+          {/* Waiting for regeneration */}
+          {waitingForRegeneration && (
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <div className="size-8 border-2 border-primary border-t-transparent rounded-full animate-spin mb-4" />
+              <p className="text-sm font-medium">Regenerating style variations...</p>
+              <p className="text-xs mt-1">New images will appear here automatically.</p>
+            </div>
           )}
 
           {/* Free-text response */}

@@ -202,6 +202,9 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
       ensureStyleExploration(db, project);
     }
 
+    // Process any responded reviews (e.g., art regenerate/refine/lock) even while active
+    await processRespondedReviews(db, directive, project);
+
     await verifyAwaitingTasks(db, directive, project);
     await handleFailedTasks(db, directive);
     await advanceMilestone(db, directive, project);
@@ -408,22 +411,19 @@ async function topUpIfIdle(
   }
 }
 
-// ─── Paused Directive Processing ────────────────────────────────────────────
+// ─── Process responded reviews (shared by active + paused directives) ───────
 
-async function processPausedDirective(db: Db, directive: DirectorDirective): Promise<void> {
-  const project = db.getProject(directive.project_id);
-  if (!project) return;
-
+async function processRespondedReviews(db: Db, directive: DirectorDirective, project: Project): Promise<boolean> {
   const justResponded = db.getDirectorReviews(directive.id).filter(r => r.status === "responded");
-  let shouldResume = false;
+  let acted = false;
 
   for (const review of justResponded) {
     const result = processReviewResponse(review);
     db.updateDirectorReview(review.id, { status: "processed" });
+    acted = true;
 
     switch (result.action) {
       case "resume":
-        shouldResume = true;
         if (result.context) addKeyDecision(db, directive, result.context);
         break;
 
@@ -439,11 +439,9 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
           db.updateForemanTask(review.task_id, updates);
           nudgeForeman(db);
         }
-        shouldResume = true;
         break;
 
       case "generate_tasks": {
-        shouldResume = true;
         if (result.context) addKeyDecision(db, directive, result.context);
         const activeMilestone = db.getActiveMilestone(directive.id);
         if (activeMilestone) {
@@ -453,18 +451,14 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
       }
 
       case "regenerate_style": {
-        // Re-run style exploration with same prompts but different seeds — preserve current assets
-        shouldResume = true;
         if (review.task_id) {
           const task = db.getForemanTask(review.task_id);
           if (task) {
-            // Archive current gallery before re-queue
             const runs = db.getForemanRunsForTask(task.id);
             const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
             archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
             console.log(`Director: archived style exploration run ${attempt}, re-queuing with same prompts`);
           }
-          // Re-queue WITHOUT modifying the description — same prompts, new seeds
           db.updateForemanTask(review.task_id, {
             status: "queued", retry_count: 0, error_message: null, next_retry_at: null, machine_id: null,
           });
@@ -474,7 +468,6 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
       }
 
       case "lock_style": {
-        shouldResume = true;
         if (review.task_id) {
           try {
             handleStyleLock(db, directive, project, review.task_id, review.id, result.context);
@@ -491,8 +484,19 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
     }
   }
 
+  return acted;
+}
+
+// ─── Paused Directive Processing ────────────────────────────────────────────
+
+async function processPausedDirective(db: Db, directive: DirectorDirective): Promise<void> {
+  const project = db.getProject(directive.project_id);
+  if (!project) return;
+
+  const acted = await processRespondedReviews(db, directive, project);
+
   const stillPending = db.getPendingReviewsForDirective(directive.id);
-  if (stillPending.length === 0 || shouldResume) {
+  if (stillPending.length === 0 || acted) {
     db.updateDirectorDirective(directive.id, { status: "active" });
     saveProgress(db, directive);
     nudgeDirector(db);

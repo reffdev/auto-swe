@@ -144,7 +144,7 @@ export function DashboardLayout({ view }: { view: ViewName }) {
             case 'director-conversation':
               return directiveId ? <DirectorConversation directiveId={directiveId} onBack={() => navigate('/director')} /> : null
             case 'director-review':
-              return reviewId ? <DirectorReview reviewId={reviewId} onBack={() => navigate('/director')} /> : null
+              return reviewId ? <DirectorReview reviewId={reviewId} onBack={() => navigate('/director')} onNavigateReview={(id) => navigate(`/director/review/${id}`)} /> : null
             case 'terminal':
               return <TerminalView projectId={projectId ?? ''} onBack={() => navigate('/')} />
           }
