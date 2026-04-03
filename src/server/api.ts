@@ -17,8 +17,7 @@ import { getGenerationSpeed, getAllMachineSpeeds } from "./stats";
 import { selectPlannerMachine } from "./planner-llm";
 import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
-import { generateText } from "ai";
-import { createModelProvider } from "./pipeline/index";
+import { createModel, generate } from "./llm";
 import { acquireLease, releaseLease } from "./machine-manager";
 import { isDirectorBusy, isDirectorPlanning } from "./director/scheduler";
 import { notifyCapacityChange } from "./foreman/scheduler";
@@ -369,18 +368,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
 
     try {
-      const provider = createModelProvider(selected.machine);
-      const model = provider(selected.modelId);
+      const model = createModel(selected.machine, selected.modelId);
 
-      const result = await generateText({
-        model,
+      const result = await generate(model, {
         system: constructDecomposePrompt(),
         prompt: `## Issue to decompose\n\n**Title:** ${issue.title}\n\n**Description:**\n${issue.description}`,
       });
 
-      const epicProposal = parseEpicProposal(result.text);
+      const epicProposal = parseEpicProposal(result);
       if (!epicProposal) {
-        res.status(422).json({ error: "LLM did not produce a valid epic_proposal", raw: result.text });
+        res.status(422).json({ error: "LLM did not produce a valid epic_proposal", raw: result });
         return;
       }
 

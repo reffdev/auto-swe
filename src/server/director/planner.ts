@@ -7,8 +7,7 @@
  * - After a milestone transitions (new milestone tasks)
  */
 
-import { streamText } from "ai";
-import { createModelProvider } from "../pipeline/index";
+import { createModel, stream as llmStream } from "../llm";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
@@ -106,13 +105,12 @@ export async function planNextTasks(
 
   console.log(`Director planner: [7/8] calling LLM at ${machine.base_url}...`);
   const llmStartTime = Date.now();
-  const provider = createModelProvider(machine);
-  const model = provider(modelId);
+  const model = createModel(machine, modelId);
 
   let resultText: string;
   try {
     console.log(`Director planner: [7/8] sending streamText request...`);
-    const stream = streamText({
+    const stream = llmStream({
       model,
       system,
       prompt: user,

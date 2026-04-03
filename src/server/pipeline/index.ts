@@ -12,6 +12,7 @@ import { StateGraph, START, END, type LangGraphRunnableConfig } from "@langchain
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createProvider as _createProvider } from "../llm";
 import { resolve } from "path";
 
 import { PipelineState } from "./state";
@@ -44,166 +45,9 @@ import type { Db, Machine, Issue, Project } from "../db";
 export { extractScoutBrief, parseVerdict, parseTestVerdict } from "./parsers";
 export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
-// ─── LLM provider with per-request timeout + retry ────────────────────────────
+// ─── LLM provider — delegates to unified llm.ts module ──────────────────────
 
-const LLM_REQUEST_TIMEOUT_MS = 20 * 60 * 1000; // 20 min per-chunk inactivity timeout on streaming responses
-
-export function createModelProvider(machine: Machine) {
-  const provider = createOpenAICompatible({
-    name: `machine-${machine.id}`,
-    baseURL: machine.base_url,
-    apiKey: machine.api_key || undefined,
-    fetch: async (url, init) => {
-      // Inject API key as Bearer token if configured
-      if (machine.api_key) {
-        const headers = new Headers((init as RequestInit)?.headers);
-        if (!headers.has("Authorization")) {
-          headers.set("Authorization", `Bearer ${machine.api_key}`);
-        }
-        init = { ...init, headers };
-      }
-
-      // Inject stream_options and cache_control hints
-      if (init?.body && typeof init.body === "string") {
-        try {
-          const body = JSON.parse(init.body);
-          if (body.stream) {
-            body.stream_options = { include_usage: true };
-          }
-
-          // Add cache_control to system message and tools for Anthropic prompt caching.
-          // OpenRouter passes these through to Anthropic. Non-Anthropic providers ignore them.
-          if (body.messages?.length) {
-            for (const msg of body.messages) {
-              if (msg.role === "system") {
-                // Mark system prompt as cacheable
-                if (typeof msg.content === "string") {
-                  msg.content = [{ type: "text", text: msg.content, cache_control: { type: "ephemeral" } }];
-                }
-              }
-            }
-          }
-          if (body.tools?.length) {
-            // Mark the last tool definition as cacheable (caches all tools up to this point)
-            const lastTool = body.tools[body.tools.length - 1];
-            if (lastTool) {
-              lastTool.cache_control = { type: "ephemeral" };
-            }
-          }
-
-          init = { ...init, body: JSON.stringify(body) };
-        } catch { /* not JSON — pass through */ }
-      }
-
-      const callerSignal = (init as RequestInit)?.signal;
-      if (callerSignal?.aborted) throw new Error("Aborted");
-
-      const LLM_CONNECT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min connect timeout per attempt
-
-      // Retry on server errors (502/503/504) and connection failures
-      const MAX_SERVER_ERROR_RETRIES = 5;
-      let res: Response | undefined;
-      for (let attempt = 0; attempt <= MAX_SERVER_ERROR_RETRIES; attempt++) {
-        if (callerSignal?.aborted) throw new Error("Aborted");
-        try {
-          // Use a connect timeout that we cancel once headers arrive.
-          // The caller's signal (for cancel/compaction) stays active for the stream body.
-          const connectAbort = new AbortController();
-          const connectTimer = setTimeout(() => { connectAbort.abort(); }, LLM_CONNECT_TIMEOUT_MS);
-          const signals: AbortSignal[] = [connectAbort.signal];
-          if (callerSignal) signals.push(callerSignal);
-          const connectSignal = AbortSignal.any(signals);
-
-          res = await fetch(url as string, { ...init as RequestInit, signal: connectSignal });
-          clearTimeout(connectTimer); // headers received — cancel the connect timeout
-        } catch (err) {
-          // Connection error (timeout, refused, etc.)
-          if (attempt >= MAX_SERVER_ERROR_RETRIES) throw err;
-          const retryDelay = (attempt + 1) * 10000; // 10s, 20s
-          console.log(`Pipeline: LLM connection failed — ${err instanceof Error ? err.message : err} — retrying in ${retryDelay / 1000}s (attempt ${attempt + 2}/${MAX_SERVER_ERROR_RETRIES + 1})`);
-          await new Promise(r => setTimeout(r, retryDelay));
-          continue;
-        }
-        if (res.status < 500 || attempt >= MAX_SERVER_ERROR_RETRIES) break;
-        const retryDelay = (attempt + 1) * 5000; // 5s, 10s
-        console.log(`Pipeline: LLM server returned ${res.status} — retrying in ${retryDelay / 1000}s (attempt ${attempt + 2}/${MAX_SERVER_ERROR_RETRIES + 1})`);
-        await new Promise(r => setTimeout(r, retryDelay));
-      }
-
-      if (!res) throw new Error("LLM fetch failed — no response");
-
-      if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {
-        const reader = res.body.getReader();
-        let streamDone = false;
-        let lastChunkTime = Date.now();
-
-        // Single persistent inactivity timer — resets on every chunk.
-        // Controller ref is set in start(), used by the timer callback.
-        let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-        let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
-
-        const clearTimer = () => {
-          if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
-        };
-
-        const resetTimer = () => {
-          if (streamDone) return;
-          lastChunkTime = Date.now();
-          clearTimer();
-          inactivityTimer = setTimeout(() => {
-            if (streamDone) return;
-            streamDone = true;
-            inactivityTimer = null;
-            const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
-            console.log(`Pipeline: LLM stream inactive for ${elapsed}s (limit: ${LLM_REQUEST_TIMEOUT_MS / 1000}s) — aborting stream`);
-            void reader.cancel("LLM stream inactivity timeout");
-            try { streamController?.error(new Error(`LLM stream timed out — no data for ${elapsed}s`)); } catch { /* controller may already be closed */ }
-          }, LLM_REQUEST_TIMEOUT_MS);
-        };
-
-        const watchedStream = new ReadableStream({
-          start(controller) {
-            streamController = controller;
-            resetTimer();
-          },
-          async pull(controller) {
-            if (streamDone) return;
-
-            try {
-              const { done, value } = await reader.read();
-              if (done) { streamDone = true; clearTimer(); controller.close(); return; }
-              // Only reset the inactivity timer on chunks with real token data.
-              // SSE keepalives, empty deltas, and comments shouldn't prevent timeout.
-              if (value && value.length > 0) {
-                const text = new TextDecoder().decode(value);
-                const hasContent = text.includes('"content"') && !/"content"\s*:\s*""/.test(text);
-                if (hasContent) resetTimer();
-              }
-              controller.enqueue(value);
-            } catch (err) {
-              clearTimer();
-              if (streamDone) return;
-              streamDone = true;
-              const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
-              console.log(`Pipeline: LLM stream error after ${elapsed}s of inactivity: ${err instanceof Error ? err.message : err}`);
-              try { controller.error(err); } catch { /* controller may already be errored */ }
-            }
-          },
-          cancel() { streamDone = true; clearTimer(); void reader.cancel(); },
-        });
-
-        return new Response(watchedStream, {
-          status: res.status,
-          statusText: res.statusText,
-          headers: res.headers,
-        });
-      }
-
-      return res;
-    },
-  });
-  return provider;
-}
+export { createProvider as createModelProvider, createModel, generate, stream } from "../llm";
 
 // ─── Graph wiring (shared between production and tests) ─────────────────────
 
@@ -340,7 +184,7 @@ export async function executePipeline(
     // Create model once — shared across all pipeline nodes
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const provider = createModelProvider(machine);
+    const provider = _createProvider(machine);
     const model = provider(modelId);
 
     // Fresh run: unique thread_id so we don't resume stale checkpoints
@@ -463,7 +307,7 @@ export async function executeStageRetry(
 
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const provider = createModelProvider(machine);
+    const provider = _createProvider(machine);
     const model = provider(modelId);
 
     // Use the thread_id from the last executePipeline run to resume from checkpoint

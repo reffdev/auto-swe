@@ -23,9 +23,7 @@ import { getWorkflowDir } from "./workflow-manifest";
 import { extractTag } from "./task-types";
 import { getStyleLock, getStyleReferencePath } from "../director/style-lock";
 import { postProcessImage } from "./post-process";
-import { getBreaker } from "./circuit-breaker";
-import { nudgeDirector } from "../director/scheduler";
-import { registerActiveTask, unregisterActiveTask } from "./executor";
+import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
 
 /**
  * Execute a ComfyUI generation task.
@@ -39,35 +37,7 @@ export async function executeComfyUITask(
   project: Project,
 ): Promise<void> {
   const { db } = ctx;
-  const breaker = getBreaker(machine.id);
-
-  // Derive attempt from existing runs, not retry_count (which resets on manual retry)
-  const existingRuns = db.getForemanRunsForTask(task.id);
-  const nextAttempt = existingRuns.length > 0
-    ? Math.max(...existingRuns.map(r => r.attempt)) + 1
-    : 1;
-  const foremanRun = db.createForemanRun({
-    task_id: task.id,
-    machine_id: machine.id,
-    attempt: nextAttempt,
-    model_id: "comfyui",
-  });
-
-  db.updateForemanTask(task.id, {
-    status: "running",
-    machine_id: machine.id,
-    resolved_model: "comfyui",
-    started_at: new Date().toISOString(),
-  });
-
-  db.updateForemanRun(foremanRun.id, {
-    status: "running",
-    started_at: new Date().toISOString(),
-  });
-
-  const startTime = Date.now();
-  const controller = new AbortController();
-  registerActiveTask(task.id, controller);
+  const run = initTaskRun(db, task, machine, "comfyui");
 
   try {
     // Parse workflow info from task description
@@ -220,7 +190,7 @@ export async function executeComfyUITask(
           machine.base_url,
           workflow as Record<string, unknown>,
           varOutputDir,
-          controller.signal,
+          run.controller.signal,
         );
         allOutputFiles.push(...result.outputFiles);
       } catch (varErr) {
@@ -239,9 +209,6 @@ export async function executeComfyUITask(
         console.log(`ComfyUI: variation ${vi + 1}/${variationCount} complete (${allOutputFiles.length} total files)`);
       }
     }
-
-    const durationMs = Date.now() - startTime;
-    breaker.recordSuccess();
 
     if (allOutputFiles.length === 0) {
       const detail = variationErrors.length > 0
@@ -306,64 +273,20 @@ export async function executeComfyUITask(
       }
     }
 
-    db.updateForemanRun(foremanRun.id, {
-      status: "pass",
-      output: JSON.stringify([{
-        step: 1,
-        text: `Generated ${allOutputFiles.length} file(s): ${allOutputFiles.map(f => f.filename).join(", ")}`,
-        tokens: { prompt: 0, completion: 0 },
-        durationMs,
-        savedPaths: savedPaths.map(p => p.replace(project.workdir + "/", "").replace(project.workdir + "\\", "")),
-      }]),
-      completed_at: new Date().toISOString(),
-      duration_ms: durationMs,
-    });
-
-    db.updateForemanTask(task.id, {
-      status: "awaiting_review",
-      completed_at: new Date().toISOString(),
-      duration_ms: durationMs,
-    });
-
-    if (task.directive_id) nudgeDirector(db);
+    const durationMs = Date.now() - run.startTime;
+    const outputJson = JSON.stringify([{
+      step: 1,
+      text: `Generated ${allOutputFiles.length} file(s): ${allOutputFiles.map(f => f.filename).join(", ")}`,
+      tokens: { prompt: 0, completion: 0 },
+      durationMs,
+      savedPaths: savedPaths.map(p => p.replace(project.workdir + "/", "").replace(project.workdir + "\\", "")),
+    }]);
+    completeTaskRun(run, outputJson);
 
   } catch (err) {
-    const durationMs = Date.now() - startTime;
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    breaker.recordFailure();
-
-    db.updateForemanRun(foremanRun.id, {
-      status: "fail",
-      error_message: errorMsg.slice(0, 5000),
-      completed_at: new Date().toISOString(),
-      duration_ms: durationMs,
-    });
-
-    const newRetryCount = task.retry_count + 1;
-    if (newRetryCount < task.max_retries) {
-      const backoffMs = Math.pow(2, newRetryCount) * 30_000;
-      db.updateForemanTask(task.id, {
-        status: "queued",
-        retry_count: newRetryCount,
-        next_retry_at: new Date(Date.now() + backoffMs).toISOString(),
-        error_message: errorMsg.slice(0, 5000),
-        machine_id: null,
-        duration_ms: durationMs,
-      });
-    } else {
-      db.updateForemanTask(task.id, {
-        status: "failed",
-        retry_count: newRetryCount,
-        error_message: errorMsg.slice(0, 5000),
-        machine_id: null,
-        duration_ms: durationMs,
-        completed_at: new Date().toISOString(),
-      });
-    }
-
-    if (task.directive_id) nudgeDirector(db);
+    failTaskRun(run, err instanceof Error ? err.message : String(err));
   } finally {
-    unregisterActiveTask(task.id);
+    cleanupTaskRun(task.id);
   }
 }
 

@@ -5,8 +5,8 @@
  * alive via SSE streaming — prevents gateway/proxy timeouts for slow models.
  */
 
-import { streamText, type StepResult, type ToolSet } from "ai";
-import { createModelProvider } from "./pipeline/index";
+import { type StepResult, type ToolSet } from "ai";
+import { createModel, stream as llmStream } from "./llm";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { constructSystemPrompt } from "./prompts/system";
 import { ContextBudget, makeFilesystemTools, fetchUrlTool } from "./tools";
@@ -75,8 +75,7 @@ export async function executeIssue(
     // 2. Resolve model
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const provider = createModelProvider(machine);
-    const model = provider(modelId);
+    const model = createModel(machine, modelId);
 
     // 3. Create tools (use machine's context_limit if configured)
     const budget = new ContextBudget(machine.context_limit ?? undefined);
@@ -297,7 +296,7 @@ async function runAgentWithTimeout(
 
   const agentPromise = (async () => {
     console.log("Runner: calling streamText...");
-    const result = streamText({
+    const result = llmStream({
       model,
       system: systemPrompt,
       prompt: userPrompt,

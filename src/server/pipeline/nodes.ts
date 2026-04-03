@@ -3,7 +3,8 @@
  */
 
 import type { LangGraphRunnableConfig } from "@langchain/langgraph";
-import { tool as aiTool, generateText, type ToolSet } from "ai";
+import { tool as aiTool, type ToolSet } from "ai";
+import { generate, stream as llmStream } from "../llm";
 import { z } from "zod";
 import { readFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
@@ -371,7 +372,7 @@ export async function scoutNode(
     console.log(`Pipeline: scout manifest invalid — asking for correction (attempt ${attempt + 2})`);
     try {
       const retryHolder: ScoutBriefHolder = { brief: null };
-      const followUp = await generateText({
+      const followUp = await llmStream({
         model,
         system: constructScoutPrompt({ workingDir: state.worktreePath }),
         messages: [
@@ -388,7 +389,8 @@ export async function scoutNode(
       });
 
       // Check if the tool was called during the follow-up
-      brief = extractScoutBrief(followUp.text || "", retryHolder);
+      const followUpText = await (await followUp).text;
+      brief = extractScoutBrief(followUpText || "", retryHolder);
       console.log(`Pipeline: scout retry brief: ${brief.length} chars`);
     } catch (retryErr) {
       console.error(`Pipeline: scout retry attempt ${attempt + 2} failed:`, retryErr instanceof Error ? retryErr.message : retryErr);
@@ -598,10 +600,9 @@ export async function reviewNode(
   const MAX_VERDICT_RETRIES = 2;
   for (let attempt = 0; attempt < MAX_VERDICT_RETRIES && verdict.failureClass === "unparseable"; attempt++) {
     console.log(`Pipeline: review output unparseable — asking reviewer to reformat (attempt ${attempt + 2})`);
-    const followUp = await generateText({
-      model,
-      system: reviewPrompts.system,
+    const followUpText = await generate(model, {
       messages: [
+        { role: "system", content: reviewPrompts.system },
         { role: "user", content: reviewPrompts.sharedContext },
         { role: "assistant", content: "I've reviewed the context above. Ready for the review instructions." },
         { role: "user", content: reviewPrompts.lensPrompt },
@@ -610,7 +611,7 @@ export async function reviewNode(
       ],
       abortSignal,
     });
-    output = followUp.text || output;
+    output = followUpText || output;
     verdict = parseVerdict(output);
     console.log(`Pipeline: review verdict (retry ${attempt + 2}) = ${verdict.status} (${verdict.failureClass}) [lens: ${lens.name}]`);
   }

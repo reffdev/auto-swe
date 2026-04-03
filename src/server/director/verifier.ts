@@ -6,8 +6,7 @@
  * 2. LLM review — independent model evaluates the git diff against requirements
  */
 
-import { generateText } from "ai";
-import { createModelProvider } from "../pipeline/index";
+import { createModel, generate } from "../llm";
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
@@ -75,19 +74,18 @@ export async function verifyTask(
   });
 
   // Call LLM
-  const provider = createModelProvider(machine);
-  const model = provider(modelId);
+  const model = createModel(machine, modelId);
 
   try {
-    const result = await generateText({ model, system, prompt: user });
-    const parsed = parseVerdict(result.text);
+    const text = await generate(model, { system, prompt: user });
+    const parsed = parseVerdict(text);
 
     if (!parsed) {
       return {
         verdict: "escalate",
         confidence: 0.3,
         issues: ["Could not parse verification verdict from LLM response"],
-        reasoning: result.text.slice(0, 500),
+        reasoning: text.slice(0, 500),
       };
     }
 
@@ -174,11 +172,11 @@ export async function verifyMilestone(
     projectState,
   });
 
-  const provider = createModelProvider(machineInfo.machine);
+  const model = createModel(machineInfo.machine, machineInfo.modelId);
 
   try {
-    const result = await generateText({ model: provider(machineInfo.modelId), system, prompt: user });
-    const parsed = parseVerdict(result.text);
+    const text = await generate(model, { system, prompt: user });
+    const parsed = parseVerdict(text);
     if (!parsed) return { passed: true, issues: ["Could not parse milestone verdict"] };
     return { passed: parsed.result === "pass", issues: parsed.issues };
   } catch {

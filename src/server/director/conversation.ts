@@ -5,8 +5,7 @@
  * streamText → in-memory activeStreams → polling via GET /messages
  */
 
-import { streamText } from "ai";
-import { createModelProvider } from "../pipeline/index";
+import { createModel, stream as llmStream } from "../llm";
 import type { Db, Machine } from "../db";
 import { buildConversationSystemPrompt } from "./prompts";
 import { assembleDirectorContext } from "./memory";
@@ -50,8 +49,7 @@ export async function generateDirectorResponse(opts: {
   console.log(`Director: generating response for conversation ${opts.conversationId} (directive: ${opts.directiveId})`);
   console.log(`Director: using machine "${opts.machine.name || opts.machine.id}" at ${opts.machine.base_url} with model ${opts.modelId}`);
 
-  const provider = createModelProvider(opts.machine);
-  const model = provider(opts.modelId);
+  const model = createModel(opts.machine, opts.modelId);
 
   // Build context from directive + project
   const directive = db.getDirectorDirective(opts.directiveId);
@@ -99,7 +97,7 @@ export async function generateDirectorResponse(opts: {
   activeStreams.set(opts.conversationId, { text: "", done: false });
 
   try {
-    const result = streamText({
+    const result = llmStream({
       model,
       system: systemPrompt,
       messages: opts.messages.map(m => ({ role: m.role, content: m.content })),

@@ -8,8 +8,9 @@
  * the checkpoint, and a git diff. Up to 3 compactions per stage.
  */
 
-import { streamText, generateText, type StepResult, type ToolSet, type CoreMessage } from "ai";
+import { type StepResult, type ToolSet, type CoreMessage } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { generate, stream as llmStream } from "../llm";
 import { spawnSync } from "child_process";
 import type { Db } from "../db";
 import { EXPAND_FILES_MARKER } from "./nodes";
@@ -329,7 +330,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           }
         }
 
-        const result = streamText({
+        const result = llmStream({
           model, system: systemPrompt, messages,
           tools, maxSteps: maxSteps ?? 100,
           abortSignal: combinedAbort.signal,
@@ -438,8 +439,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
             .join("\n");
 
           // Ask the LLM for a checkpoint report
-          const checkpointResult = await generateText({
-            model,
+          const checkpoint = await generate(model, {
             system: systemPrompt,
             messages: [
               { role: "user", content: currentUserPrompt },
@@ -447,9 +447,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
               { role: "user", content: CHECKPOINT_PROMPT },
             ],
             abortSignal,
-          });
-
-          const checkpoint = checkpointResult.text || "(no checkpoint produced)";
+          }) || "(no checkpoint produced)";
           console.log(`Pipeline [${stageName}]: checkpoint produced (${checkpoint.length} chars)`);
 
           // Capture git state

@@ -5,8 +5,7 @@
  * Uses an LLM to analyze logs and produce structured insights.
  */
 
-import { generateText } from "ai";
-import { createModelProvider } from "../pipeline/index";
+import { createModel, generate } from "../llm";
 import { writeMemory, readMemory } from "./persistent-memory";
 import type { Db } from "../db";
 
@@ -35,20 +34,15 @@ export async function extractPatternsFromLogs(
 
   const machine = machines[0];
   const modelId = machine.model_id ?? "default";
-  const provider = createModelProvider(machine);
-  const model = provider(modelId);
+  const model = createModel(machine, modelId);
 
   // Combine logs, cap at reasonable size
   const combined = logContents.join("\n\n---\n\n").slice(0, 30_000);
 
   let extractions: Extraction[];
   try {
-    const result = await generateText({
-      model,
-      system: EXTRACTION_PROMPT,
-      prompt: combined,
-    });
-    extractions = parseExtractions(result.text);
+    const text = await generate(model, { system: EXTRACTION_PROMPT, prompt: combined });
+    extractions = parseExtractions(text);
   } catch (err) {
     console.warn("Episodic extraction LLM call failed:", err instanceof Error ? err.message : String(err));
     return;

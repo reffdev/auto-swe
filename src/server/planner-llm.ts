@@ -5,8 +5,7 @@
  * Streams responses and stores partial text in memory for polling.
  */
 
-import { streamText } from "ai";
-import { createModelProvider } from "./pipeline/index";
+import { createModel, stream as llmStream } from "./llm";
 import type { Db, Machine, Project } from "./db";
 import { constructPlannerSystemPrompt } from "./prompts/planner";
 
@@ -71,8 +70,7 @@ export async function generatePlannerResponse(opts: {
   projectName: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<void> {
-  const provider = createModelProvider(opts.machine);
-  const model = provider(opts.modelId);
+  const model = createModel(opts.machine, opts.modelId);
 
   const systemPrompt = constructPlannerSystemPrompt({
     projectName: opts.projectName,
@@ -82,7 +80,7 @@ export async function generatePlannerResponse(opts: {
   activeStreams.set(opts.conversationId, { text: "", done: false });
 
   try {
-    const result = streamText({
+    const result = llmStream({
       model,
       system: systemPrompt,
       messages: opts.messages.map(m => ({ role: m.role, content: m.content })),

@@ -54,7 +54,7 @@ describe("runAndExtractErrors", () => {
 
 // ─── Submit tools ───────────────────────────────────────────────────────────
 
-import { makeImplementResultTool, makeTestWriteResultTool, makeReviewVerdictTool, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./build-check";
+import { makeImplementResultTool, makeGatedSubmitTool, makeTestWriteResultTool, makeReviewVerdictTool, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./build-check";
 
 describe("makeImplementResultTool", () => {
   it("returns a result block with files and summary", async () => {
@@ -66,6 +66,70 @@ describe("makeImplementResultTool", () => {
     expect(result).toContain("status: done");
     expect(result).toContain("src/foo.ts");
     expect(result).toContain("Added feature X");
+  });
+});
+
+describe("makeGatedSubmitTool", () => {
+  const toolCtx = { toolCallId: "test", messages: [], abortSignal: undefined as any };
+
+  it("returns success when no gates configured", async () => {
+    const { submitResult } = makeGatedSubmitTool(workdir);
+    const result = await submitResult.execute(
+      { files_changed: ["a.ts"], summary: "done" }, toolCtx
+    );
+    expect(result).toContain("status: done");
+  });
+
+  it("returns success when build passes", async () => {
+    const { submitResult } = makeGatedSubmitTool(workdir, { buildCommand: "echo ok" });
+    const result = await submitResult.execute(
+      { files_changed: ["a.ts"], summary: "done" }, toolCtx
+    );
+    expect(result).toContain("status: done");
+  });
+
+  it("returns error when build fails", async () => {
+    const { submitResult } = makeGatedSubmitTool(workdir, { buildCommand: "exit 1" });
+    const result = await submitResult.execute(
+      { files_changed: ["a.ts"], summary: "done" }, toolCtx
+    );
+    expect(result).toContain("Build failed");
+    expect(result).not.toContain("status: done");
+  });
+
+  it("stops at first failing gate", async () => {
+    const { submitResult } = makeGatedSubmitTool(workdir, {
+      buildCommand: "exit 1",
+      testCommand: "echo should-not-run",
+    });
+    const result = await submitResult.execute(
+      { files_changed: ["a.ts"], summary: "done" }, toolCtx
+    );
+    expect(result).toContain("Build failed");
+    expect(result).not.toContain("Tests failed");
+  });
+
+  it("runs lint after build passes", async () => {
+    const { submitResult } = makeGatedSubmitTool(workdir, {
+      buildCommand: "echo ok",
+      lintCommand: "exit 1",
+    });
+    const result = await submitResult.execute(
+      { files_changed: ["a.ts"], summary: "done" }, toolCtx
+    );
+    expect(result).toContain("Lint failed");
+  });
+
+  it("runs all gates in order: build → lint → test", async () => {
+    const { submitResult } = makeGatedSubmitTool(workdir, {
+      buildCommand: "echo ok",
+      lintCommand: "echo ok",
+      testCommand: "echo ok",
+    });
+    const result = await submitResult.execute(
+      { files_changed: ["a.ts"], summary: "done" }, toolCtx
+    );
+    expect(result).toContain("status: done");
   });
 });
 

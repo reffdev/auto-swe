@@ -7,8 +7,7 @@
  * 3. It doesn't compete with the planner for machine time
  */
 
-import { generateText } from "ai";
-import { createModelProvider } from "../pipeline/index";
+import { createModel, generate } from "../llm";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
@@ -95,24 +94,14 @@ export async function createStyleExplorationTask(
 
   console.log(`Style exploration: generating art prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
 
-  const provider = createModelProvider(machineInfo.machine);
-  const model = provider(machineInfo.modelId);
+  const model = createModel(machineInfo.machine, machineInfo.modelId);
 
   let stylePrompts: string[];
   try {
-    const result = await Promise.race([
-      generateText({
-        model,
-        system: STYLE_PROMPT_SYSTEM,
-        prompt: `Generate 6 style exploration prompts for this project:\n\n${context}`,
-        maxRetries: 6,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Style exploration prompt generation timeout (600s) — machine: ${machineInfo.machine.base_url}`)), 600_000)
-      ),
-    ]);
-
-    const text = result.text.trim();
+    const text = (await generate(model, {
+      system: STYLE_PROMPT_SYSTEM,
+      prompt: `Generate 6 style exploration prompts for this project:\n\n${context}`,
+    })).trim();
     // Extract JSON array from response (may have markdown fences)
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {

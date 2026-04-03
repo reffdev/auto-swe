@@ -7,8 +7,7 @@
  * the feedback while maintaining the original intent.
  */
 
-import { generateText } from "ai";
-import { createModelProvider } from "../pipeline/index";
+import { createModel, generate } from "../llm";
 import { selectPlannerMachine } from "../planner-llm";
 import type { Db } from "../db";
 
@@ -93,21 +92,12 @@ async function revisePromptWithLLM(
 
   console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
 
-  const provider = createModelProvider(machineInfo.machine);
-  const model = provider(machineInfo.modelId);
+  const model = createModel(machineInfo.machine, machineInfo.modelId);
 
-  const result = await Promise.race([
-    generateText({
-      model,
-      system: REVISION_SYSTEM_PROMPT,
-      prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
-    }),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Art feedback LLM timeout (180s) — machine may be busy (${machineInfo.machine.base_url})`)), 180_000)
-    ),
-  ]);
-
-  const revised = result.text.trim();
+  const revised = (await generate(model, {
+    system: REVISION_SYSTEM_PROMPT,
+    prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
+  })).trim();
   if (!revised || revised.length <= 5) {
     throw new Error(`LLM returned empty/too-short response (${revised.length} chars): "${revised}"`);
   }

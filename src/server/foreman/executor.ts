@@ -7,7 +7,8 @@
 
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { runStage } from "../pipeline/run-stage";
-import { createModelProvider, withProjectLock } from "../pipeline/index";
+import { withProjectLock } from "../pipeline/index";
+import { createModel } from "../llm";
 import {
   makeWorktreePath,
   ensureWorkdir,
@@ -22,9 +23,9 @@ import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrl
 import { resolveModel } from "./routing";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 import { validateAcceptanceCriteria } from "./validator";
-import { getBreaker } from "./circuit-breaker";
 import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
+import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
 import { readConventions, readMemoryCategory } from "../director/persistent-memory";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
@@ -71,37 +72,7 @@ export async function executeForemanTask(
   const { db } = ctx;
   const route = resolveModel(task);
   const modelId = machine.model_id || route.modelId;
-  const breaker = getBreaker(machine.id);
-
-  // Create a foreman_run for this attempt — derive attempt from existing runs,
-  // not retry_count, because retry_count resets on manual retry/re-queue
-  const existingRuns = db.getForemanRunsForTask(task.id);
-  const nextAttempt = existingRuns.length > 0
-    ? Math.max(...existingRuns.map(r => r.attempt)) + 1
-    : 1;
-  const foremanRun = db.createForemanRun({
-    task_id: task.id,
-    machine_id: machine.id,
-    attempt: nextAttempt,
-    model_id: modelId,
-  });
-
-  // Update task status
-  db.updateForemanTask(task.id, {
-    status: "running",
-    machine_id: machine.id,
-    resolved_model: modelId,
-    started_at: new Date().toISOString(),
-  });
-
-  db.updateForemanRun(foremanRun.id, {
-    status: "running",
-    started_at: new Date().toISOString(),
-  });
-
-  const startTime = Date.now();
-  const controller = new AbortController();
-  registerActiveTask(task.id, controller);
+  const run = initTaskRun(db, task, machine, modelId);
 
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
   const acceptanceCriteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
@@ -209,8 +180,7 @@ export async function executeForemanTask(
     });
 
     // Create model provider
-    const provider = createModelProvider(machine);
-    const model = provider(modelId);
+    const model = createModel(machine, modelId);
 
     // Run the LLM agent — pass runId="" to skip runs table updates, use onStepsUpdate for foreman_runs
     const result = await runStage({
@@ -224,19 +194,19 @@ export async function executeForemanTask(
       userPrompt,
       tools,
       maxSteps: 80,
-      abortSignal: controller.signal,
+      abortSignal: run.controller.signal,
       contextLimit: machine.context_limit ?? undefined,
       worktreePath,
       onStepsUpdate: (stepsJson: string) => {
-        try { db.updateForemanRun(foremanRun.id, { output: stepsJson }); } catch { /* non-critical */ }
+        try { db.updateForemanRun(run.foremanRun.id, { output: stepsJson }); } catch { /* non-critical */ }
       },
     });
 
-    const durationMs = Date.now() - startTime;
-    breaker.recordSuccess();
+    const durationMs = Date.now() - run.startTime;
+    run.breaker.recordSuccess();
 
     // Update run with success
-    db.updateForemanRun(foremanRun.id, {
+    db.updateForemanRun(run.foremanRun.id, {
       status: "validating",
       output: result ? JSON.stringify([{ step: 1, text: result, tokens: { prompt: 0, completion: 0 }, durationMs }]) : undefined,
       completed_at: new Date().toISOString(),
@@ -249,20 +219,17 @@ export async function executeForemanTask(
     if (acceptanceCriteria.length > 0) {
       const validation = await validateAcceptanceCriteria(worktreePath, acceptanceCriteria, targetFiles);
 
-      db.updateForemanRun(foremanRun.id, {
+      db.updateForemanRun(run.foremanRun.id, {
         validation_output: JSON.stringify(validation.results),
         status: validation.allPassed ? "pass" : "fail",
       });
 
       if (!validation.allPassed) {
-        handleFailure(db, task, foremanRun.id, durationMs,
-          `Acceptance criteria failed:\n${validation.results.filter(r => !r.passed).map(r => `- ${r.criterion}: ${r.output}`).join("\n")}`,
-          worktreePath);
+        failTaskRun(run, `Acceptance criteria failed:\n${validation.results.filter(r => !r.passed).map(r => `- ${r.criterion}: ${r.output}`).join("\n")}`);
         return;
       }
     } else {
-      // No criteria — auto-pass
-      db.updateForemanRun(foremanRun.id, { status: "pass" });
+      db.updateForemanRun(run.foremanRun.id, { status: "pass" });
     }
 
     // Git operations — commit, push, PR
@@ -293,76 +260,16 @@ export async function executeForemanTask(
     });
 
     // Mark completed
-    db.updateForemanTask(task.id, {
-      status: "awaiting_review",
-      completed_at: new Date().toISOString(),
-      duration_ms: durationMs,
-    });
+    completeTaskRun(run);
 
-    // Notify Director (if this is a Director-managed task, it will auto-verify)
-    if (task.directive_id) {
-      // Keep worktree alive — the Director verifier needs to read the files.
-      // Worktree is cleaned up by the Director after verification passes.
-      nudgeDirector(db);
-    } else {
-      // Manual Foreman task — no verifier, clean up immediately
+    // Manual Foreman task (no directive) — clean up worktree immediately
+    if (!task.directive_id) {
       try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
     }
 
   } catch (err) {
-    const durationMs = Date.now() - startTime;
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    breaker.recordFailure();
-
-    db.updateForemanRun(foremanRun.id, {
-      status: "fail",
-      error_message: errorMsg.slice(0, 5000),
-      completed_at: new Date().toISOString(),
-      duration_ms: durationMs,
-    });
-
-    handleFailure(db, task, foremanRun.id, durationMs, errorMsg, worktreePath);
-
-    // Notify Director of failure (may trigger corrective planning)
-    if (task.directive_id) nudgeDirector(db);
+    failTaskRun(run, err instanceof Error ? err.message : String(err));
   } finally {
-    unregisterActiveTask(task.id);
+    cleanupTaskRun(task.id);
   }
-}
-
-function handleFailure(
-  db: Db,
-  task: ForemanTask,
-  runId: string,
-  durationMs: number,
-  errorMsg: string,
-  _worktreePath: string,
-): void {
-  const newRetryCount = task.retry_count + 1;
-
-  if (newRetryCount < task.max_retries) {
-    // Schedule retry with exponential backoff
-    const backoffMs = Math.pow(2, newRetryCount) * 30_000; // 60s, 120s, 240s...
-    const nextRetryAt = new Date(Date.now() + backoffMs).toISOString();
-
-    db.updateForemanTask(task.id, {
-      status: "queued",
-      retry_count: newRetryCount,
-      next_retry_at: nextRetryAt,
-      error_message: errorMsg.slice(0, 5000),
-      machine_id: null,
-      duration_ms: durationMs,
-    });
-  } else {
-    // Dead-letter — max retries exceeded
-    db.updateForemanTask(task.id, {
-      status: "failed",
-      retry_count: newRetryCount,
-      error_message: errorMsg.slice(0, 5000),
-      machine_id: null,
-      duration_ms: durationMs,
-      completed_at: new Date().toISOString(),
-    });
-  }
-  // Keep worktree on failure for debugging
 }
