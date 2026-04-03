@@ -18,18 +18,24 @@ import { nudgeForeman } from "../foreman/scheduler";
 
 const STYLE_PROMPT_SYSTEM = `You are an expert art director generating style exploration prompts for a game/project.
 
-Given a project description, write 6 DIFFERENT art prompts that explore variations WITHIN the project's intended art style.
+Given a project description, write 6 DIFFERENT art prompts that explore visually distinct art directions.
+
+The goal is to produce 6 images that look OBVIOUSLY DIFFERENT from each other at a glance — not subtle adjective variations.
 
 Rules:
-- Read the project description carefully to determine the intended art style (e.g., pixel art, 3D, hand-drawn, etc.)
-- ALL 6 prompts must use that SAME base art style — do NOT mix styles (no watercolor if the game is pixel art)
-- Each prompt should describe the SAME representative subject (a character, scene, or object from the project)
-- Vary the aesthetics WITHIN the style: color palette, mood, lighting, level of detail, rendering approach
-- Examples of meaningful variation within pixel art: warm vs cool palette, high vs low contrast, minimal vs detailed, retro 4-color vs rich 32-bit, dark moody vs bright cheerful
-- Include specific colors as descriptive words (e.g., "deep purple shadows", "gold accents", "cyan glow")
+- Read the project description to determine the base art medium (pixel art, 3D, hand-drawn, etc.)
+- ALL 6 prompts must stay within that medium — but VARY the visual identity dramatically
+- Use a DIFFERENT subject or composition for each prompt (e.g., a character, an item, a scene, a UI element) — showing range matters more than consistency
+- Each prompt must differ in multiple structural dimensions, not just color. Vary:
+  - Subject matter and composition (close-up item vs full scene vs character portrait)
+  - Rendering technique (flat/cel-shaded vs detailed shading, outlined vs no-outline, isometric vs side-view)
+  - Color palette (not just "warm vs cool" — use specific named palettes like "NES 4-color", "PICO-8", "pastel watercolor tones")
+  - Level of detail and scale (minimal 16x16 icon style vs detailed 64x64 sprite style)
+- Write prompts as natural language descriptions, not comma-separated tags
+- Do NOT repeat the same core phrase across prompts — each should read as a completely different image
 - Do NOT include technical tags like resolution, transparent background, etc.
-- Keep each prompt under 100 words
-- The selected image will become an IP-Adapter style reference for ALL future art — it must represent the project's visual identity
+- Keep each prompt under 80 words
+- The selected image becomes the IP-Adapter style reference for ALL future art — it must represent a clear, distinctive visual identity
 
 Respond with a JSON array of exactly 6 prompt strings. No explanation, no formatting — just the JSON array.`;
 

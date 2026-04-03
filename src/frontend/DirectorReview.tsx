@@ -176,6 +176,7 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, submittin
   const [activeRun, setActiveRun] = useState<number | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [feedback, setFeedback] = useState('')
+  const [feedbackNeeded, setFeedbackNeeded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [cacheKey] = useState(() => Date.now())
 
@@ -260,11 +261,19 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, submittin
 
       <textarea
         value={feedback}
-        onChange={(e) => setFeedback(e.target.value)}
-        placeholder="Optional feedback (e.g., 'I like the palette of #2 but the line weight of #4')"
+        onChange={(e) => { setFeedback(e.target.value); if (e.target.value.trim()) setFeedbackNeeded(false) }}
+        placeholder={feedbackNeeded
+          ? "Please describe what to change (e.g., 'more saturated colors, thicker outlines')"
+          : "Optional feedback (e.g., 'I like the palette of #2 but the line weight of #4')"}
         rows={2}
-        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+        className={cn(
+          'w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none',
+          feedbackNeeded ? 'border-orange-500 ring-1 ring-orange-500/30' : 'border-border',
+        )}
       />
+      {feedbackNeeded && (
+        <p className="text-xs text-orange-400">Describe what you'd like changed before refining.</p>
+      )}
 
       <div className="flex gap-2">
         <Button
@@ -283,7 +292,13 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, submittin
         </Button>
         <Button
           variant="outline"
-          onClick={() => onRefine(feedback || 'Generate new variations')}
+          onClick={() => {
+            if (!feedback.trim()) {
+              setFeedbackNeeded(true)
+              return
+            }
+            onRefine(feedback)
+          }}
           disabled={submitting}
         >
           Refine Prompts
