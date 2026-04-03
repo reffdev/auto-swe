@@ -17,7 +17,6 @@ import {
   removeWorktree,
   commitAll,
   pushBranch,
-  createPullRequest,
 } from "../git";
 import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrlTool, lookupDocs } from "../tools";
 import { resolveModel } from "./routing";
@@ -195,30 +194,11 @@ export async function executeForemanTask(
       duration_ms: durationMs,
     });
 
-    // Git operations — commit, push, PR
+    // Git operations — commit and push branch (PR created after verification passes)
     await withProjectLock(project.id, async () => {
       await commitAll(worktreePath, `[Foreman #${task.yaml_id || task.id.slice(0, 8)}] ${task.title}\n\nAutomated by Foreman task executor.`);
       if (project.git_remote) {
         await pushBranch(worktreePath, branch);
-
-        if (project.git_server_token) {
-          try {
-            const pr = await createPullRequest(
-              project,
-              branch,
-              `[Foreman] ${task.title}`,
-              `Automated by Foreman task executor.\n\n**Task:** ${task.yaml_id || task.id}\n**Type:** ${task.type}\n**Model:** ${modelId}`,
-            );
-            if (pr) {
-              db.updateForemanTask(task.id, {
-                git_pr_url: pr.url,
-                git_pr_number: pr.number,
-              });
-            }
-          } catch (err) {
-            console.error(`Foreman: failed to create PR for task ${task.id}:`, err);
-          }
-        }
       }
     });
 

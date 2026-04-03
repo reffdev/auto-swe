@@ -57,12 +57,19 @@ export function buildForemanUserPrompt(opts: {
   }
 
   if (opts.previousError) {
+    const isHumanFeedback = opts.previousError.includes("Human feedback:");
     parts.push(
       "",
-      "## Previous Attempt Failed",
+      isHumanFeedback
+        ? "## IMPORTANT: Previous Attempt Rejected by Reviewer"
+        : "## Previous Attempt Failed",
       "",
-      "Your previous attempt has been preserved in the worktree — all files you created or modified are still there.",
-      "Do NOT start over. Instead, read the error below and fix ONLY the specific issues:",
+      "A previous attempt at this task has already been made. Your code from that attempt is still in the worktree.",
+      "Do NOT start over from scratch.",
+      "",
+      isHumanFeedback
+        ? "The following reviewer feedback is your PRIMARY objective. Address it directly — everything else in this task is context. The reviewer has seen your work and is telling you exactly what needs to change:"
+        : "Read the error below and fix ONLY the specific issues:",
       "",
       opts.previousError,
     );

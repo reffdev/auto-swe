@@ -560,7 +560,8 @@ export async function createPullRequest(
 
 export async function mergePullRequest(
   project: Project,
-  prNumber: number
+  prNumber: number,
+  message?: string,
 ): Promise<boolean> {
   if (!project.git_remote || !project.git_server_token) {
     console.error("Git: cannot merge PR — no remote or token configured");
@@ -582,7 +583,9 @@ export async function mergePullRequest(
     const res = await fetch(apiUrl, {
       method: "PUT",
       headers: authHeaders(project.git_server_token, isGitHub),
-      body: JSON.stringify({}),
+      body: JSON.stringify(message
+        ? (isGitHub ? { commit_message: message } : { merge_message_field: message })
+        : {}),
     });
 
     if (!res.ok) {

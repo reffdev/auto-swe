@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Send, X, CheckCircle, Lock } from 'lucide-react'
+import { ArrowLeft, Send, X, CheckCircle, Lock, Check, ExternalLink } from 'lucide-react'
 import * as api from './api'
 import type { DirectorReview as DirectorReviewType } from './api'
 
@@ -174,8 +174,48 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
             </div>
           )}
 
-          {/* Free-text response */}
-          {review.review_type !== 'style_selection' && <div className="space-y-2">
+          {/* Code task review UI */}
+          {review.review_type === 'task_verify' && (
+            <div className="space-y-4">
+              {/* PR link */}
+              {!!context.git_pr_url && (
+                <a href={context.git_pr_url as string} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-2 px-4 py-3 rounded-lg border border-border hover:border-primary hover:bg-primary/5 transition-colors text-sm">
+                  <ExternalLink className="size-4 text-primary" />
+                  <span>Review PR #{String(context.git_pr_number)}</span>
+                  <span className="text-xs text-muted-foreground ml-auto">on {String(context.git_branch)}</span>
+                </a>
+              )}
+
+              {/* Reject feedback */}
+              <textarea
+                value={response}
+                onChange={(e) => setResponse(e.target.value)}
+                placeholder="Rejection feedback — explain what needs to change (required to reject)"
+                rows={3}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+              />
+
+              <div className="flex gap-2">
+                <Button onClick={() => handleRespond('approve')} disabled={submitting}>
+                  <Check className="size-3.5 mr-1.5" />
+                  {submitting ? 'Approving...' : 'Approve & Merge'}
+                </Button>
+                <Button variant="outline"
+                  onClick={() => {
+                    if (!response.trim()) return
+                    handleRespond(response)
+                  }}
+                  disabled={!response.trim() || submitting}>
+                  <X className="size-3.5 mr-1.5" />
+                  Reject with Feedback
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Generic free-text response (non-task-verify, non-style-selection) */}
+          {review.review_type !== 'style_selection' && review.review_type !== 'task_verify' && <div className="space-y-2">
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               {options.length > 0 ? 'Or provide custom response' : 'Your response'}
             </h3>

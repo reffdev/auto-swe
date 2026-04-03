@@ -12,7 +12,7 @@
 
 import { resolve } from "path";
 import type { Db, DirectorDirective, ForemanTask, Project } from "../db";
-import { removeWorktree, mergePullRequest } from "../git";
+import { removeWorktree, mergePullRequest, createPullRequest } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
 import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
@@ -52,6 +52,70 @@ export function getGlobalDb(): Db | null { return schedulerDb; }
 function needsStyleLock(db: Db, project: Project): boolean {
   const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
   return hasComfyUI && !isStyleLocked(project.workdir);
+}
+
+/**
+ * Create a PR for a task, merge it, and update the task record.
+ * Used after verification passes (auto or human-approved).
+ */
+async function createAndMergePR(db: Db, task: ForemanTask, project: Project, mergeMessage?: string): Promise<void> {
+  if (!project.git_remote || !project.git_server_token || !task.git_branch) return;
+
+  try {
+    // Create PR if one doesn't exist yet
+    let prNumber = task.git_pr_number;
+    if (!prNumber) {
+      const pr = await createPullRequest(
+        project,
+        task.git_branch,
+        `[Foreman] ${task.title}`,
+        `Automated by Foreman task executor.\n\n**Task:** ${task.yaml_id || task.id}\n**Type:** ${task.type}`,
+      );
+      if (pr) {
+        prNumber = pr.number;
+        db.updateForemanTask(task.id, { git_pr_url: pr.url, git_pr_number: pr.number });
+        console.log(`Director: created PR #${pr.number} for "${task.title}"`);
+      }
+    }
+
+    // Merge the PR
+    if (prNumber) {
+      const merged = await mergePullRequest(project, prNumber, mergeMessage);
+      if (merged) {
+        console.log(`Director: merged PR #${prNumber} for "${task.title}"`);
+      } else {
+        console.warn(`Director: failed to merge PR #${prNumber} for "${task.title}" — may need manual merge`);
+      }
+    }
+  } catch (err) {
+    console.warn(`Director: PR create/merge error for "${task.title}":`, err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Create a PR for a task (without merging) so humans can review the diff.
+ * Returns the PR URL if created.
+ */
+async function ensureTaskPR(db: Db, task: ForemanTask, project: Project): Promise<string | null> {
+  if (!project.git_remote || !project.git_server_token || !task.git_branch) return null;
+  if (task.git_pr_url) return task.git_pr_url; // already exists
+
+  try {
+    const pr = await createPullRequest(
+      project,
+      task.git_branch,
+      `[Foreman] ${task.title}`,
+      `Automated by Foreman task executor.\n\n**Task:** ${task.yaml_id || task.id}\n**Type:** ${task.type}`,
+    );
+    if (pr) {
+      db.updateForemanTask(task.id, { git_pr_url: pr.url, git_pr_number: pr.number });
+      console.log(`Director: created PR #${pr.number} for "${task.title}" (pending human review)`);
+      return pr.url;
+    }
+  } catch (err) {
+    console.warn(`Director: PR creation error for "${task.title}":`, err instanceof Error ? err.message : err);
+  }
+  return null;
 }
 
 /** Create a review gate for a completed art/comfyui task if one doesn't already exist. */
@@ -258,6 +322,43 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   }
 }
 
+/** Complete a verified task: mark completed, clean up worktree. */
+async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project, confidence: number): Promise<void> {
+  db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
+  if (task.git_worktree) {
+    try { await removeWorktree(project.workdir, task.git_worktree); } catch { /* best effort */ }
+    db.updateForemanTask(task.id, { git_worktree: null });
+  }
+  console.log(`Director: completed task "${task.title}" (confidence: ${confidence})`);
+  logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${confidence}`);
+  if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
+  nudgeForeman(db);
+}
+
+/** Escalate a task for human review: create PR (so they can see the diff), then create review gate. */
+async function escalateForHumanReview(
+  db: Db, directive: DirectorDirective, task: ForemanTask, project: Project,
+  question: string, result: { issues: string[]; reasoning: string; confidence: number },
+): Promise<void> {
+  const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
+  if (existing.length > 0) return;
+
+  // Create PR so the human can review the actual diff
+  const prUrl = await ensureTaskPR(db, task, project);
+  // Re-read task to get updated pr fields
+  const updated = db.getForemanTask(task.id) ?? task;
+
+  createReviewGate(db, {
+    directive_id: directive.id, task_id: task.id, review_type: "task_verify",
+    question,
+    context: {
+      issues: result.issues, reasoning: result.reasoning, confidence: result.confidence,
+      task_id: task.id, git_branch: updated.git_branch, git_pr_url: updated.git_pr_url, git_pr_number: updated.git_pr_number,
+    },
+  });
+  console.log(`Director: escalated task "${task.title}" for human review${prUrl ? ` (PR: ${prUrl})` : ""}`);
+}
+
 // ─── Step 1: Verify tasks awaiting review ───────────────────────────────────
 
 async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
@@ -272,57 +373,28 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
 
       if (result.verdict === "pass") {
         if (task.description.includes("[needs_human_review]") && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
-          const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
-          if (existing.length === 0) {
-            createReviewGate(db, {
-              directive_id: directive.id, task_id: task.id, review_type: "task_verify",
-              question: `Task "${task.title}" passed automated verification but was flagged for human review.`,
-              context: { issues: result.issues, reasoning: result.reasoning, confidence: result.confidence },
-            });
-            console.log(`Director: task "${task.title}" passed but flagged for human review`);
-          }
+          await escalateForHumanReview(db, directive, task, project,
+            `Task "${task.title}" passed automated verification but was flagged for human review.`,
+            result);
         } else {
-          // Merge PR before marking complete
-          if (task.git_pr_number && project.git_remote && project.git_server_token) {
-            try {
-              const merged = await mergePullRequest(project, task.git_pr_number);
-              if (merged) {
-                console.log(`Director: merged PR #${task.git_pr_number} for "${task.title}"`);
-              } else {
-                console.warn(`Director: failed to merge PR #${task.git_pr_number} for "${task.title}" — may need manual merge`);
-              }
-            } catch (err) {
-              console.warn(`Director: PR merge error for "${task.title}":`, err instanceof Error ? err.message : err);
-            }
-          }
-          db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
-          if (task.git_worktree) {
-            try { await removeWorktree(project.workdir, task.git_worktree); } catch { /* best effort */ }
-            db.updateForemanTask(task.id, { git_worktree: null });
-          }
-          console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
-          logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${result.confidence}`);
-          if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
-          nudgeForeman(db);
+          // Auto-accept: create PR, merge, complete
+          await createAndMergePR(db, task, project, `Auto-accepted (confidence: ${result.confidence})`);
+          await completeVerifiedTask(db, task, project, result.confidence);
         }
       } else if (result.verdict === "fail") {
         db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
         console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
         logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
       } else {
-        // Escalate
+        // Escalate — low confidence
         if (shouldEscalate(directive.autonomy_level, "low_confidence")) {
-          const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
-          if (existing.length > 0) continue;
-          createReviewGate(db, {
-            directive_id: directive.id, task_id: task.id, review_type: "task_verify",
-            question: `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`,
-            context: { issues: result.issues, reasoning: result.reasoning },
-          });
-          console.log(`Director: escalated task "${task.title}" for human review`);
+          await escalateForHumanReview(db, directive, task, project,
+            `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`,
+            result);
         } else {
-          db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
-          nudgeForeman(db);
+          // High autonomy: auto-accept despite low confidence
+          await createAndMergePR(db, task, project, `Auto-accepted (low confidence: ${result.confidence}, high autonomy)`);
+          await completeVerifiedTask(db, task, project, result.confidence);
         }
       }
     } catch (err) {
@@ -475,23 +547,46 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
     acted = true;
 
     switch (result.action) {
-      case "resume":
+      case "resume": {
+        // Human approved — create PR, merge, complete
         if (result.context) addKeyDecision(db, directive, result.context);
+        if (review.task_id) {
+          const task = db.getForemanTask(review.task_id);
+          if (task && !isComfyUITaskType(task.type)) {
+            await createAndMergePR(db, task, project, `Approved by human reviewer`);
+            await completeVerifiedTask(db, task, project, 1.0);
+          }
+        }
         break;
+      }
 
-      case "retry_task":
+      case "retry_task": {
         if (review.task_id) {
           const retryTask = db.getForemanTask(review.task_id);
+          if (!retryTask) break;
+
+          const feedback = result.context;
           const updates: Record<string, unknown> = {
-            status: "queued", retry_count: 0, error_message: null, next_retry_at: null, machine_id: null,
+            status: "queued", retry_count: 0, next_retry_at: null, machine_id: null,
+            error_message: feedback,
           };
-          if (retryTask && isComfyUITaskType(retryTask.type) && review.response) {
+
+          if (isComfyUITaskType(retryTask.type) && review.response) {
             updates.description = await processArtFeedback(db, retryTask.description, review.response);
+          } else {
+            // Inject human feedback into description for code tasks
+            const feedbackTag = `\n\n[human_feedback: ${feedback}]`;
+            const existingFeedback = retryTask.description.match(/\n*\[human_feedback:\s*[\s\S]*?\]/);
+            updates.description = existingFeedback
+              ? retryTask.description.replace(existingFeedback[0], feedbackTag)
+              : retryTask.description + feedbackTag;
           }
+
           db.updateForemanTask(review.task_id, updates);
           nudgeForeman(db);
         }
         break;
+      }
 
       case "generate_tasks": {
         if (result.context) addKeyDecision(db, directive, result.context);
