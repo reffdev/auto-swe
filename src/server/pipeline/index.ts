@@ -98,7 +98,7 @@ export function createModelProvider(machine: Machine) {
       const callerSignal = (init as RequestInit)?.signal;
       if (callerSignal?.aborted) throw new Error("Aborted");
 
-      const LLM_CONNECT_TIMEOUT_MS = 2 * 60 * 1000; // 2 min connect timeout per attempt
+      const LLM_CONNECT_TIMEOUT_MS = 10 * 60 * 1000; // 10 min connect timeout per attempt
 
       // Retry on server errors (502/503/504) and connection failures
       const MAX_SERVER_ERROR_RETRIES = 5;
