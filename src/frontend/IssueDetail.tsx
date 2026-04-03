@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, Check, X, RotateCcw, Play, Wrench, ChevronRight, Search, Code, TestTube, ClipboardCheck, GitBranch, Square, Shield, Monitor, Zap, FlaskConical, ShieldAlert, Layers, Scissors, Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -573,6 +574,7 @@ function EpicStoryList({ epicId, projectId: _projectId, onSelectIssue }: { epicI
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: IssueDetailProps) {
+  const navigate = useNavigate()
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [viewingRunId, setViewingRunId] = useState<string | null>(null)
@@ -684,8 +686,7 @@ export function IssueDetail({ issue, runs: pollRuns, onBack, onDataChange }: Iss
           epicId={issue.id}
           projectId={issue.project_id}
           onSelectIssue={(id) => {
-            const nav = `/project/${issue.project_id}/issue/${id}`
-            window.location.hash = nav
+            navigate(`/project/${issue.project_id}/issue/${id}`)
           }}
         />
       )}

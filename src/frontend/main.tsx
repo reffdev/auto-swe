@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createHashRouter, RouterProvider } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
 import { DashboardLayout } from './Dashboard'
 import type { ViewName } from './routes'
@@ -26,7 +26,7 @@ const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/terminal/:projectId', view: 'terminal' },
 ]
 
-const router = createHashRouter(
+const router = createBrowserRouter(
   routes.map(({ path, view }) => ({
     path,
     element: <DashboardLayout view={view} />,
