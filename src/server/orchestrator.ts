@@ -2,9 +2,8 @@
  * Orchestrator — single entry point for all background services.
  *
  * Owns the startup sequence, shutdown, and dispatch ordering.
- * The Director always gets priority over the Foreman at startup:
- * it must complete any pending work (style exploration, planning)
- * before the Foreman dispatches tasks.
+ * The Director reserves a specific machine when it needs LLM access.
+ * The Foreman can freely dispatch to any OTHER machine.
  *
  * Services managed:
  * - Machine manager (lease cleanup)
@@ -20,7 +19,7 @@ import { startStatsCollector, stopStatsCollector } from "./stats";
 import { startAnalysisScheduler, stopAnalysisScheduler } from "./analysis";
 import { startDirectorScheduler, stopDirectorScheduler, nudgeDirector } from "./director/scheduler";
 import { startForemanScheduler, stopForemanScheduler, nudgeForeman } from "./foreman/scheduler";
-import { isDirectorBusy } from "./director/director-state";
+import { getDirectorReservedMachine } from "./director/director-state";
 
 let foremanReady = false;
 let db: Db | null = null;
@@ -31,22 +30,15 @@ let db: Db | null = null;
 export function startOrchestrator(database: Db): void {
   db = database;
 
-  // 1. Clean up stale leases from prior crashes
   clearAllLeases();
-
-  // 2. Start stats and analysis (independent, no ordering constraints)
   startStatsCollector(db);
   startAnalysisScheduler(db);
 
-  // 3. Start Director — may synchronously set directorBusy
-  //    if style exploration needs an LLM prompt
+  // Director starts first — may reserve a machine for style exploration
   startDirectorScheduler(db);
-
-  // 4. Start Foreman (registers but doesn't dispatch yet)
   startForemanScheduler(db);
 
-  // 5. Gate the Foreman's first dispatch until after the Director's first tick.
-  //    Double queueMicrotask ensures the Director's nudge microtask runs first.
+  // Gate the Foreman's first dispatch until after the Director's first tick
   queueMicrotask(() => {
     queueMicrotask(() => {
       foremanReady = true;
@@ -55,9 +47,6 @@ export function startOrchestrator(database: Db): void {
   });
 }
 
-/**
- * Stop all background services.
- */
 export function stopOrchestrator(): void {
   stopForemanScheduler();
   stopDirectorScheduler();
@@ -68,10 +57,12 @@ export function stopOrchestrator(): void {
 }
 
 /**
- * Check if the Foreman is allowed to dispatch.
- * Returns false during initial startup (before Director has had its first tick)
- * and when the Director is actively working.
+ * Check if the Foreman is allowed to dispatch to a specific machine.
+ * Returns false if the machine is reserved by the Director or if startup isn't complete.
+ * Pass null to check if dispatch is allowed at all (any machine).
  */
-export function canForemanDispatch(): boolean {
-  return foremanReady && !isDirectorBusy();
+export function canForemanDispatch(machineId?: string | null): boolean {
+  if (!foremanReady) return false;
+  if (!machineId) return true; // no specific machine — let the foreman try
+  return machineId !== getDirectorReservedMachine();
 }

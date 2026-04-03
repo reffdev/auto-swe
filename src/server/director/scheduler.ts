@@ -36,7 +36,8 @@ let lastPlanError: { timestamp: number; message: string } | null = null;
 
 // Re-export from isolated state module (no circular dep issues)
 export { isDirectorBusy, isDirectorPlanning } from "./director-state";
-import { isDirectorBusy, setDirectorBusy, isDirectorPlanning, setDirectorPlanning } from "./director-state";
+import { isDirectorBusy, setDirectorReservedMachine, getDirectorReservedMachine, isDirectorPlanning, setDirectorPlanning } from "./director-state";
+import { selectPlannerMachine } from "../planner-llm";
 
 /** Consecutive zero-task plan attempts per milestone — backs off after 2. */
 const zeroTaskCounts = new Map<string, number>();
@@ -128,9 +129,12 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   const activeMilestone = db.getActiveMilestone(activeDirective.id);
   if (!activeMilestone) return;
 
-  // Block foreman dispatch while the LLM generates the style prompt
-  setDirectorBusy(true);
-  console.log("Director: art style not locked — creating style exploration task (blocking foreman)");
+  // Reserve the inference machine while the LLM generates the style prompt
+  const machineInfo = selectPlannerMachine(db, project);
+  if (machineInfo) {
+    setDirectorReservedMachine(machineInfo.machine.id);
+  }
+  console.log(`Director: art style not locked — creating style exploration task (reserved machine: ${machineInfo?.machine.name ?? "none"})`);
 
   createStyleExplorationTask(db, activeDirective, project, activeMilestone).then(taskId => {
     if (taskId) {
@@ -141,7 +145,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   }).catch(err => {
     console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
   }).finally(() => {
-    setDirectorBusy(false);
+    setDirectorReservedMachine(null);
     nudgeDirector(db);
   });
 }
@@ -185,7 +189,12 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  setDirectorBusy(true);
+  // Reserve the machine the director will use — foreman can use other machines freely
+  const machineInfo = selectPlannerMachine(db, project);
+  if (machineInfo) {
+    setDirectorReservedMachine(machineInfo.machine.id);
+  }
+
   try {
     // Ensure style exploration is running (doesn't block code work)
     if (needsStyleLock(db, project)) {
@@ -201,7 +210,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     }
     saveProgress(db, directive);
   } finally {
-    setDirectorBusy(false);
+    setDirectorReservedMachine(null);
     nudgeForeman(db);
   }
 }

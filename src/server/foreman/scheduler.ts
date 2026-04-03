@@ -103,11 +103,8 @@ async function schedulerTick(db: Db): Promise<void> {
   if (!config?.enabled) return;
   if (!config.project_id) return;
 
-  // Wait for Director to finish before dispatching new tasks
-  if (!canForemanDispatch()) {
-    console.log("Foreman: waiting — director has priority");
-    return;
-  }
+  // Wait for startup to complete before dispatching
+  if (!canForemanDispatch()) return;
 
   const project = db.getProject(config.project_id);
   if (!project) {
@@ -150,6 +147,11 @@ async function schedulerTick(db: Db): Promise<void> {
       if (exhaustedMachineTypes.has(route.machineType)) continue;
       const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
       if (result) {
+        // Skip if this machine is reserved by the Director
+        if (!canForemanDispatch(result.machine.id)) {
+          releaseLease(result.lease.id);
+          continue;
+        }
         task = candidate;
         leaseResult = result;
         break;
