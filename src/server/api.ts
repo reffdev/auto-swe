@@ -19,7 +19,7 @@ import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
 import { createModel, generate } from "./llm";
 import { acquireLease, releaseLease } from "./machine-manager";
-import { isDirectorBusy, isDirectorPlanning } from "./director/scheduler";
+import { isDirectorBusy, isDirectorPlanning } from "./director/director-state";
 import { notifyCapacityChange } from "./foreman/scheduler";
 import { getActiveAnalysisCount } from "./analysis";
 

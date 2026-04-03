@@ -11,7 +11,7 @@ import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
-import { isDirectorBusy } from "../director/scheduler";
+import { isDirectorBusy } from "../director/director-state";
 import { isStyleLocked } from "../director/style-lock";
 import { existsSync } from "fs";
 import { resolve as resolvePath } from "path";

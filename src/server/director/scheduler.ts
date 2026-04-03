@@ -32,13 +32,11 @@ import { createStyleExplorationTask } from "./style-exploration";
 let schedulerDb: Db | null = null;
 let pendingNudge = false;
 let processing = false;
-let planningInProgress = false;
 let lastPlanError: { timestamp: number; message: string } | null = null;
 
-/** When true, the Foreman scheduler pauses dispatch until the Director finishes. */
-let directorBusy = false;
-export function isDirectorBusy(): boolean { return directorBusy; }
-export function isDirectorPlanning(): boolean { return planningInProgress; }
+// Re-export from isolated state module (no circular dep issues)
+export { isDirectorBusy, isDirectorPlanning } from "./director-state";
+import { isDirectorBusy, setDirectorBusy, isDirectorPlanning, setDirectorPlanning } from "./director-state";
 
 /** Consecutive zero-task plan attempts per milestone — backs off after 2. */
 const zeroTaskCounts = new Map<string, number>();
@@ -131,7 +129,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   if (!activeMilestone) return;
 
   // Block foreman dispatch while the LLM generates the style prompt
-  directorBusy = true;
+  setDirectorBusy(true);
   console.log("Director: art style not locked — creating style exploration task (blocking foreman)");
 
   createStyleExplorationTask(db, activeDirective, project, activeMilestone).then(taskId => {
@@ -143,7 +141,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   }).catch(err => {
     console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
   }).finally(() => {
-    directorBusy = false;
+    setDirectorBusy(false);
     nudgeDirector(db);
   });
 }
@@ -165,7 +163,7 @@ export function nudgeDirector(db?: Db): void {
 async function directorTick(db: Db): Promise<void> {
   const config = db.getForemanConfig();
   if (!config?.enabled) return;
-  if (processing || directorBusy) return;
+  if (processing || isDirectorBusy()) return;
   processing = true;
 
   try {
@@ -187,7 +185,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  directorBusy = true;
+  setDirectorBusy(true);
   try {
     // Ensure style exploration is running (doesn't block code work)
     if (needsStyleLock(db, project)) {
@@ -203,7 +201,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     }
     saveProgress(db, directive);
   } finally {
-    directorBusy = false;
+    setDirectorBusy(false);
     nudgeForeman(db);
   }
 }
@@ -304,7 +302,7 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
     await planTasks(db, directive, project, activeMilestone, "initial");
   } else if (!hasActiveWork && tasks.some(t => t.status === "failed")) {
     await planTasks(db, directive, project, activeMilestone, "failure recovery");
-  } else if (tasks.some(t => t.status === "queued" || t.status === "running") && !planningInProgress) {
+  } else if (tasks.some(t => t.status === "queued" || t.status === "running") && !isDirectorPlanning()) {
     await topUpIfIdle(db, directive, project, activeMilestone);
   }
 }
@@ -378,7 +376,7 @@ async function topUpIfIdle(
   if (idleTypes.length === 0) return;
 
   console.log(`Director: machine type(s) idle: ${idleTypes.join(", ")} — requesting top-up tasks`);
-  planningInProgress = true;
+  setDirectorPlanning(true);
   try {
     const created = await planNextTasks(db, directive, project, milestone, idleTypes);
     if (created === 0) {
@@ -396,7 +394,7 @@ async function topUpIfIdle(
       console.error(`Director: planning error:`, msg);
     }
   } finally {
-    planningInProgress = false;
+    setDirectorPlanning(false);
   }
 }
 

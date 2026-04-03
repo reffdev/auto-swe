@@ -7,12 +7,11 @@
 
 import { Db } from "../db";
 import {
-  isDirectorBusy,
-  isDirectorPlanning,
   ensureStyleExploration,
   startDirectorScheduler,
   stopDirectorScheduler,
 } from "./scheduler";
+import { isDirectorBusy } from "./director-state";
 import { lockStyle, unlockStyle } from "./style-lock";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
