@@ -233,19 +233,9 @@ async function generateDirectorTasks(
 }
 
 async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
-  // 0. Style gate — block all non-art work until style is locked
-  if (needsStyleLock(db, project)) {
-    if (!directorBusy) {
-      ensureStyleExploration(db, project);
-      if (directorBusy) return;
-    }
-    // Only create review gates for completed art tasks while waiting for style lock
-    for (const task of db.getDirectiveTasksAwaitingReview(directive.id)) {
-      if (isComfyUITaskType(task.type)) {
-        ensureArtReviewGate(db, directive.id, task);
-      }
-    }
-    return;
+  // 0. Ensure style exploration is running (doesn't block code work)
+  if (needsStyleLock(db, project) && !directorBusy) {
+    ensureStyleExploration(db, project);
   }
 
   // 1. Handle tasks awaiting review (auto-verify)

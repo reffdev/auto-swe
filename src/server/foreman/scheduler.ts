@@ -10,6 +10,7 @@ import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
+import { isComfyUITaskType } from "./task-types";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -125,9 +126,9 @@ async function schedulerTick(db: Db): Promise<void> {
     let ready = db.getForemanTasksReadyToRun();
     if (ready.length === 0) break;
 
-    // If style isn't locked, only allow style_exploration tasks through
+    // If style isn't locked, block art tasks (not code) — they need style reference
     if (needsStyleLock) {
-      ready = ready.filter(t => t.type === "style_exploration");
+      ready = ready.filter(t => t.type === "style_exploration" || !isComfyUITaskType(t.type));
       if (ready.length === 0) break;
     }
 
