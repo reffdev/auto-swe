@@ -72,8 +72,13 @@ export async function generate(model: Model, opts: GenerateOptions): Promise<str
     messages: opts.messages,
     abortSignal: opts.abortSignal,
     maxRetries: MAX_AI_SDK_RETRIES,
+    onError: ({ error }) => {
+      console.error("LLM generate error:", error instanceof Error ? error.message : error);
+    },
   });
-  return (await result).text;
+  // Must consume the stream for .text to resolve
+  await result.consumeStream();
+  return await result.text;
 }
 
 /**
