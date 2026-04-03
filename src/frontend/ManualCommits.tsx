@@ -28,15 +28,17 @@ export function ManualCommits({ projectId, onBack }: { projectId: string; onBack
       ])
       setCommits(commitData.commits)
       setDirectives(directiveData)
-
-      // Auto-select the active directive
-      const active = directiveData.find(d => d.status === 'active' || d.status === 'paused')
-      if (active && !directiveId) {
-        setDirectiveId(active.id)
-      }
     } catch { /* ignore */ }
     finally { setLoading(false) }
-  }, [projectId, directiveId])
+  }, [projectId])
+
+  // Auto-select the active directive on first load
+  useEffect(() => {
+    if (directives.length > 0 && !directiveId) {
+      const active = directives.find(d => d.status === 'active' || d.status === 'paused')
+      if (active) setDirectiveId(active.id)
+    }
+  }, [directives, directiveId])
 
   useEffect(() => { void load() }, [load])
 
