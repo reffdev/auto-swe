@@ -11,7 +11,7 @@
  */
 
 import { resolve } from "path";
-import type { Db, DirectorDirective } from "../db";
+import type { Db, DirectorDirective, ForemanTask, Project } from "../db";
 import { removeWorktree } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
 import { planNextTasks } from "./planner";
@@ -24,6 +24,7 @@ import { isStyleLocked } from "./style-lock";
 import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
 import { hasCapacity } from "../machine-manager";
+import { handleStyleLock } from "./style-lock-handler";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -31,23 +32,29 @@ let schedulerDb: Db | null = null;
 let pendingNudge = false;
 let processing = false;
 let planningInProgress = false;
+let lastPlanError: { timestamp: number; message: string } | null = null;
 
 /** When true, the Foreman scheduler pauses dispatch until the Director finishes. */
 let directorBusy = false;
 export function isDirectorBusy(): boolean { return directorBusy; }
 export function isDirectorPlanning(): boolean { return planningInProgress; }
-const zeroTaskCounts = new Map<string, number>(); // milestoneId → consecutive zero-task plan attempts
+
+/** Consecutive zero-task plan attempts per milestone — backs off after 2. */
+const zeroTaskCounts = new Map<string, number>();
+
+/** Expose DB for episodic extractor (avoids circular import of full scheduler) */
+export function getGlobalDb(): Db | null { return schedulerDb; }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-/** Check if the project needs a style lock before code work can proceed. */
-function needsStyleLock(db: Db, project: import("../db").Project): boolean {
+/** Check if the project has comfyui machines and no locked style. */
+function needsStyleLock(db: Db, project: Project): boolean {
   const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
   return hasComfyUI && !isStyleLocked(project.workdir);
 }
 
 /** Create a review gate for a completed art/comfyui task if one doesn't already exist. */
-function ensureArtReviewGate(db: Db, directiveId: string, task: import("../db").ForemanTask): void {
+function ensureArtReviewGate(db: Db, directiveId: string, task: ForemanTask): void {
   const existing = db.getDirectorReviews(directiveId).filter(
     r => r.task_id === task.id && r.status === "pending"
   );
@@ -65,10 +72,6 @@ function ensureArtReviewGate(db: Db, directiveId: string, task: import("../db").
   });
   console.log(`Director: ${isStyle ? "style exploration" : "art task"} "${task.title}" sent to human review`);
 }
-let lastPlanError: { timestamp: number; message: string } | null = null;
-
-/** Expose DB for episodic extractor (avoids circular import of full scheduler) */
-export function getGlobalDb(): Db | null { return schedulerDb; }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -76,26 +79,11 @@ export function startDirectorScheduler(db: Db): void {
   schedulerDb = db;
   console.log("Director scheduler ready (event-driven)");
 
-  // Startup checks for the configured project
   const config = db.getForemanConfig();
   if (config?.project_id) {
     const project = db.getProject(config.project_id);
     if (project) {
-      // Index memories (always, even when disabled)
       indexMemories(project.workdir).catch(() => {});
-
-      // Pre-set directorBusy if style exploration will need an LLM call.
-      // This blocks the foreman from dispatching before the director tick runs.
-      if (config.enabled && needsStyleLock(db, project)) {
-        const hasStyleTask = db.getForemanTasks(project.id).some(
-          (t: { type: string }) => t.type === "style_exploration"
-        );
-        if (!hasStyleTask) {
-          directorBusy = true;
-          console.log("Director: pre-setting directorBusy for style exploration LLM call");
-        }
-      }
-
       if (config.enabled) {
         ensureStyleExploration(db, project);
       }
@@ -105,20 +93,21 @@ export function startDirectorScheduler(db: Db): void {
   nudgeDirector(db);
 }
 
+export function stopDirectorScheduler(): void {
+  schedulerDb = null;
+}
+
 /**
- * On startup, check if the project needs a style exploration task.
- * If style not locked and no style_exploration task exists, creates one
- * via a dedicated focused LLM call (separate from the general planner).
+ * On startup or when style is needed, check if the project needs a style exploration task.
+ * Sets directorBusy while the LLM generates the art prompt.
  */
-export function ensureStyleExploration(db: Db, project: import("../db").Project): void {
+export function ensureStyleExploration(db: Db, project: Project): void {
   if (isStyleLocked(project.workdir)) return;
 
-  // Check if any style_exploration task already exists for this project (any status)
   const allStyleTasks = db.getForemanTasks(project.id).filter(
     (t: { type: string }) => t.type === "style_exploration"
   );
   if (allStyleTasks.length > 0) {
-    // If there's a failed one, re-queue it instead of creating a new one
     const failed = allStyleTasks.find((t: { status: string }) => t.status === "failed");
     if (failed) {
       db.updateForemanTask(failed.id, { status: "queued", retry_count: 0, error_message: null });
@@ -128,11 +117,9 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
     return;
   }
 
-  // Check if comfyui machines exist
   const comfyMachines = db.getMachines().filter(m => m.machine_type === "comfyui");
   if (comfyMachines.length === 0) return;
 
-  // Find the active directive for this project
   const directives = db.getDirectorDirectives(project.id);
   const activeDirective = directives.find(d =>
     d.status === "active" || d.status === "paused" || d.status === "planning"
@@ -142,10 +129,9 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
   const activeMilestone = db.getActiveMilestone(activeDirective.id);
   if (!activeMilestone) return;
 
-  console.log("Director: art style not locked — creating style exploration task");
-
-  // Hold the Foreman while the LLM generates the art prompt
+  // Block foreman dispatch while the LLM generates the style prompt
   directorBusy = true;
+  console.log("Director: art style not locked — creating style exploration task (blocking foreman)");
 
   import("./style-exploration").then(({ createStyleExplorationTask }) => {
     return createStyleExplorationTask(db, activeDirective, project, activeMilestone);
@@ -159,47 +145,32 @@ export function ensureStyleExploration(db: Db, project: import("../db").Project)
     console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
   }).finally(() => {
     directorBusy = false;
-    // Re-nudge so the Director tick runs now that the LLM is free
     nudgeDirector(db);
   });
 }
 
-export function stopDirectorScheduler(): void {
-  schedulerDb = null;
-}
-
-/**
- * Signal the Director that something changed. Debounced via microtask.
- */
+/** Signal the Director that something changed. Debounced via microtask. */
 export function nudgeDirector(db?: Db): void {
   const d = db ?? schedulerDb;
   if (!d) return;
-
   if (pendingNudge) return;
   pendingNudge = true;
-
   queueMicrotask(() => {
     pendingNudge = false;
     directorTick(d).catch(err => console.error("Director scheduler error:", err));
   });
 }
 
-// ─── Director Tick ───────────────────────────────────────────────────────────
+// ─── Director Tick ──────────────────────────────────────────────────────────
 
 async function directorTick(db: Db): Promise<void> {
-  // Respect the enabled toggle — same flag controls both Director and Foreman
   const config = db.getForemanConfig();
   if (!config?.enabled) return;
-
-  // Prevent concurrent ticks (the director tick may take time due to LLM calls)
-  // Also wait if directorBusy (e.g. style exploration LLM call in progress)
   if (processing || directorBusy) return;
   processing = true;
 
   try {
-    const directives = db.getActiveDirectives(); // status: active or paused
-
-    for (const directive of directives) {
+    for (const directive of db.getActiveDirectives()) {
       if (directive.status === "active") {
         await processActiveDirective(db, directive);
       } else if (directive.status === "paused") {
@@ -211,116 +182,83 @@ async function directorTick(db: Db): Promise<void> {
   }
 }
 
-// ─── Active Directive Processing ─────────────────────────────────────────────
+// ─── Active Directive Processing ────────────────────────────────────────────
 
 async function processActiveDirective(db: Db, directive: DirectorDirective): Promise<void> {
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  // Signal the Foreman to pause new dispatches while Director is thinking
   directorBusy = true;
   try {
-    await processDirectiveWork(db, directive, project);
+    // Ensure style exploration is running (doesn't block code work)
+    if (needsStyleLock(db, project)) {
+      ensureStyleExploration(db, project);
+    }
+
+    await verifyAwaitingTasks(db, directive, project);
+    await handleFailedTasks(db, directive);
+    await advanceMilestone(db, directive, project);
+
+    if (shouldPauseDirective(db, directive)) {
+      db.updateDirectorDirective(directive.id, { status: "paused" });
+    }
+    saveProgress(db, directive);
   } finally {
     directorBusy = false;
-    // Re-nudge Foreman now that the LLM is free — nudges during processing
-    // were blocked by directorBusy and got swallowed
     nudgeForeman(db);
   }
 }
 
-/**
- * Generate tasks for a milestone via the Director planner LLM.
- * Director LLM calls piggyback on the inference endpoint without leases —
- * llama.cpp queues short bursts alongside running foreman tasks.
- * Returns: number of tasks created, or -1 if no machine available.
- */
-async function generateDirectorTasks(
-  db: Db, directive: DirectorDirective, project: import("../db").Project,
-  milestone: import("../db").DirectorMilestone,
-  idleMachineTypes?: string[],
-): Promise<number> {
-  return await planNextTasks(db, directive, project, milestone, idleMachineTypes);
-}
+// ─── Step 1: Verify tasks awaiting review ───────────────────────────────────
 
-async function processDirectiveWork(db: Db, directive: DirectorDirective, project: import("../db").Project): Promise<void> {
-  // 0. Ensure style exploration is running (doesn't block code work)
-  if (needsStyleLock(db, project) && !directorBusy) {
-    ensureStyleExploration(db, project);
-  }
-
-  // 1. Handle tasks awaiting review (auto-verify)
-  const awaitingReview = db.getDirectiveTasksAwaitingReview(directive.id);
-  for (const task of awaitingReview) {
+async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
+  for (const task of db.getDirectiveTasksAwaitingReview(directive.id)) {
     try {
-      // Art/music/sfx tasks skip automated verification — go straight to human review
       if (isComfyUITaskType(task.type)) {
         ensureArtReviewGate(db, directive.id, task);
         continue;
       }
 
-      // Director verification piggybacks on the inference endpoint without a lease —
-      // llama.cpp/Ollama queues short requests alongside running foreman tasks
       const result = await verifyTask(db, task, project);
 
       if (result.verdict === "pass") {
-        // Check if task was flagged for human review
-        const needsHumanReview = task.description.includes("[needs_human_review]");
-        if (needsHumanReview && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
-          // Check if a review gate already exists for this task
-          const existingReviews = db.getDirectorReviews(directive.id).filter(
-            r => r.task_id === task.id && r.status === "pending"
-          );
-          if (existingReviews.length === 0) {
+        if (task.description.includes("[needs_human_review]") && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
+          const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
+          if (existing.length === 0) {
             createReviewGate(db, {
-              directive_id: directive.id,
-              task_id: task.id,
-              review_type: "task_verify",
-              question: `Task "${task.title}" passed automated verification but was flagged for human review. Please confirm the output is acceptable.`,
+              directive_id: directive.id, task_id: task.id, review_type: "task_verify",
+              question: `Task "${task.title}" passed automated verification but was flagged for human review.`,
               context: { issues: result.issues, reasoning: result.reasoning, confidence: result.confidence },
             });
             console.log(`Director: task "${task.title}" passed but flagged for human review`);
           }
         } else {
-          // Auto-complete the task
           db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
-          // Clean up worktree now that verification is done
           if (task.git_worktree) {
             try { await removeWorktree(project.workdir, task.git_worktree); } catch { /* best effort */ }
             db.updateForemanTask(task.id, { git_worktree: null });
           }
           console.log(`Director: auto-completed task "${task.title}" (confidence: ${result.confidence})`);
           logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${result.confidence}`);
-          // Reset zero-task counter so planner re-evaluates
           if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
-          nudgeForeman(db); // unblock dependents
+          nudgeForeman(db);
         }
       } else if (result.verdict === "fail") {
-        // Create a corrective note and re-queue
-        db.updateForemanTask(task.id, {
-          status: "failed",
-          error_message: `Verifier: ${result.issues.join("; ")}`,
-        });
+        db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
         console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
         logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
-        // Director will handle the failure below
       } else {
-        // Escalate to human
+        // Escalate
         if (shouldEscalate(directive.autonomy_level, "low_confidence")) {
-          const existingLowConf = db.getDirectorReviews(directive.id).filter(
-            r => r.task_id === task.id && r.status === "pending"
-          );
-          if (existingLowConf.length > 0) continue; // already escalated
+          const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
+          if (existing.length > 0) continue;
           createReviewGate(db, {
-            directive_id: directive.id,
-            task_id: task.id,
-            review_type: "task_verify",
-            question: `Please review the output of task "${task.title}". The automated verifier was uncertain (confidence: ${result.confidence}).`,
+            directive_id: directive.id, task_id: task.id, review_type: "task_verify",
+            question: `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`,
             context: { issues: result.issues, reasoning: result.reasoning },
           });
           console.log(`Director: escalated task "${task.title}" for human review`);
         } else {
-          // Aggressive mode — auto-complete even with low confidence
           db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
           nudgeForeman(db);
         }
@@ -329,180 +267,151 @@ async function processDirectiveWork(db: Db, directive: DirectorDirective, projec
       console.error(`Director: verification error for task ${task.id}:`, err);
     }
   }
+}
 
-  // 2. Handle failed tasks (after all Foreman retries exhausted)
-  const failedTasks = db.getDirectiveFailedTasks(directive.id);
-  for (const task of failedTasks) {
-    // Only handle if not already reviewed or corrected
+// ─── Step 2: Handle failed tasks ────────────────────────────────────────────
+
+async function handleFailedTasks(db: Db, directive: DirectorDirective): Promise<void> {
+  for (const task of db.getDirectiveFailedTasks(directive.id)) {
     const existingReviews = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id);
-    if (existingReviews.length > 0) continue; // already handled
+    if (existingReviews.length > 0) continue;
 
     if (shouldEscalate(directive.autonomy_level, "repeated_failure")) {
-      // Use actual run count instead of retry_count (which resets on manual retry)
       const runs = db.getForemanRunsForTask(task.id);
-      const actualAttempts = runs.length;
       createReviewGate(db, {
-        directive_id: directive.id,
-        task_id: task.id,
-        review_type: "failure_escalation",
-        question: `Task "${task.title}" has failed after ${actualAttempts} attempt(s). Error: ${task.error_message?.slice(0, 300)}. How should we proceed?`,
-        context: {
-          task_title: task.title,
-          task_description: task.description,
-          error: task.error_message,
-          attempts: actualAttempts,
-        },
+        directive_id: directive.id, task_id: task.id, review_type: "failure_escalation",
+        question: `Task "${task.title}" has failed after ${runs.length} attempt(s). Error: ${task.error_message?.slice(0, 300)}. How should we proceed?`,
+        context: { task_title: task.title, task_description: task.description, error: task.error_message, attempts: runs.length },
         options: ["Retry with different approach", "Skip this task", "Provide guidance"],
       });
       console.log(`Director: escalated failed task "${task.title}" for human guidance`);
     }
   }
-
-  // 3. Check if active milestone is complete
-  const activeMilestone = db.getActiveMilestone(directive.id);
-  if (activeMilestone) {
-    const milestoneTasks = db.getDirectiveTasks(directive.id, activeMilestone.id);
-    const allComplete = milestoneTasks.length > 0 && milestoneTasks.every(t => t.status === "completed");
-    const hasActiveWork = milestoneTasks.some(t => t.status === "queued" || t.status === "running");
-    const hasQueued = hasActiveWork || milestoneTasks.some(t => t.status === "awaiting_review");
-
-    if (allComplete) {
-      // Run milestone verification
-      db.updateDirectorMilestone(activeMilestone.id, { status: "verifying" });
-
-      const verification = await verifyMilestone(db, activeMilestone, directive.id, project);
-
-      if (verification.passed) {
-        zeroTaskCounts.delete(activeMilestone.id); // clean up
-        db.updateDirectorMilestone(activeMilestone.id, {
-          status: "completed",
-          completed_at: new Date().toISOString(),
-        });
-        console.log(`Director: milestone "${activeMilestone.title}" completed`);
-        logEpisodic(project.workdir, `Milestone completed: "${activeMilestone.title}"`, `Tasks: ${milestoneTasks.length}`);
-
-        // Create milestone gate review if needed
-        if (shouldEscalate(directive.autonomy_level, "milestone_complete")) {
-          const existingMilestoneGate = db.getDirectorReviews(directive.id).filter(
-            r => r.milestone_id === activeMilestone.id && r.status === "pending"
-          );
-          if (existingMilestoneGate.length === 0) {
-            createReviewGate(db, {
-              directive_id: directive.id,
-              milestone_id: activeMilestone.id,
-              review_type: "milestone_gate",
-              question: `Milestone "${activeMilestone.title}" has been completed. Please review before proceeding to the next milestone.`,
-              context: { milestone: activeMilestone.title, tasks_completed: milestoneTasks.length },
-            });
-          }
-        }
-
-        // Activate next milestone
-        const milestones = db.getDirectorMilestones(directive.id);
-        const nextMilestone = milestones.find(m => m.status === "pending");
-
-        if (nextMilestone) {
-          db.updateDirectorMilestone(nextMilestone.id, {
-            status: "active",
-            started_at: new Date().toISOString(),
-          });
-
-          // Generate tasks for next milestone (unless paused by review gate)
-          if (!shouldPauseDirective(db, directive)) {
-            try { await generateDirectorTasks(db, directive, project, nextMilestone); } catch (err) {
-              console.error(`Director: planning for next milestone failed:`, err instanceof Error ? err.message : err);
-            }
-          }
-        } else {
-          // All milestones complete — directive done
-          db.updateDirectorDirective(directive.id, {
-            status: "completed",
-            completed_at: new Date().toISOString(),
-          });
-          console.log(`Director: directive "${directive.directive}" completed!`);
-          logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
-        }
-      } else {
-        // Milestone verification failed — generate corrective tasks
-        db.updateDirectorMilestone(activeMilestone.id, { status: "active" });
-        console.log(`Director: milestone "${activeMilestone.title}" verification failed: ${verification.issues.join("; ")}`);
-        logEpisodic(project.workdir, `Milestone verification failed: "${activeMilestone.title}"`, verification.issues.join("; "));
-        try { await generateDirectorTasks(db, directive, project, activeMilestone); } catch (err) {
-          console.error(`Director: corrective planning failed:`, err instanceof Error ? err.message : err);
-        }
-      }
-    } else if (!hasQueued && milestoneTasks.length === 0) {
-      // No tasks at all for this milestone — generate some
-      try { await generateDirectorTasks(db, directive, project, activeMilestone); } catch (err) {
-        console.error(`Director: initial planning failed:`, err instanceof Error ? err.message : err);
-      }
-    } else if (!hasQueued && milestoneTasks.some(t => t.status === "failed")) {
-      // All tasks done but some failed — need more tasks
-      try { await generateDirectorTasks(db, directive, project, activeMilestone); } catch (err) {
-        console.error(`Director: failure recovery planning failed:`, err instanceof Error ? err.message : err);
-      }
-    } else if (hasActiveWork && !planningInProgress) {
-      // Some tasks still running — check if any machine types are idle
-      const zeroCount = zeroTaskCounts.get(activeMilestone.id) ?? 0;
-      if (zeroCount >= 2) {
-        // Two consecutive zero-task plans — stop trying until tasks complete
-      } else {
-        const idleTypes = getIdleMachineTypes(db, directive.id, activeMilestone.id);
-        if (idleTypes.length > 0) {
-          console.log(`Director: machine type(s) idle with no queued work: ${idleTypes.join(", ")} — requesting top-up tasks`);
-          planningInProgress = true;
-          try {
-            const created = await generateDirectorTasks(db, directive, project, activeMilestone, idleTypes);
-            if (created === 0) {
-              // Planner ran but generated nothing — count toward backoff
-              zeroTaskCounts.set(activeMilestone.id, zeroCount + 1);
-              console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/2 before backing off)`);
-            } else if (created > 0) {
-              zeroTaskCounts.set(activeMilestone.id, 0);
-            }
-            // created === -1 means no machine available — don't count against backoff
-            lastPlanError = null;
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            const now = Date.now();
-            if (lastPlanError?.message === msg && now - lastPlanError.timestamp < 60_000) {
-              // Suppress repeated errors within 60s
-            } else {
-              lastPlanError = { timestamp: now, message: msg };
-              console.error(`Director: planning error:`, msg);
-            }
-          } finally {
-            planningInProgress = false;
-          }
-        }
-      }
-    }
-  }
-
-  // 4. Check if directive should be paused due to review gates
-  if (shouldPauseDirective(db, directive)) {
-    db.updateDirectorDirective(directive.id, { status: "paused" });
-  }
-
-  // Update progress
-  saveProgress(db, directive);
 }
 
-// ─── Paused Directive Processing ─────────────────────────────────────────────
+// ─── Step 3: Advance milestone ──────────────────────────────────────────────
+
+async function advanceMilestone(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
+  const activeMilestone = db.getActiveMilestone(directive.id);
+  if (!activeMilestone) return;
+
+  const tasks = db.getDirectiveTasks(directive.id, activeMilestone.id);
+  const allComplete = tasks.length > 0 && tasks.every(t => t.status === "completed");
+  const hasActiveWork = tasks.some(t => t.status === "queued" || t.status === "running" || t.status === "awaiting_review");
+
+  if (allComplete) {
+    await completeMilestone(db, directive, project, activeMilestone, tasks.length);
+  } else if (!hasActiveWork && tasks.length === 0) {
+    await planTasks(db, directive, project, activeMilestone, "initial");
+  } else if (!hasActiveWork && tasks.some(t => t.status === "failed")) {
+    await planTasks(db, directive, project, activeMilestone, "failure recovery");
+  } else if (tasks.some(t => t.status === "queued" || t.status === "running") && !planningInProgress) {
+    await topUpIfIdle(db, directive, project, activeMilestone);
+  }
+}
+
+async function completeMilestone(
+  db: Db, directive: DirectorDirective, project: Project,
+  milestone: import("../db").DirectorMilestone,
+  taskCount: number,
+): Promise<void> {
+  db.updateDirectorMilestone(milestone.id, { status: "verifying" });
+  const verification = await verifyMilestone(db, milestone, directive.id, project);
+
+  if (verification.passed) {
+    zeroTaskCounts.delete(milestone.id);
+    db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString() });
+    console.log(`Director: milestone "${milestone.title}" completed`);
+    logEpisodic(project.workdir, `Milestone completed: "${milestone.title}"`, `Tasks: ${taskCount}`);
+
+    if (shouldEscalate(directive.autonomy_level, "milestone_complete")) {
+      const existing = db.getDirectorReviews(directive.id).filter(r => r.milestone_id === milestone.id && r.status === "pending");
+      if (existing.length === 0) {
+        createReviewGate(db, {
+          directive_id: directive.id, milestone_id: milestone.id, review_type: "milestone_gate",
+          question: `Milestone "${milestone.title}" has been completed. Please review before proceeding.`,
+          context: { milestone: milestone.title, tasks_completed: taskCount },
+        });
+      }
+    }
+
+    // Activate next milestone
+    const milestones = db.getDirectorMilestones(directive.id);
+    const next = milestones.find(m => m.status === "pending");
+    if (next) {
+      db.updateDirectorMilestone(next.id, { status: "active", started_at: new Date().toISOString() });
+      if (!shouldPauseDirective(db, directive)) {
+        await planTasks(db, directive, project, next, "next milestone");
+      }
+    } else {
+      db.updateDirectorDirective(directive.id, { status: "completed", completed_at: new Date().toISOString() });
+      console.log(`Director: directive "${directive.directive}" completed!`);
+      logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
+    }
+  } else {
+    db.updateDirectorMilestone(milestone.id, { status: "active" });
+    console.log(`Director: milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
+    logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
+    await planTasks(db, directive, project, milestone, "corrective");
+  }
+}
+
+async function planTasks(
+  db: Db, directive: DirectorDirective, project: Project,
+  milestone: import("../db").DirectorMilestone,
+  reason: string,
+): Promise<void> {
+  try {
+    await planNextTasks(db, directive, project, milestone);
+  } catch (err) {
+    console.error(`Director: ${reason} planning failed:`, err instanceof Error ? err.message : err);
+  }
+}
+
+async function topUpIfIdle(
+  db: Db, directive: DirectorDirective, project: Project,
+  milestone: import("../db").DirectorMilestone,
+): Promise<void> {
+  const zeroCount = zeroTaskCounts.get(milestone.id) ?? 0;
+  if (zeroCount >= 2) return; // backed off
+
+  const idleTypes = getIdleMachineTypes(db, directive.id, milestone.id);
+  if (idleTypes.length === 0) return;
+
+  console.log(`Director: machine type(s) idle: ${idleTypes.join(", ")} — requesting top-up tasks`);
+  planningInProgress = true;
+  try {
+    const created = await planNextTasks(db, directive, project, milestone, idleTypes);
+    if (created === 0) {
+      zeroTaskCounts.set(milestone.id, zeroCount + 1);
+      console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/2 before backing off)`);
+    } else if (created > 0) {
+      zeroTaskCounts.set(milestone.id, 0);
+    }
+    lastPlanError = null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const now = Date.now();
+    if (!lastPlanError || lastPlanError.message !== msg || now - lastPlanError.timestamp >= 60_000) {
+      lastPlanError = { timestamp: now, message: msg };
+      console.error(`Director: planning error:`, msg);
+    }
+  } finally {
+    planningInProgress = false;
+  }
+}
+
+// ─── Paused Directive Processing ────────────────────────────────────────────
 
 async function processPausedDirective(db: Db, directive: DirectorDirective): Promise<void> {
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  // Check for responded review gates
-  const reviews = db.getDirectorReviews(directive.id);
-  const justResponded = reviews.filter(r => r.status === "responded");
-
+  const justResponded = db.getDirectorReviews(directive.id).filter(r => r.status === "responded");
   let shouldResume = false;
 
   for (const review of justResponded) {
     const result = processReviewResponse(review);
-    // Mark as processed so it's not re-processed on next tick
     db.updateDirectorReview(review.id, { status: "processed" });
 
     switch (result.action) {
@@ -515,18 +424,11 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
         if (review.task_id) {
           const retryTask = db.getForemanTask(review.task_id);
           const updates: Record<string, unknown> = {
-            status: "queued",
-            retry_count: 0,
-            error_message: null,
-            next_retry_at: null,
-            machine_id: null,
+            status: "queued", retry_count: 0, error_message: null, next_retry_at: null, machine_id: null,
           };
-
-          // For art/music/sfx tasks, use LLM to revise the prompt based on feedback
           if (retryTask && isComfyUITaskType(retryTask.type) && review.response) {
             updates.description = await processArtFeedback(db, retryTask.description, review.response);
           }
-
           db.updateForemanTask(review.task_id, updates);
           nudgeForeman(db);
         }
@@ -536,11 +438,9 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
       case "generate_tasks": {
         shouldResume = true;
         if (result.context) addKeyDecision(db, directive, result.context);
-        const foremanConfig = db.getForemanConfig();
         const activeMilestone = db.getActiveMilestone(directive.id);
         if (activeMilestone) {
-          try { await generateDirectorTasks(db, directive, project, activeMilestone); }
-          catch (err) { console.error("Director: generate_tasks planning failed:", err instanceof Error ? err.message : err); }
+          await planTasks(db, directive, project, activeMilestone, "human-directed");
         }
         break;
       }
@@ -549,60 +449,13 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
         shouldResume = true;
         if (review.task_id) {
           try {
-            const parsed = JSON.parse(result.context) as { selected?: number[]; run?: number };
-            const selectedIndex = parsed.selected?.[0] ?? 0;
-
-            // Find the generated variation image (supports historical runs)
-            const task2 = db.getForemanTask(review.task_id);
-            if (task2) {
-              const { readdirSync } = await import("fs");
-              const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task2.id.slice(0, 8));
-              const galleryDir = parsed.run ? resolve(baseGalleryDir, `run_${parsed.run}`) : baseGalleryDir;
-              const files = readdirSync(galleryDir).filter(f => f.endsWith(".png")).sort((a, b) => {
-                const aNum = parseInt(a.match(/\d+/)?.[0] ?? "0", 10);
-                const bNum = parseInt(b.match(/\d+/)?.[0] ?? "0", 10);
-                return aNum - bNum;
-              });
-              const selectedFile = files[selectedIndex] ?? files[0];
-
-              if (selectedFile) {
-                const { lockStyle } = await import("./style-lock");
-                const taskPreset = extractTag(task2.description, "preset") ?? "pixel_sprite";
-                const { PRESETS } = await import("../foreman/comfyui-workflows");
-                const presetConfig = PRESETS[taskPreset as keyof typeof PRESETS];
-                // Don't store the full exploration prompt as a prefix — the IP-Adapter
-                // reference image carries the style. The prefix should be empty or at most
-                // a short style descriptor that the planner can override per task.
-                const stylePrefix = "";
-
-                lockStyle(project.workdir, {
-                  checkpoint: presetConfig?.checkpoint ?? "sd_xl_base_1.0.safetensors",
-                  preset: taskPreset,
-                  prompt_style_prefix: stylePrefix,
-                  reference_image: "",
-                  ip_adapter_model: "ip-adapter-plus_sdxl_vit-h.safetensors",
-                  ip_adapter_weight: 0.6,
-                  locked_at: new Date().toISOString(),
-                  locked_by_review_id: review.id,
-                }, resolve(galleryDir, selectedFile));
-
-                const runLabel = parsed.run ? ` (run ${parsed.run})` : '';
-                addKeyDecision(db, directive, `Art style locked from variation ${selectedIndex + 1}${runLabel}`);
-                logEpisodic(project.workdir, `Art style locked`, `Selected variation ${selectedIndex + 1}${runLabel} from "${task2.title}"`);
-                console.log(`Director: art style locked from variation ${selectedIndex + 1}${runLabel}`);
-              }
-            }
-            // Complete the style exploration task only on success
-            db.updateForemanTask(review.task_id, { status: "completed", completed_at: new Date().toISOString() });
+            handleStyleLock(db, directive, project, review.task_id, review.id, result.context);
           } catch (err) {
             console.error("Director: style lock failed:", err instanceof Error ? err.message : err);
-            // Don't complete the task — re-queue for another attempt and resume directive
             db.updateForemanTask(review.task_id, {
-              status: "queued",
-              retry_count: 0,
+              status: "queued", retry_count: 0,
               error_message: `Style lock failed: ${err instanceof Error ? err.message : String(err)}`,
             });
-            shouldResume = true; // ensure directive doesn't stay stuck in paused
           }
         }
         break;
@@ -610,31 +463,23 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
     }
   }
 
-  // Check if all pending reviews are now responded
   const stillPending = db.getPendingReviewsForDirective(directive.id);
   if (stillPending.length === 0 || shouldResume) {
     db.updateDirectorDirective(directive.id, { status: "active" });
     saveProgress(db, directive);
-    // Re-nudge to process the now-active directive
     nudgeDirector(db);
   }
 }
 
 // ─── Idle machine detection ─────────────────────────────────────────────────
 
-/**
- * Detect machine types that have available capacity but no queued/running tasks
- * for the current directive+milestone. Returns machine types that need work.
- */
 function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): string[] {
   const machines = db.getMachines().filter(m => m.enabled);
   const machineTypes = new Set(machines.map(m => m.machine_type));
 
-  // Get current queued/running tasks for this milestone
   const tasks = db.getDirectiveTasks(directiveId, milestoneId);
   const activeTasks = tasks.filter(t => t.status === "queued" || t.status === "running");
 
-  // For each machine type, check if there are any queued tasks that would route to it
   const idleTypes: string[] = [];
   for (const machineType of machineTypes) {
     const taskTypes = MACHINE_TYPE_TASK_TYPES[machineType];
@@ -642,16 +487,10 @@ function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): 
 
     const hasWork = activeTasks.some(t => taskTypes.has(t.type));
     if (!hasWork) {
-      // Verify the machine type actually has available capacity
-      const candidates = db.getMachines().filter(m => m.enabled && m.machine_type === machineType);
-      const available = candidates.find(m => hasCapacity(m));
-      if (available) {
-        idleTypes.push(machineType);
-      }
+      const available = machines.find(m => m.machine_type === machineType && hasCapacity(m));
+      if (available) idleTypes.push(machineType);
     }
   }
 
   return idleTypes;
 }
-
-
