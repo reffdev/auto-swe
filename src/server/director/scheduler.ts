@@ -84,7 +84,17 @@ export function startDirectorScheduler(db: Db): void {
       // Index memories (always, even when disabled)
       indexMemories(project.workdir).catch(() => {});
 
-      // Only run style exploration when enabled
+      // Pre-set directorBusy if style exploration will need an LLM call.
+      // This blocks the foreman from dispatching before the director tick runs.
+      if (config.enabled && needsStyleLock(db, project)) {
+        const hasStyleTask = db.getForemanTasks(project.id).some(
+          (t: { type: string }) => t.type === "style_exploration"
+        );
+        if (!hasStyleTask) {
+          directorBusy = true;
+        }
+      }
+
       if (config.enabled) {
         ensureStyleExploration(db, project);
       }
