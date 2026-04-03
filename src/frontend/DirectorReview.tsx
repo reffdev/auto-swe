@@ -80,7 +80,7 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="px-6 py-6 max-w-2xl space-y-6">
+        <div className="px-6 py-6 space-y-6">
           {/* Question */}
           <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-4">
             <p className="text-sm font-medium">{review.question}</p>
@@ -125,6 +125,7 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
               taskId={context.task_id ?? ""}
               onLock={(selectedIndex, feedback, run) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback, run }))}
               onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }))}
+              onRegenerate={() => handleRespond(JSON.stringify({ action: 'regenerate' }))}
               submitting={submitting}
             />
           )}
@@ -163,10 +164,11 @@ export function DirectorReview({ reviewId, onBack }: { reviewId: string; onBack:
 
 interface RunInfo { attempt: number; fileCount: number }
 
-function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
+function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, submitting }: {
   taskId: string
   onLock: (selectedIndex: number, feedback: string, run?: number) => void
   onRefine: (feedback: string) => void
+  onRegenerate: () => void
   submitting: boolean
 }) {
   const [files, setFiles] = useState<string[]>([])
@@ -274,10 +276,17 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, submitting }: {
         </Button>
         <Button
           variant="outline"
+          onClick={onRegenerate}
+          disabled={submitting}
+        >
+          Regenerate (Same Prompts)
+        </Button>
+        <Button
+          variant="outline"
           onClick={() => onRefine(feedback || 'Generate new variations')}
           disabled={submitting}
         >
-          Refine &amp; Try Again
+          Refine Prompts
         </Button>
       </div>
     </div>

@@ -18,21 +18,20 @@ import { nudgeForeman } from "../foreman/scheduler";
 
 const STYLE_PROMPT_SYSTEM = `You are an expert art director generating style exploration prompts for a game/project.
 
-Given a project description, write 6 DIFFERENT art prompts — each exploring a distinct visual style direction.
+Given a project description, write 6 DIFFERENT art prompts that explore variations WITHIN the project's intended art style.
 
 Rules:
+- Read the project description carefully to determine the intended art style (e.g., pixel art, 3D, hand-drawn, etc.)
+- ALL 6 prompts must use that SAME base art style — do NOT mix styles (no watercolor if the game is pixel art)
 - Each prompt should describe the SAME representative subject (a character, scene, or object from the project)
-- Each prompt should use a DIFFERENT art style (e.g., pixel art, watercolor, cel-shaded, oil painting, flat vector, retro 16-bit)
-- Be specific per prompt: art style, color palette, lighting, mood, rendering technique
+- Vary the aesthetics WITHIN the style: color palette, mood, lighting, level of detail, rendering approach
+- Examples of meaningful variation within pixel art: warm vs cool palette, high vs low contrast, minimal vs detailed, retro 4-color vs rich 32-bit, dark moody vs bright cheerful
 - Include specific colors as descriptive words (e.g., "deep purple shadows", "gold accents", "cyan glow")
 - Do NOT include technical tags like resolution, transparent background, etc.
 - Keep each prompt under 100 words
-- The selected image will become an IP-Adapter style reference — each prompt should clearly embody a distinct aesthetic
+- The selected image will become an IP-Adapter style reference for ALL future art — it must represent the project's visual identity
 
-Respond with a JSON array of exactly 6 prompt strings. No explanation, no formatting — just the JSON array.
-
-Example format:
-["pixel art knight with golden armor on castle wall, warm sunset palette, clean outlines, 16-bit aesthetic", "watercolor knight in silver armor, soft edges, muted blues and greens, dreamy atmosphere", ...]`;
+Respond with a JSON array of exactly 6 prompt strings. No explanation, no formatting — just the JSON array.`;
 
 /**
  * Create a style_exploration task with a focused LLM call for the art prompt.
@@ -136,7 +135,7 @@ export async function createStyleExplorationTask(
     `[preset: fast_draft]`,
     `[prompts: ${JSON.stringify(stylePrompts)}]`,
     `[variation_count: 6]`,
-    `[output: assets/style_exploration/]`,
+    `[output: .swe/art/style_exploration/]`,
     ``,
     `Each variation uses a different prompt exploring a distinct visual style.`,
     `The selected style will be used as the IP-Adapter reference for all future art generation.`,

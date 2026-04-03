@@ -54,21 +54,33 @@ function runSingleValidation(
     };
   }
 
-  // Pattern: "$ command" — run a shell command, exit 0 = pass
+  // Pattern: "$ command" or "Run: command" — run a shell command, exit 0 = pass
   // Note: commands come from YAML task files on disk (trusted source).
   // Reject obviously dangerous patterns as a safety net.
-  const shellMatch = criterion.match(/^\$\s+(.+)/);
+  const shellMatch = criterion.match(/^\$\s+(.+)/) ?? criterion.match(/^Run:\s+(.+)/i);
   if (shellMatch) {
-    const cmd = shellMatch[1];
+    let cmd = shellMatch[1];
+    // Strip trailing "returns N" expectation (e.g., "find ... | wc -l returns 15")
+    const returnsMatch = cmd.match(/\s+returns?\s+(.+)$/i);
+    let expectedOutput: string | null = null;
+    if (returnsMatch) {
+      expectedOutput = returnsMatch[1].trim();
+      cmd = cmd.slice(0, -returnsMatch[0].length);
+    }
     const dangerous = /rm\s+-rf|rmdir|del\s+\/|format\s|mkfs|dd\s+if=|>\s*\/dev/i;
     if (dangerous.test(cmd)) {
       return { criterion, passed: false, output: "Command rejected: contains dangerous pattern" };
     }
     const result = spawnSync(cmd, { cwd: workdir, shell: true, timeout: 60_000 });
-    const output = (result.stdout?.toString() ?? "") + (result.stderr?.toString() ?? "");
+    const output = ((result.stdout?.toString() ?? "") + (result.stderr?.toString() ?? "")).trim();
+    let passed = result.status === 0;
+    // If "returns X" was specified, also check the output matches
+    if (passed && expectedOutput) {
+      passed = output.trim() === expectedOutput;
+    }
     return {
       criterion,
-      passed: result.status === 0,
+      passed,
       output: output.slice(0, 2000) || `Exit code: ${result.status}`,
     };
   }

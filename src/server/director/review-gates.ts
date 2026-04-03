@@ -95,7 +95,7 @@ export function shouldPauseDirective(db: Db, directive: DirectorDirective): bool
  */
 export function processReviewResponse(
   review: DirectorReview,
-): { action: "resume" | "retry_task" | "generate_tasks" | "lock_style"; context: string } {
+): { action: "resume" | "retry_task" | "generate_tasks" | "lock_style" | "regenerate_style"; context: string } {
   const response = review.response ?? "";
 
   switch (review.review_type) {
@@ -121,9 +121,13 @@ export function processReviewResponse(
     case "style_selection": {
       // Human selected a style from exploration variations
       try {
-        const parsed = JSON.parse(response) as { action: "lock" | "refine"; selected?: number[]; feedback?: string };
+        const parsed = JSON.parse(response) as { action: "lock" | "refine" | "regenerate"; selected?: number[]; feedback?: string; run?: number };
         if (parsed.action === "lock") {
           return { action: "lock_style", context: JSON.stringify(parsed) };
+        }
+        if (parsed.action === "regenerate") {
+          // Re-run with same prompts, different seeds — preserve current assets
+          return { action: "regenerate_style", context: JSON.stringify(parsed) };
         }
         return { action: "retry_task", context: `Style refinement: ${parsed.feedback ?? "try again"}` };
       } catch {

@@ -201,7 +201,7 @@ export function buildPlanningPrompt(opts: {
     "    [preset: concept]",
     "    [prompt: pixel art ancient spellbook on a stone altar, dark fantasy, deep purples and midnight blues, gold arcane symbols, glowing cyan accents]",
     "    [variation_count: 6]",
-    "    [output: assets/style_exploration/]",
+    "    [output: .swe/art/style_exploration/]",
   ];
 
   // Style lock awareness

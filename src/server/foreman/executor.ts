@@ -87,9 +87,6 @@ export async function executeForemanTask(
     // On retry, try to reuse the existing worktree to preserve previous work
     await withProjectLock(project.id, async () => {
       await ensureWorkdir(project);
-      if (task.retry_count === 0) {
-        await resetToOrigin(project);
-      }
       await setupWorktree(project.workdir, worktreePath, branch);
     });
 

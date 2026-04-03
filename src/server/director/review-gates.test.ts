@@ -97,6 +97,14 @@ describe("processReviewResponse", () => {
     expect(result.context).toContain("more purple tones");
   });
 
+  it("style_selection with regenerate action returns regenerate_style", () => {
+    const result = processReviewResponse(makeReview({
+      review_type: "style_selection",
+      response: JSON.stringify({ action: "regenerate" }),
+    }));
+    expect(result.action).toBe("regenerate_style");
+  });
+
   it("style_selection with plain text feedback retries task", () => {
     const result = processReviewResponse(makeReview({
       review_type: "style_selection",

@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, copyFileSync, readdirSync } from "fs";
 import { resolve, basename } from "path";
 import { extractTag } from "./task-types";
+import { styleExplorationDir, styleExplorationRunDir, artHistoryRunDir } from "./paths";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 const AUDIO_EXTS = new Set([".wav", ".mp3", ".ogg"]);
@@ -22,24 +23,22 @@ function isAssetFile(filename: string): boolean {
  */
 export function archiveGalleryAssets(
   projectWorkdir: string,
-  taskIdSlice: string,
+  taskId: string,
   attempt: number,
 ): string[] {
-  const galleryDir = resolve(projectWorkdir, "assets", "style_exploration", taskIdSlice);
+  const galleryDir = styleExplorationDir(projectWorkdir, taskId);
   if (!existsSync(galleryDir)) return [];
 
   const files = readdirSync(galleryDir).filter(f => isAssetFile(f) && !f.startsWith("."));
   if (files.length === 0) return [];
 
-  const runDir = resolve(galleryDir, `run_${attempt}`);
+  const runDir = styleExplorationRunDir(projectWorkdir, taskId, attempt);
   mkdirSync(runDir, { recursive: true });
 
   const archived: string[] = [];
   for (const file of files) {
-    const src = resolve(galleryDir, file);
-    const dest = resolve(runDir, file);
-    copyFileSync(src, dest);
-    archived.push(`assets/style_exploration/${taskIdSlice}/run_${attempt}/${file}`);
+    copyFileSync(resolve(galleryDir, file), resolve(runDir, file));
+    archived.push(resolve(runDir, file));
   }
 
   return archived;
@@ -51,7 +50,7 @@ export function archiveGalleryAssets(
  */
 export function archiveSingleAsset(
   projectWorkdir: string,
-  taskIdSlice: string,
+  taskId: string,
   outputPath: string,
   attempt: number,
 ): string[] {
@@ -59,13 +58,13 @@ export function archiveSingleAsset(
   if (!existsSync(fullPath)) return [];
 
   const filename = basename(fullPath);
-  const historyDir = resolve(projectWorkdir, "assets", "art_history", taskIdSlice, `run_${attempt}`);
-  mkdirSync(historyDir, { recursive: true });
+  const histDir = artHistoryRunDir(projectWorkdir, taskId, attempt);
+  mkdirSync(histDir, { recursive: true });
 
-  const dest = resolve(historyDir, filename);
+  const dest = resolve(histDir, filename);
   copyFileSync(fullPath, dest);
 
-  return [`assets/art_history/${taskIdSlice}/run_${attempt}/${filename}`];
+  return [dest];
 }
 
 /**
@@ -79,16 +78,14 @@ export function archiveCurrentAssets(
   taskDescription: string,
   attempt: number,
 ): string[] {
-  const taskIdSlice = taskId.slice(0, 8);
-
   if (taskType === "style_exploration") {
-    return archiveGalleryAssets(projectWorkdir, taskIdSlice, attempt);
+    return archiveGalleryAssets(projectWorkdir, taskId, attempt);
   }
 
   // Single-output art/music/sfx
   const outputPath = extractTag(taskDescription, "output");
   if (outputPath) {
-    return archiveSingleAsset(projectWorkdir, taskIdSlice, outputPath, attempt);
+    return archiveSingleAsset(projectWorkdir, taskId, outputPath, attempt);
   }
 
   return [];

@@ -25,6 +25,7 @@ import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
 import { hasCapacity } from "../machine-manager";
 import { handleStyleLock } from "./style-lock-handler";
+import { archiveCurrentAssets } from "../foreman/asset-archive";
 import { createStyleExplorationTask } from "./style-exploration";
 
 // ─── Module state ────────────────────────────────────────────────────────────
@@ -447,6 +448,27 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
         const activeMilestone = db.getActiveMilestone(directive.id);
         if (activeMilestone) {
           await planTasks(db, directive, project, activeMilestone, "human-directed");
+        }
+        break;
+      }
+
+      case "regenerate_style": {
+        // Re-run style exploration with same prompts but different seeds — preserve current assets
+        shouldResume = true;
+        if (review.task_id) {
+          const task = db.getForemanTask(review.task_id);
+          if (task) {
+            // Archive current gallery before re-queue
+            const runs = db.getForemanRunsForTask(task.id);
+            const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
+            archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
+            console.log(`Director: archived style exploration run ${attempt}, re-queuing with same prompts`);
+          }
+          // Re-queue WITHOUT modifying the description — same prompts, new seeds
+          db.updateForemanTask(review.task_id, {
+            status: "queued", retry_count: 0, error_message: null, next_retry_at: null, machine_id: null,
+          });
+          nudgeForeman(db);
         }
         break;
       }
