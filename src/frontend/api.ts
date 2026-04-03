@@ -499,6 +499,8 @@ export interface ForemanConfig {
   director_machine_id: string | null;
   director_model_id: string | null;
   analysis_enabled: number;
+  continuous_exploration: number;
+  exploration_preset: string;
   created_at: string;
 }
 

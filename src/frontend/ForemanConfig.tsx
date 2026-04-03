@@ -18,6 +18,8 @@ export function ForemanConfig() {
   const [projectId, setProjectId] = useState('')
   const [tasksDir, setTasksDir] = useState('')
   const [priorityMode, setPriorityMode] = useState('parallel')
+  const [continuousExploration, setContinuousExploration] = useState(false)
+  const [explorationPreset, setExplorationPreset] = useState('concept')
 
   const load = useCallback(async () => {
     try {
@@ -32,6 +34,8 @@ export function ForemanConfig() {
         setProjectId(c.project_id ?? '')
         setTasksDir(c.tasks_dir ?? '')
         setPriorityMode(c.priority_mode)
+        setContinuousExploration(!!c.continuous_exploration)
+        setExplorationPreset(c.exploration_preset ?? 'concept')
       }
     } catch { /* ignore */ }
     finally { setLoading(false) }
@@ -48,6 +52,8 @@ export function ForemanConfig() {
         project_id: projectId || null,
         tasks_dir: tasksDir || null,
         priority_mode: priorityMode,
+        continuous_exploration: continuousExploration ? 1 : 0,
+        exploration_preset: explorationPreset,
       })
       setConfig(updated)
       setMessage('Configuration saved')
@@ -151,6 +157,60 @@ export function ForemanConfig() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Continuous Art Exploration */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium block">Continuous Art Exploration</span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setContinuousExploration(!continuousExploration)}
+                className={cn(
+                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                  continuousExploration ? 'bg-emerald-500' : 'bg-muted',
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block size-4 rounded-full bg-white transition-transform',
+                    continuousExploration ? 'translate-x-6' : 'translate-x-1',
+                  )}
+                />
+              </button>
+              <span className="text-sm text-muted-foreground">
+                {continuousExploration ? 'On — generates art batches continuously' : 'Off'}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              When enabled, style exploration runs in a loop — each batch generates fresh prompts via LLM,
+              renders them, and immediately starts the next batch. Leave on overnight to build a gallery.
+            </p>
+            {continuousExploration && (
+              <div className="mt-3 space-y-2">
+                <span className="text-xs font-medium block text-muted-foreground">Preset</span>
+                <div className="flex gap-2">
+                  {[
+                    { value: 'concept', label: 'FLUX.2 (concept)', desc: 'High quality, slower' },
+                    { value: 'fast_draft', label: 'SDXL (fast)', desc: 'Fast drafts, lower quality' },
+                    { value: 'pixel_sprite', label: 'Pixel Art', desc: 'SDXL + pixel LoRA' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setExplorationPreset(opt.value)}
+                      className={cn(
+                        'flex-1 px-3 py-2 rounded-md border text-sm transition-colors',
+                        explorationPreset === opt.value
+                          ? 'border-primary bg-primary/10 text-foreground'
+                          : 'border-border text-muted-foreground hover:border-primary/50',
+                      )}
+                    >
+                      <div className="font-medium text-xs">{opt.label}</div>
+                      <div className="text-[10px] mt-0.5 text-muted-foreground">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Save */}

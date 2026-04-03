@@ -15,6 +15,7 @@ import { selectPlannerMachine } from "../planner-llm";
 import { logEpisodic } from "./persistent-memory";
 import { getMemoryContext } from "./memory-context";
 import { nudgeForeman } from "../foreman/scheduler";
+import { isStyleLocked } from "./style-lock";
 
 const STYLE_PROMPT_SYSTEM = `You are an expert art director generating style exploration prompts for a game/project.
 
@@ -133,12 +134,14 @@ export async function createStyleExplorationTask(
     return null;
   }
 
-  // Build the task description — use fast_draft (SDXL) for fast iteration,
-  // with different prompts per variation to explore distinct art directions
+  // Use configured preset (continuous exploration mode uses FLUX.2 "concept", default uses SDXL "fast_draft")
+  const config = db.getForemanConfig();
+  const preset = config?.continuous_exploration ? (config.exploration_preset || "concept") : "fast_draft";
+
   const description = [
     `Generate 6 style variations for visual style exploration, each with a different art direction.`,
     ``,
-    `[preset: fast_draft]`,
+    `[preset: ${preset}]`,
     `[prompts: ${JSON.stringify(stylePrompts)}]`,
     `[variation_count: 6]`,
     `[output: .swe/art/style_exploration/]`,
@@ -170,4 +173,45 @@ export async function createStyleExplorationTask(
   nudgeForeman(db);
 
   return task.id;
+}
+
+/**
+ * Queue the next batch of continuous exploration.
+ * Called from the ComfyUI executor after a style exploration task completes
+ * when continuous_exploration is enabled. Generates fresh prompts via LLM
+ * and creates a new style exploration task.
+ */
+export async function queueContinuousExploration(
+  db: Db,
+  completedTask: { directive_id: string | null; milestone_id: string | null; project_id: string | null },
+): Promise<void> {
+  if (!completedTask.directive_id) return;
+
+  const directive = db.getDirectorDirective(completedTask.directive_id);
+  if (!directive) return;
+
+  const project = db.getProject(directive.project_id);
+  if (!project) return;
+
+  // Use the task's milestone or find the active one
+  const milestone = completedTask.milestone_id
+    ? db.getDirectorMilestone(completedTask.milestone_id)
+    : db.getActiveMilestone(directive.id);
+  if (!milestone) return;
+
+  // Check if style was locked while this batch was generating
+  if (isStyleLocked(project.workdir)) {
+    console.log("Continuous exploration: style already locked, stopping");
+    return;
+  }
+
+  // Re-check config in case user turned it off
+  const config = db.getForemanConfig();
+  if (!config?.continuous_exploration) {
+    console.log("Continuous exploration: disabled, stopping");
+    return;
+  }
+
+  console.log("Continuous exploration: generating fresh prompts for next batch...");
+  await createStyleExplorationTask(db, directive, project, milestone);
 }

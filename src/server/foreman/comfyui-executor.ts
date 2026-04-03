@@ -26,6 +26,8 @@ import { styleExplorationDir, comfyuiOutputDir, styleRefFilename } from "./paths
 import { postProcessImage } from "./post-process";
 import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
 import { createReviewGate } from "../director/review-gates";
+import { archiveCurrentAssets } from "./asset-archive";
+import { queueContinuousExploration } from "../director/style-exploration";
 
 /**
  * Execute a ComfyUI generation task.
@@ -302,6 +304,21 @@ export async function executeComfyUITask(
           context: { type: task.type, task_id: task.id },
         });
         console.log(`ComfyUI: created ${reviewType} review gate for "${task.title}"`);
+      }
+    }
+
+    // Continuous exploration: archive this batch and queue another with fresh prompts
+    if (isStyleExploration) {
+      const config = db.getForemanConfig();
+      if (config?.continuous_exploration && task.directive_id) {
+        const runs = db.getForemanRunsForTask(task.id);
+        const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
+        archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
+        console.log(`ComfyUI: continuous exploration — archived run ${attempt}, queuing next batch`);
+        // Fire-and-forget — don't block the executor
+        queueContinuousExploration(db, task).catch(err => {
+          console.error("ComfyUI: continuous exploration failed to queue next batch:", err instanceof Error ? err.message : err);
+        });
       }
     }
 

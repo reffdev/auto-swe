@@ -242,6 +242,8 @@ export class Db {
       "ALTER TABLE foreman_config ADD COLUMN director_machine_id TEXT",
       "ALTER TABLE foreman_config ADD COLUMN director_model_id TEXT",
       "ALTER TABLE foreman_config ADD COLUMN analysis_enabled INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE foreman_config ADD COLUMN continuous_exploration INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE foreman_config ADD COLUMN exploration_preset TEXT NOT NULL DEFAULT 'concept'",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
