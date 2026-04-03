@@ -101,7 +101,10 @@ async function schedulerTick(db: Db): Promise<void> {
 
   // Wait for Director to finish before dispatching new tasks
   const { isDirectorBusy } = require("../director/scheduler") as typeof import("../director/scheduler");
-  if (isDirectorBusy()) return;
+  if (isDirectorBusy()) {
+    console.log("Foreman: waiting — director is busy");
+    return;
+  }
 
   const project = db.getProject(config.project_id);
   if (!project) {

@@ -92,6 +92,7 @@ export function startDirectorScheduler(db: Db): void {
         );
         if (!hasStyleTask) {
           directorBusy = true;
+          console.log("Director: pre-setting directorBusy for style exploration LLM call");
         }
       }
 
