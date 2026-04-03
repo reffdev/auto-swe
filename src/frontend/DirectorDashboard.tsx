@@ -124,9 +124,15 @@ export function DirectorDashboard() {
             <span className="font-medium">{pendingReviews.length} review{pendingReviews.length !== 1 ? 's' : ''} need your attention</span>
           </div>
           <div className="mt-2 space-y-1">
-            {pendingReviews.map(r => (
-              <div key={r.id} className="flex items-center gap-1 group">
-                <button onClick={() => navigate(`/director/review/${r.id}`)}
+            {pendingReviews.map(r => {
+              let ctx: Record<string, unknown> = {}
+              try { ctx = JSON.parse(r.context) } catch { /* ignore */ }
+              const isCommitReview = ctx.type === 'unattributed_commits'
+              const href = isCommitReview
+                ? `/director/commits/${ctx.project_id as string}`
+                : `/director/review/${r.id}`
+              return <div key={r.id} className="flex items-center gap-1 group">
+                <button onClick={() => navigate(href)}
                   className="flex-1 text-xs text-muted-foreground hover:text-foreground transition-colors truncate text-left">
                   [{r.review_type}] {r.question}
                 </button>
@@ -138,7 +144,7 @@ export function DirectorDashboard() {
                   <X className="size-3" />
                 </button>
               </div>
-            ))}
+            })}
           </div>
         </div>
       )}

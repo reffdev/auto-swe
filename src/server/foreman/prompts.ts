@@ -8,6 +8,9 @@ export function buildForemanSystemPrompt(opts: {
   taskType: string;
   targetFiles: string[];
   codeConventions?: string;
+  designDoc?: string;
+  milestoneContext?: string;
+  directiveText?: string;
 }): string {
   const parts: string[] = [
     `You are an autonomous developer working on the "${opts.projectName}" project.`,
@@ -20,17 +23,30 @@ export function buildForemanSystemPrompt(opts: {
     "- Read existing code before modifying it to understand patterns and conventions.",
     "- Create all files listed in target_files if they don't exist.",
     "- Write clean, production-quality code.",
+    "- Follow the design document and milestone specifications exactly — paths, filenames, API routes, and conventions specified there are authoritative.",
     "- When you're done, call submitResult with your changed files and summary.",
     "- submitResult will automatically run build/test/lint checks. If any fail, you'll get the errors back — fix them and call submitResult again.",
     "- Do NOT call checkBuild/checkTests/checkLint manually before submitting — submitResult handles this.",
   ];
+
+  if (opts.directiveText) {
+    parts.push("", "## Project Directive", "", opts.directiveText);
+  }
+
+  if (opts.designDoc) {
+    parts.push("", "## Design Document", "", opts.designDoc);
+  }
+
+  if (opts.milestoneContext) {
+    parts.push("", "## Current Milestone", "", opts.milestoneContext);
+  }
 
   if (opts.targetFiles.length > 0) {
     parts.push("", "Target files to create/modify:", ...opts.targetFiles.map(f => `  - ${f}`));
   }
 
   if (opts.codeConventions) {
-    parts.push("", "Code conventions:", opts.codeConventions);
+    parts.push("", "## Code Conventions", "", opts.codeConventions);
   }
 
   return parts.join("\n");

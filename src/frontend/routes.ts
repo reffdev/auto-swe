@@ -19,6 +19,7 @@ export const ROUTE_PATHS = [
   '/director/:directiveId',
   '/director/:directiveId/conversation',
   '/director/review/:reviewId',
+  '/director/commits/:projectId',
   '/terminal/:projectId',
 ] as const;
 
@@ -40,4 +41,5 @@ export type ViewName =
   | 'director-detail'
   | 'director-conversation'
   | 'director-review'
+  | 'manual-commits'
   | 'terminal'

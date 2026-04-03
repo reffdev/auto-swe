@@ -5,6 +5,8 @@
  * Reuses runStage() from the pipeline for the actual LLM execution.
  */
 
+import { readFileSync } from "fs";
+import { resolve } from "path";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { runStage } from "../pipeline/run-stage";
 import { withProjectLock } from "../pipeline/index";
@@ -107,8 +109,34 @@ export async function executeForemanTask(
     });
     const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
-    // Build prompts
+    // Build prompts — include directive/milestone context so the implementer
+    // understands the broader project architecture and conventions
     const { conventionText } = getMemoryContext(project.workdir);
+
+    let designDoc: string | undefined;
+    let milestoneContext: string | undefined;
+    let directiveText: string | undefined;
+
+    if (task.directive_id) {
+      const directive = db.getDirectorDirective(task.directive_id);
+      if (directive) {
+        directiveText = directive.directive;
+        if (directive.design_doc_path) {
+          try {
+            designDoc = readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8");
+          } catch { /* skip — file may not exist */ }
+        }
+      }
+    }
+    if (task.milestone_id) {
+      const milestone = db.getDirectorMilestone(task.milestone_id);
+      if (milestone) {
+        const parts = [`Milestone: ${milestone.title}`];
+        if (milestone.description) parts.push(milestone.description);
+        if (milestone.verification) parts.push(`Verification: ${milestone.verification}`);
+        milestoneContext = parts.join("\n");
+      }
+    }
 
     const systemPrompt = buildForemanSystemPrompt({
       projectName: project.name,
@@ -116,6 +144,9 @@ export async function executeForemanTask(
       taskType: task.type,
       targetFiles,
       codeConventions: conventionText || undefined,
+      designDoc,
+      milestoneContext,
+      directiveText,
     });
 
     // Get previous error and output for reflective retry

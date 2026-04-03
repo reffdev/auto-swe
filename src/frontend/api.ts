@@ -708,6 +708,30 @@ export function dismissReview(reviewId: string): Promise<DirectorReview> {
   return json(`/api/director/reviews/${reviewId}/dismiss`, { method: "POST" });
 }
 
+// ─── Manual Commits ──────────────────────────────────────────────────────────
+
+export interface UnattributedCommit {
+  sha: string;
+  author: string;
+  date: string;
+  message: string;
+}
+
+export function getUnattributedCommits(projectId: string): Promise<{ commits: UnattributedCommit[] }> {
+  return json(`/api/director/unattributed-commits?project_id=${projectId}`);
+}
+
+export function submitManualCommits(data: {
+  project_id: string;
+  title: string;
+  description: string;
+  commit_shas: string[];
+  directive_id?: string;
+  milestone_id?: string;
+}): Promise<ForemanTask> {
+  return json("/api/director/submit-commits", { method: "POST", body: JSON.stringify(data) });
+}
+
 // ─── Project Overview ────────────────────────────────────────────────────────
 
 export interface ProjectOverviewData {

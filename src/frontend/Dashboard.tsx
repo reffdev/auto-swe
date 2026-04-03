@@ -19,6 +19,7 @@ import { DirectorConversation } from './DirectorConversation'
 import { DirectorReview } from './DirectorReview'
 import { ProjectOverview } from './ProjectOverview'
 import { TerminalView } from './Terminal'
+import { ManualCommits } from './ManualCommits'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
 
@@ -145,6 +146,8 @@ export function DashboardLayout({ view }: { view: ViewName }) {
               return directiveId ? <DirectorConversation directiveId={directiveId} onBack={() => navigate('/director')} /> : null
             case 'director-review':
               return reviewId ? <DirectorReview reviewId={reviewId} onBack={() => navigate('/director')} onNavigateReview={(id) => navigate(`/director/review/${id}`)} /> : null
+            case 'manual-commits':
+              return projectId ? <ManualCommits projectId={projectId} onBack={() => navigate('/director')} /> : null
             case 'terminal':
               return <TerminalView projectId={projectId ?? ''} onBack={() => navigate('/')} />
           }

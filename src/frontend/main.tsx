@@ -21,6 +21,7 @@ const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/foreman/config', view: 'foreman-config' },
   { path: '/director', view: 'director-dashboard' },
   { path: '/director/review/:reviewId', view: 'director-review' },
+  { path: '/director/commits/:projectId', view: 'manual-commits' },
   { path: '/director/:directiveId/conversation', view: 'director-conversation' },
   { path: '/director/:directiveId', view: 'director-detail' },
   { path: '/terminal/:projectId', view: 'terminal' },
