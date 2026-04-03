@@ -11,7 +11,7 @@
  */
 
 import { resolve } from "path";
-import { spawnSync } from "child_process";
+
 import type { Db, DirectorDirective, ForemanTask, Project } from "../db";
 import { removeWorktree, mergePullRequest, createPullRequest } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
@@ -29,6 +29,7 @@ import { handleStyleLock } from "./style-lock-handler";
 import { archiveCurrentAssets } from "../foreman/asset-archive";
 import { createStyleExplorationTask, queueContinuousExploration } from "./style-exploration";
 import { extractTaskKnowledge } from "./task-knowledge-extractor";
+import { getUnattributedCommits } from "./unattributed-commits";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -333,55 +334,26 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
  * Creates a single review gate notification if found (deduped).
  */
 function checkForUnattributedCommits(db: Db, directive: DirectorDirective, project: Project): void {
-  // Only check if there isn't already a pending "unattributed_commits" review
   const existing = db.getDirectorReviews(directive.id).filter(
     r => r.review_type === "task_verify" && r.status === "pending" && r.question.includes("unattributed commits")
   );
   if (existing.length > 0) return;
 
-  try {
-    const result = spawnSync("git", ["log", "--format=%H\t%s", "-20"], {
-      cwd: project.workdir, encoding: "utf-8", timeout: 5_000,
+  const unattributed = getUnattributedCommits(db, project);
+  if (unattributed.length > 0) {
+    createReviewGate(db, {
+      directive_id: directive.id,
+      review_type: "task_verify",
+      question: `${unattributed.length} unattributed commits found on main. Describe what they accomplish so the planner can account for them.`,
+      context: {
+        type: "unattributed_commits",
+        project_id: project.id,
+        count: unattributed.length,
+        commits: unattributed.slice(0, 5).map(c => `${c.sha.slice(0, 8)} ${c.message}`),
+      },
     });
-    if (result.status !== 0) return;
-
-    // Collect attributed SHAs
-    const allTasks = db.getForemanTasks(project.id);
-    const attributedSHAs = new Set<string>();
-    for (const task of allTasks) {
-      const commitMatch = task.description.match(/\[commits:\s*(.+?)\]/);
-      if (commitMatch) {
-        for (const sha of commitMatch[1].split(",").map(s => s.trim())) {
-          attributedSHAs.add(sha);
-        }
-      }
-    }
-
-    const unattributed = result.stdout.trim().split("\n")
-      .filter(Boolean)
-      .map(line => { const [sha, ...msg] = line.split("\t"); return { sha, message: msg.join("\t") }; })
-      .filter(c => {
-        if (c.message.startsWith("[Foreman")) return false;
-        if (c.message.startsWith("Merge pull request") || c.message.startsWith("Merge branch")) return false;
-        if (attributedSHAs.has(c.sha)) return false;
-        return true;
-      });
-
-    if (unattributed.length > 0) {
-      createReviewGate(db, {
-        directive_id: directive.id,
-        review_type: "task_verify",
-        question: `${unattributed.length} unattributed commits found on main. Describe what they accomplish so the planner can account for them.`,
-        context: {
-          type: "unattributed_commits",
-          project_id: project.id,
-          count: unattributed.length,
-          commits: unattributed.slice(0, 5).map(c => `${c.sha.slice(0, 8)} ${c.message}`),
-        },
-      });
-      console.log(`Director: ${unattributed.length} unattributed commit(s) on main — notifying`);
-    }
-  } catch { /* git not available or error — skip silently */ }
+    console.log(`Director: ${unattributed.length} unattributed commit(s) on main — notifying`);
+  }
 }
 
 /** Complete a verified task: mark completed, clean up worktree. */

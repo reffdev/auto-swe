@@ -5,6 +5,7 @@
 import { Router } from "express";
 import { spawnSync } from "child_process";
 import type { Db } from "../db";
+import { getUnattributedCommits } from "./unattributed-commits";
 import { selectPlannerMachine } from "../planner-llm";
 import { generateDirectorResponse, getDirectorStream, isDirectorGenerating } from "./conversation";
 import { decomposeDirective } from "./decomposer";
@@ -354,11 +355,6 @@ export function createDirectorRouter(db: Db): Router {
 
   // ─── Manual Commits ─────────────────────────────────────────────────────
 
-  /**
-   * List commits on main that aren't attributed to any foreman task.
-   * Returns commits that don't have [Foreman #...] in the message
-   * and whose SHA isn't already recorded in a manual commit task.
-   */
   router.get("/unattributed-commits", (req, res) => {
     const { project_id } = req.query as { project_id?: string };
     if (!project_id) return res.status(400).json({ error: "project_id required" });
@@ -366,58 +362,7 @@ export function createDirectorRouter(db: Db): Router {
     const project = db.getProject(project_id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    // Get recent commits on the default branch
-    const result = spawnSync("git", [
-      "log", "--format=%H\t%an\t%aI\t%s", "-100",
-    ], { cwd: project.workdir, encoding: "utf-8", timeout: 10_000 });
-
-    if (result.status !== 0) {
-      return res.json({ commits: [] });
-    }
-
-    // Collect SHAs already attributed (in foreman task descriptions as [commits: ...])
-    const allTasks = db.getForemanTasks(project_id);
-    const attributedSHAs = new Set<string>();
-    for (const task of allTasks) {
-      // Foreman-generated tasks have branches
-      if (task.git_branch) {
-        // Get commits on this branch
-        try {
-          const branchLog = spawnSync("git", [
-            "log", "--format=%H", `origin/${task.git_branch}`, "--not", "origin/HEAD",
-          ], { cwd: project.workdir, encoding: "utf-8", timeout: 5_000 });
-          if (branchLog.status === 0) {
-            for (const sha of branchLog.stdout.trim().split("\n").filter(Boolean)) {
-              attributedSHAs.add(sha);
-            }
-          }
-        } catch { /* skip */ }
-      }
-      // Manual commit tasks store SHAs in description
-      const commitMatch = task.description.match(/\[commits:\s*(.+?)\]/);
-      if (commitMatch) {
-        for (const sha of commitMatch[1].split(",").map(s => s.trim())) {
-          attributedSHAs.add(sha);
-        }
-      }
-    }
-
-    const commits = result.stdout.trim().split("\n")
-      .filter(Boolean)
-      .map(line => {
-        const [sha, author, date, ...msgParts] = line.split("\t");
-        return { sha, author, date, message: msgParts.join("\t") };
-      })
-      .filter(c => {
-        // Skip foreman commits
-        if (c.message.startsWith("[Foreman")) return false;
-        // Skip merge commits from PR merges
-        if (c.message.startsWith("Merge pull request") || c.message.startsWith("Merge branch")) return false;
-        // Skip already attributed
-        if (attributedSHAs.has(c.sha)) return false;
-        return true;
-      });
-
+    const commits = getUnattributedCommits(db, project);
     res.json({ commits });
   });
 
