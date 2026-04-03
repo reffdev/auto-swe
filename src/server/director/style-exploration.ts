@@ -10,7 +10,8 @@
 import { createModel, generate } from "../llm";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
+import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } from "../db";
+import { extractTag } from "../foreman/task-types";
 import { selectPlannerMachine } from "../planner-llm";
 import { logEpisodic } from "./persistent-memory";
 import { getMemoryContext } from "./memory-context";
@@ -102,11 +103,17 @@ export async function createStyleExplorationTask(
 
   const model = createModel(machineInfo.machine, machineInfo.modelId);
 
+  // Gather previously used prompts to avoid repeats (important for FLUX.2 which is deterministic)
+  const previousPrompts = collectPreviousPrompts(db, project.id);
+  const avoidSection = previousPrompts.length > 0
+    ? `\n\nIMPORTANT — These prompts have ALREADY been generated. Do NOT repeat or closely paraphrase any of them:\n${previousPrompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
+    : "";
+
   let stylePrompts: string[];
   try {
     const text = (await generate(model, {
       system: STYLE_PROMPT_SYSTEM,
-      prompt: `Generate 6 style exploration prompts for this project:\n\n${context}`,
+      prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
     })).trim();
     // Extract JSON array from response (may have markdown fences)
     const jsonMatch = text.match(/\[[\s\S]*\]/);
@@ -214,4 +221,30 @@ export async function queueContinuousExploration(
 
   console.log("Continuous exploration: generating fresh prompts for next batch...");
   await createStyleExplorationTask(db, directive, project, milestone);
+}
+
+/**
+ * Collect all prompts from previous style exploration tasks for this project.
+ * Used to tell the LLM what's already been generated so it doesn't repeat.
+ */
+function collectPreviousPrompts(db: Db, projectId: string): string[] {
+  const tasks = db.getForemanTasks(projectId).filter(
+    (t: ForemanTask) => t.type === "style_exploration"
+  );
+
+  const allPrompts: string[] = [];
+  for (const task of tasks) {
+    const promptsTag = extractTag(task.description, "prompts");
+    if (promptsTag) {
+      try {
+        const parsed = JSON.parse(promptsTag);
+        if (Array.isArray(parsed)) {
+          for (const p of parsed) {
+            if (typeof p === "string") allPrompts.push(p);
+          }
+        }
+      } catch { /* skip unparseable */ }
+    }
+  }
+  return allPrompts;
 }
