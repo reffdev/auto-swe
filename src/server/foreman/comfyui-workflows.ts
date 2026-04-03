@@ -59,38 +59,74 @@ export function buildTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
   const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
   const isXL = opts.checkpoint.toLowerCase().includes("xl") || (opts.width ?? 512) >= 1024;
 
+  const width = opts.width ?? (isXL ? 1024 : 512);
+  const height = opts.height ?? (isXL ? 1024 : 512);
+  const negative = opts.negative ?? "blurry, low quality, watermark, text, signature";
+
   const workflow: Workflow = {
     // Load checkpoint
     "4": {
       class_type: "CheckpointLoaderSimple",
       inputs: { ckpt_name: opts.checkpoint },
     },
-    // Positive prompt
-    "6": {
-      class_type: "CLIPTextEncode",
-      inputs: {
-        text: opts.prompt,
-        clip: ["4", 1],
-      },
-    },
-    // Negative prompt
-    "7": {
-      class_type: "CLIPTextEncode",
-      inputs: {
-        text: opts.negative ?? "blurry, low quality, watermark, text, signature",
-        clip: ["4", 1],
-      },
-    },
+    // Positive prompt — use SDXL dual CLIP encoder for XL models
+    "6": isXL
+      ? {
+          class_type: "CLIPTextEncodeSDXL",
+          inputs: {
+            clip: ["4", 1],
+            // CLIP-L: short concrete subject description
+            text_l: opts.prompt,
+            // CLIP-G: full description with style and composition
+            text_g: opts.prompt,
+            width,
+            height,
+            crop_w: 0,
+            crop_h: 0,
+            target_width: width,
+            target_height: height,
+          },
+        }
+      : {
+          class_type: "CLIPTextEncode",
+          inputs: {
+            text: opts.prompt,
+            clip: ["4", 1],
+          },
+        },
+    // Negative prompt — SDXL dual encoder for XL, standard for SD1.5
+    "7": isXL
+      ? {
+          class_type: "CLIPTextEncodeSDXL",
+          inputs: {
+            clip: ["4", 1],
+            text_l: negative,
+            text_g: negative,
+            width,
+            height,
+            crop_w: 0,
+            crop_h: 0,
+            target_width: width,
+            target_height: height,
+          },
+        }
+      : {
+          class_type: "CLIPTextEncode",
+          inputs: {
+            text: negative,
+            clip: ["4", 1],
+          },
+        },
     // Empty latent image
     "5": {
       class_type: "EmptyLatentImage",
       inputs: {
-        width: opts.width ?? (isXL ? 1024 : 512),
-        height: opts.height ?? (isXL ? 1024 : 512),
+        width,
+        height,
         batch_size: opts.batch_size ?? 1,
       },
     },
-    // KSampler
+    // KSampler — default to dpmpp_2m + karras for SDXL (better prompt adherence)
     "3": {
       class_type: "KSampler",
       inputs: {
@@ -99,10 +135,10 @@ export function buildTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
         negative: ["7", 0],
         latent_image: ["5", 0],
         seed,
-        steps: opts.steps ?? 20,
+        steps: opts.steps ?? (isXL ? 25 : 20),
         cfg: opts.cfg ?? 7.0,
-        sampler_name: opts.sampler ?? "euler_ancestral",
-        scheduler: opts.scheduler ?? "normal",
+        sampler_name: opts.sampler ?? (isXL ? "dpmpp_2m" : "euler_ancestral"),
+        scheduler: opts.scheduler ?? (isXL ? "karras" : "normal"),
         denoise: 1.0,
       },
     },
@@ -483,35 +519,37 @@ export const PRESETS = {
     lora_strength: 0.85,
     width: 1024,
     height: 1024,
-    steps: 20,
-    cfg: 7.0,
-    sampler: "euler_ancestral",
-    negative: "blurry, anti-aliased, smooth, photorealistic, 3d render, watermark",
+    steps: 25,
+    cfg: 6.0,
+    sampler: "dpmpp_2m",
+    scheduler: "karras",
+    negative: "blurry, anti-aliased, smooth gradients, photorealistic, 3d render, ray tracing, watermark, text, signature, deformed",
   },
 
   /** Game background (SDXL) */
   background: {
     checkpoint: "sd_xl_base_1.0.safetensors",
-    width: 1024,
-    height: 768,
+    width: 1216,
+    height: 832,
     steps: 25,
-    cfg: 7.0,
+    cfg: 6.0,
     sampler: "dpmpp_2m",
     scheduler: "karras",
-    negative: "blurry, low quality, watermark, text, signature, ugly",
+    negative: "blurry, low quality, watermark, text, signature, deformed, ugly",
   },
 
-  /** Icon / UI element (SDXL + pixel LoRA) */
+  /** Icon / UI element (SDXL + pixel LoRA) — generate at 1024 and downscale */
   icon: {
     checkpoint: "sd_xl_base_1.0.safetensors",
     lora: "pixel-art-xl.safetensors",
     lora_strength: 0.7,
-    width: 512,
-    height: 512,
-    steps: 20,
-    cfg: 7.0,
-    sampler: "euler_ancestral",
-    negative: "blurry, watermark, text, complex background",
+    width: 1024,
+    height: 1024,
+    steps: 25,
+    cfg: 6.0,
+    sampler: "dpmpp_2m",
+    scheduler: "karras",
+    negative: "blurry, anti-aliased, smooth gradients, photorealistic, 3d render, watermark, text, complex background, deformed",
   },
 
   /** High quality concept art (FLUX.2-dev via UNETLoader + DualCLIPLoader) */
@@ -528,13 +566,13 @@ export const PRESETS = {
   /** Portrait / character art (SDXL) */
   portrait: {
     checkpoint: "sd_xl_base_1.0.safetensors",
-    width: 768,
-    height: 1024,
+    width: 832,
+    height: 1216,
     steps: 25,
-    cfg: 7.0,
+    cfg: 6.0,
     sampler: "dpmpp_2m",
     scheduler: "karras",
-    negative: "blurry, deformed, ugly, watermark, extra fingers, mutated hands",
+    negative: "blurry, deformed, ugly, watermark, text, extra fingers, mutated hands, bad anatomy, disfigured",
   },
 
   /** SD1.5 fallback for legacy fine-tunes */
@@ -554,10 +592,10 @@ export const PRESETS = {
     width: 1024,
     height: 1024,
     steps: 12,
-    cfg: 7.0,
-    sampler: "euler_ancestral",
-    scheduler: "normal",
-    negative: "blurry, low quality, watermark",
+    cfg: 6.0,
+    sampler: "dpmpp_2m",
+    scheduler: "karras",
+    negative: "blurry, low quality, watermark, text, deformed",
   },
 
   /** 2D game assets (SDXL + game assets LoRA) — sprites, items, props with clean backgrounds */
@@ -567,10 +605,11 @@ export const PRESETS = {
     lora_strength: 0.8,
     width: 1024,
     height: 1024,
-    steps: 20,
-    cfg: 7.0,
-    sampler: "euler_ancestral",
-    negative: "blurry, photorealistic, 3d render, watermark, complex background",
+    steps: 25,
+    cfg: 6.0,
+    sampler: "dpmpp_2m",
+    scheduler: "karras",
+    negative: "blurry, photorealistic, 3d render, ray tracing, watermark, text, complex background, deformed",
   },
 } as const satisfies Record<string, Partial<WorkflowOptions>>;
 

@@ -22,7 +22,7 @@ import {
 import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrlTool, lookupDocs } from "../tools";
 import { resolveModel } from "./routing";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
-import { validateAcceptanceCriteria } from "./validator";
+
 import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
 import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
@@ -126,17 +126,7 @@ export async function executeForemanTask(
       const prevRuns = db.getForemanRunsForTask(task.id);
       const lastRun = prevRuns[prevRuns.length - 1];
       if (lastRun) {
-        // Get the error — prefer validation failures over generic error
         previousError = lastRun.error_message ?? undefined;
-        if (lastRun.validation_output) {
-          try {
-            const vResults = JSON.parse(lastRun.validation_output);
-            const failures = vResults.filter((r: { passed: boolean }) => !r.passed);
-            if (failures.length > 0) {
-              previousError = `Validation failures:\n${failures.map((f: { criterion: string; output: string }) => `- ${f.criterion}: ${f.output}`).join("\n")}`;
-            }
-          } catch { /* ignore parse errors */ }
-        }
 
         // Also get the task-level error (may have lint/build details)
         if (!previousError && task.error_message) {
@@ -197,32 +187,13 @@ export async function executeForemanTask(
     const durationMs = Date.now() - run.startTime;
     run.breaker.recordSuccess();
 
-    // Update run with success
+    // Update run with success — director verifier handles acceptance criteria via LLM review
     db.updateForemanRun(run.foremanRun.id, {
-      status: "validating",
+      status: "pass",
       output: result ? JSON.stringify([{ step: 1, text: result, tokens: { prompt: 0, completion: 0 }, durationMs }]) : undefined,
       completed_at: new Date().toISOString(),
       duration_ms: durationMs,
     });
-
-    // Validate acceptance criteria
-    db.updateForemanTask(task.id, { status: "validating" });
-
-    if (acceptanceCriteria.length > 0) {
-      const validation = await validateAcceptanceCriteria(worktreePath, acceptanceCriteria, targetFiles);
-
-      db.updateForemanRun(run.foremanRun.id, {
-        validation_output: JSON.stringify(validation.results),
-        status: validation.allPassed ? "pass" : "fail",
-      });
-
-      if (!validation.allPassed) {
-        failTaskRun(run, `Acceptance criteria failed:\n${validation.results.filter(r => !r.passed).map(r => `- ${r.criterion}: ${r.output}`).join("\n")}`);
-        return;
-      }
-    } else {
-      db.updateForemanRun(run.foremanRun.id, { status: "pass" });
-    }
 
     // Git operations — commit, push, PR
     await withProjectLock(project.id, async () => {
