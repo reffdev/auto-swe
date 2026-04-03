@@ -20,6 +20,7 @@ import { DirectorReview } from './DirectorReview'
 import { ProjectOverview } from './ProjectOverview'
 import { TerminalView } from './Terminal'
 import { ManualCommits } from './ManualCommits'
+import { DirectorDetail } from './DirectorDetail'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
 
@@ -139,9 +140,7 @@ export function DashboardLayout({ view }: { view: ViewName }) {
             case 'director-dashboard':
               return <DirectorDashboard />
             case 'director-detail':
-              // For now, director detail shows the dashboard with the directive selected
-              // TODO: dedicated directive detail view with milestone timeline
-              return <DirectorDashboard />
+              return directiveId ? <DirectorDetail directiveId={directiveId} onBack={() => navigate('/director')} /> : null
             case 'director-conversation':
               return directiveId ? <DirectorConversation directiveId={directiveId} onBack={() => navigate('/director')} /> : null
             case 'director-review':

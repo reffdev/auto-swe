@@ -137,7 +137,7 @@ export function DirectorDashboard() {
                   [{r.review_type}] {r.question}
                 </button>
                 <button
-                  onClick={(e) => { e.stopPropagation(); void api.dismissReview(r.id).then(refresh) }}
+                  onClick={(e) => { e.stopPropagation(); setPendingReviews(prev => prev.filter(p => p.id !== r.id)); void api.dismissReview(r.id).catch(() => refresh()) }}
                   className="shrink-0 p-0.5 text-muted-foreground/50 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
                   title="Dismiss review"
                 >
@@ -159,7 +159,7 @@ export function DirectorDashboard() {
           <div className="divide-y divide-border">
             {directives.map(d => (
               <DirectiveCard key={d.id} directive={d} onClick={() => {
-                void navigate(`/director/${d.id}/conversation`)
+                void navigate(`/director/${d.id}`)
               }} onRefresh={refresh} />
             ))}
           </div>

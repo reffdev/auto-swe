@@ -307,6 +307,9 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     // Continuous exploration: if enabled and no style task is queued/running, queue the next batch
     await ensureContinuousExploration(db, directive, project);
 
+    // Re-check enabled before doing work (toggle may have changed during async operations above)
+    if (!db.getForemanConfig()?.enabled) return;
+
     // Process any responded reviews (e.g., art regenerate/refine/lock) even while active
     await processRespondedReviews(db, directive, project);
 
@@ -493,6 +496,7 @@ async function handleFailedTasks(db: Db, directive: DirectorDirective): Promise<
 // ─── Step 3: Advance milestone ──────────────────────────────────────────────
 
 async function advanceMilestone(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
+  if (!db.getForemanConfig()?.enabled) return;
   const activeMilestone = db.getActiveMilestone(directive.id);
   if (!activeMilestone) return;
 
