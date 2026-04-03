@@ -70,8 +70,11 @@ export async function executeComfyUITask(
       ?? (workflowFile?.startsWith("_preset_") ? workflowFile.replace("_preset_", "").trim() : null);
 
     if (resolvedPreset) {
-      // Get prompt from [prompt:] tag or from [params:] text field
+      // Get prompt from [prompt:] tag, [prompts:] array (first entry), or [params:] text field
       let prompt = promptText;
+      if (!prompt && variationPrompts?.length) {
+        prompt = variationPrompts[0];
+      }
       if (!prompt && paramsStr) {
         try {
           const p = JSON.parse(paramsStr) as Record<string, Record<string, unknown>>;
@@ -81,7 +84,7 @@ export async function executeComfyUITask(
         } catch { /* ignore */ }
       }
       if (!prompt) {
-        throw new Error("ComfyUI preset task must have a [prompt:] tag or text param");
+        throw new Error("ComfyUI preset task must have a [prompt:] or [prompts:] tag");
       }
 
       // Check audio presets first, then image presets
