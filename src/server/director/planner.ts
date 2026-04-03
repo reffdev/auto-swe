@@ -18,8 +18,9 @@ import { lookupDocs } from "../tools/context7";
 import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 import { postProcessArtTasks } from "./art-task-processor";
+import { makeTaskQueryTools } from "../tools/task-query";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
-import { isStyleLocked } from "./style-lock";
+
 import { selectPlannerMachine } from "../planner-llm";
 import { nudgeForeman } from "../foreman/scheduler";
 import { logEpisodic } from "./persistent-memory";
@@ -67,8 +68,6 @@ export async function planNextTasks(
 
   // Build prompt
   console.log(`Director planner: [5/8] building prompt...`);
-  const styleLocked = isStyleLocked(project.workdir);
-  console.log(`Director planner: [5/8] style locked: ${styleLocked}`);
 
   const { system, user } = buildPlanningPrompt({
     directiveContext,
@@ -76,7 +75,6 @@ export async function planNextTasks(
     milestoneVerification: milestone.verification ?? "Not specified",
     workflowSummary,
     idleMachineTypes,
-    styleLocked,
   });
 
   const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];
@@ -90,12 +88,14 @@ export async function planNextTasks(
     console.log(`Director planner: [6.5/8] readOnlyTools: ${Object.keys(readOnlyTools).join(", ")}`);
     const memTools = makeMemoryTools(project.workdir);
     console.log(`Director planner: [6.5/8] memTools: ${Object.keys(memTools).join(", ")}`);
+    const taskTools = makeTaskQueryTools(db, project.id, project.workdir);
     tools = {
       webSearch: webSearchTool,
       fetchUrl: fetchUrlTool,
       lookupDocs,
       ...readOnlyTools,
       ...memTools,
+      ...taskTools,
     };
     console.log(`Director planner: [6.5/8] tools constructed: ${Object.keys(tools).length} total`);
   } catch (toolErr) {

@@ -16,6 +16,7 @@ import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
 import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
+import { makeTaskQueryTools } from "../tools/task-query";
 
 // ─── In-memory streaming state ──────────────────────────────────────────────
 
@@ -108,6 +109,7 @@ export async function generateDirectorResponse(opts: {
         ...(project ? {
           ...makeReadOnlyTools(project.workdir),
           ...makeMemoryTools(project.workdir),
+          ...makeTaskQueryTools(db, project.id, project.workdir),
         } : {}),
       },
       maxSteps: 50,

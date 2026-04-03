@@ -12,7 +12,7 @@
 
 import { resolve } from "path";
 import type { Db, DirectorDirective, ForemanTask, Project } from "../db";
-import { removeWorktree } from "../git";
+import { removeWorktree, mergePullRequest } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
 import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
@@ -26,7 +26,7 @@ import { indexMemories } from "./memsearch";
 import { hasCapacity } from "../machine-manager";
 import { handleStyleLock } from "./style-lock-handler";
 import { archiveCurrentAssets } from "../foreman/asset-archive";
-import { createStyleExplorationTask } from "./style-exploration";
+import { createStyleExplorationTask, queueContinuousExploration } from "./style-exploration";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -151,6 +151,42 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   });
 }
 
+/**
+ * Continuous exploration: if enabled and no style task is queued/running,
+ * archive the current batch and re-queue with fresh prompts.
+ */
+async function ensureContinuousExploration(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
+  const config = db.getForemanConfig();
+  if (!config?.continuous_exploration) return;
+  if (isStyleLocked(project.workdir)) return;
+
+  const styleTasks = db.getForemanTasks(project.id).filter(
+    (t: ForemanTask) => t.type === "style_exploration"
+  );
+  if (styleTasks.length === 0) return; // ensureStyleExploration handles first creation
+
+  // Check if any style task is actively queued or running — don't interrupt
+  const active = styleTasks.find(t => t.status === "queued" || t.status === "running");
+  if (active) return;
+
+  // Find the most recent style task that's idle (awaiting_review or completed)
+  const idle = styleTasks.find(t => t.status === "awaiting_review" || t.status === "completed");
+  if (!idle) return;
+
+  // Archive current assets
+  const runs = db.getForemanRunsForTask(idle.id);
+  const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
+  archiveCurrentAssets(project.workdir, idle.id, idle.type, idle.description, attempt);
+
+  // Generate fresh prompts and re-queue
+  console.log(`Director: continuous exploration — archived run ${attempt}, generating fresh prompts`);
+  try {
+    await queueContinuousExploration(db, idle);
+  } catch (err) {
+    console.error("Director: continuous exploration failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 /** Signal the Director that something changed. Debounced via microtask. */
 export function nudgeDirector(db?: Db): void {
   const d = db ?? schedulerDb;
@@ -202,6 +238,9 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
       ensureStyleExploration(db, project);
     }
 
+    // Continuous exploration: if enabled and no style task is queued/running, queue the next batch
+    await ensureContinuousExploration(db, directive, project);
+
     // Process any responded reviews (e.g., art regenerate/refine/lock) even while active
     await processRespondedReviews(db, directive, project);
 
@@ -243,6 +282,19 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
             console.log(`Director: task "${task.title}" passed but flagged for human review`);
           }
         } else {
+          // Merge PR before marking complete
+          if (task.git_pr_number && project.git_remote && project.git_server_token) {
+            try {
+              const merged = await mergePullRequest(project, task.git_pr_number);
+              if (merged) {
+                console.log(`Director: merged PR #${task.git_pr_number} for "${task.title}"`);
+              } else {
+                console.warn(`Director: failed to merge PR #${task.git_pr_number} for "${task.title}" — may need manual merge`);
+              }
+            } catch (err) {
+              console.warn(`Director: PR merge error for "${task.title}":`, err instanceof Error ? err.message : err);
+            }
+          }
           db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
           if (task.git_worktree) {
             try { await removeWorktree(project.workdir, task.git_worktree); } catch { /* best effort */ }
