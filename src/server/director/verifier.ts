@@ -194,12 +194,12 @@ function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "ma
     const base = `origin/${defaultBranch}`;
     const head = isWorktree ? "HEAD" : `origin/${branch}`;
     const { stat, diff } = getDiffBetween(workdir, base, head);
-    const committed = stat + "\n\n" + diff.slice(0, 10000);
+    const committed = stat + "\n\n" + diff;
 
     if (isWorktree) {
       const uncommitted = getDiff(workdir, "HEAD");
       if (uncommitted.trim()) {
-        return committed + "\n\n--- uncommitted changes ---\n" + uncommitted.slice(0, 5000);
+        return committed + "\n\n--- uncommitted changes ---\n" + uncommitted;
       }
     }
 
@@ -227,7 +227,7 @@ function readTargetFiles(workdir: string, targetFiles: string[], branch?: string
       }
 
       if (content) {
-        parts.push(`### ${f}\n\`\`\`\n${content.slice(0, 5000)}\n\`\`\``);
+        parts.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``);
       }
     } catch { /* skip */ }
   }

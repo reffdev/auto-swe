@@ -151,7 +151,7 @@ export async function assembleDirectorContext(
 
     if (recentCompleted.length > 0) {
       const summaries = recentCompleted.map(t =>
-        `- [${t.status.toUpperCase()}] ${t.title}${t.error_message ? ` (error: ${t.error_message.slice(0, 100)})` : ""}`
+        `- [${t.status.toUpperCase()}] ${t.title}${t.error_message ? ` (error: ${t.error_message})` : ""}`
       );
       parts.push("# Recent Task Results\n\n" + summaries.join("\n"));
     }
@@ -237,14 +237,14 @@ function buildMemorySearchQuery(
 
   // Directive description gives the overall project goal
   if (directive.directive) {
-    parts.push(directive.directive.slice(0, 200));
+    parts.push(directive.directive);
   }
 
   // Current milestone narrows the focus
   if (activeMilestone) {
     parts.push(activeMilestone.title);
     if (activeMilestone.description) {
-      parts.push(activeMilestone.description.slice(0, 200));
+      parts.push(activeMilestone.description);
     }
   }
 

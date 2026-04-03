@@ -36,8 +36,7 @@ export async function extractPatternsFromLogs(
   const modelId = machine.model_id ?? "default";
   const model = createModel(machine, modelId);
 
-  // Combine logs, cap at reasonable size
-  const combined = logContents.join("\n\n---\n\n").slice(0, 30_000);
+  const combined = logContents.join("\n\n---\n\n");
 
   let extractions: Extraction[];
   try {
