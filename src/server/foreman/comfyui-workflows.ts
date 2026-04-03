@@ -485,7 +485,7 @@ export function applyIPAdapter(workflow: Workflow, opts: IPAdapterOptions): Work
       ipadapter: [unifiedLoaderId, 1],
       image: [loadImageId, 0],
       weight: opts.weight,
-      weight_type: "linear",
+      weight_type: "style transfer precise",
       start_at: 0.0,
       end_at: 1.0,
     },

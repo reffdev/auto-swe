@@ -14,30 +14,29 @@ import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } f
 import { extractTag } from "../foreman/task-types";
 import { selectPlannerMachine } from "../planner-llm";
 import { logEpisodic } from "./persistent-memory";
-import { getMemoryContext } from "./memory-context";
+
 import { nudgeForeman } from "../foreman/scheduler";
 import { isStyleLocked } from "./style-lock";
+import { searchMemories, isMemsearchAvailable } from "./memsearch";
+import { readConventions } from "./persistent-memory";
 
-const STYLE_PROMPT_SYSTEM = `You are an expert art director generating style exploration prompts for a game/project.
+const STYLE_PROMPT_SYSTEM = `You are an expert art director. Given a project description, write 6 image generation prompts that explore visually distinct art styles.
 
-Given a project description, write 6 DIFFERENT art prompts that explore visually distinct art directions.
-
-The goal is to produce 6 images that look OBVIOUSLY DIFFERENT from each other at a glance — not subtle adjective variations.
+The selected image will become a style reference for all future art in this project. The style reference determines:
+- COLOR PALETTE (strongest effect) — the specific colors in the reference image will appear in ALL future art. This is the primary commitment being made.
+- Lighting mood — contrast level, shadow/highlight balance, overall atmosphere
+- Surface treatment — how textures and materials are rendered
+- Artistic technique — shading approach, line work style, level of detail
 
 Rules:
-- Read the project description to determine the base art medium (pixel art, 3D, hand-drawn, etc.)
-- ALL 6 prompts must stay within that medium — but VARY the visual identity dramatically
-- Use a DIFFERENT subject or composition for each prompt (e.g., a character, an item, a scene, a UI element) — showing range matters more than consistency
-- Each prompt must differ in multiple structural dimensions, not just color. Vary:
-  - Subject matter and composition (close-up item vs full scene vs character portrait)
-  - Rendering technique (flat/cel-shaded vs detailed shading, outlined vs no-outline, isometric vs side-view)
-  - Color palette (not just "warm vs cool" — use specific named palettes like "NES 4-color", "PICO-8", "pastel watercolor tones")
-  - Level of detail and scale (minimal 16x16 icon style vs detailed 64x64 sprite style)
-- Write prompts as natural language descriptions, not comma-separated tags
-- Do NOT repeat the same core phrase across prompts — each should read as a completely different image
-- Do NOT include technical tags like resolution, transparent background, etc.
-- Keep each prompt under 80 words
-- The selected image becomes the IP-Adapter style reference for ALL future art — it must represent a clear, distinctive visual identity
+- Determine the base art medium from the project description (pixel art, 3D, hand-drawn, etc.) — all 6 prompts must use that medium
+- Each prompt must be visually distinct from the others — different palette, different mood, different technique
+- Every prompt MUST name 4-6 specific colors that define the image (e.g., "deep indigo, burnt sienna, pale gold, moss green"). No vague terms like "warm colors" — name the actual colors.
+- Depict visually rich subjects: characters, creatures, objects, environments, scenes
+- Never depict UI elements, menus, frames, buttons, or interface components
+- Vary rendering technique across prompts: cel-shaded, detailed shading, thick outlines, no outlines, high contrast, soft gradients
+- Write natural language descriptions, not comma-separated tags
+- Do not include technical tags (resolution, transparent background, etc.)
 
 Respond with a JSON array of exactly 6 prompt strings. No explanation, no formatting — just the JSON array.`;
 
@@ -51,46 +50,7 @@ export async function createStyleExplorationTask(
   project: Project,
   milestone: DirectorMilestone,
 ): Promise<string | null> {
-  // Gather project context for the prompt generation
-  const contextParts: string[] = [];
-
-  // Design doc
-  if (directive.design_doc_path) {
-    try {
-      const doc = readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8");
-      contextParts.push("# Design Document\n\n" + doc);
-    } catch { /* skip */ }
-  }
-  if (directive.design_docs) {
-    try {
-      const docPaths: string[] = JSON.parse(directive.design_docs);
-      for (const p of docPaths) {
-        try {
-          const content = readFileSync(resolve(project.workdir, p), "utf-8");
-          contextParts.push(`# Reference: ${p}\n\n` + content);
-        } catch { /* skip */ }
-      }
-    } catch { /* skip */ }
-  }
-
-  // Conventions (art-related ones are most useful)
-  const { conventionText } = getMemoryContext(project.workdir);
-  if (conventionText) {
-    contextParts.push("# Project Conventions\n\n" + conventionText);
-  }
-
-  // CLAUDE.md
-  const claudeMdPath = resolve(project.workdir, "CLAUDE.md");
-  if (existsSync(claudeMdPath)) {
-    try {
-      contextParts.push("# Project Rules\n\n" + readFileSync(claudeMdPath, "utf-8"));
-    } catch { /* skip */ }
-  }
-
-  // Directive text
-  contextParts.push("# Directive\n\n" + directive.directive);
-
-  const context = contextParts.join("\n\n---\n\n");
+  const context = await gatherArtContext(db, directive, project);
 
   // Get machine for the LLM call
   const machineInfo = selectPlannerMachine(db, project);
@@ -146,16 +106,10 @@ export async function createStyleExplorationTask(
   const preset = config?.continuous_exploration ? (config.exploration_preset || "concept") : "fast_draft";
 
   const description = [
-    `Generate 6 style variations for visual style exploration, each with a different art direction.`,
-    ``,
     `[preset: ${preset}]`,
     `[prompts: ${JSON.stringify(stylePrompts)}]`,
     `[variation_count: 6]`,
     `[output: .swe/art/style_exploration/]`,
-    ``,
-    `Each variation uses a different prompt exploring a distinct visual style.`,
-    `The selected style will be used as the IP-Adapter reference for all future art generation.`,
-    ``,
     `[needs_human_review]`,
   ].join("\n");
 
@@ -261,26 +215,7 @@ async function generateFreshPrompts(
   const directive = db.getDirectorDirective(directiveId);
   if (!directive) return null;
 
-  // Gather project context (same as createStyleExplorationTask)
-  const contextParts: string[] = [];
-  if (directive.design_doc_path) {
-    try { contextParts.push("# Design Document\n\n" + readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8")); } catch { /* skip */ }
-  }
-  if (directive.design_docs) {
-    try {
-      for (const p of JSON.parse(directive.design_docs) as string[]) {
-        try { contextParts.push(`# Reference: ${p}\n\n` + readFileSync(resolve(project.workdir, p), "utf-8")); } catch { /* skip */ }
-      }
-    } catch { /* skip */ }
-  }
-  const { conventionText } = getMemoryContext(project.workdir);
-  if (conventionText) contextParts.push("# Project Conventions\n\n" + conventionText);
-  const claudeMdPath = resolve(project.workdir, "CLAUDE.md");
-  if (existsSync(claudeMdPath)) {
-    try { contextParts.push("# Project Rules\n\n" + readFileSync(claudeMdPath, "utf-8")); } catch { /* skip */ }
-  }
-  contextParts.push("# Directive\n\n" + directive.directive);
-  const context = contextParts.join("\n\n---\n\n");
+  const context = await gatherArtContext(db, directive, project);
 
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) return null;
@@ -309,6 +244,45 @@ async function generateFreshPrompts(
 
 /**
  * Collect all prompts from previous style exploration tasks for this project.
+ * Gather context relevant to art style decisions.
+ * Uses semantic search to find relevant memories/conventions, with a fallback
+ * to reading all conventions if memsearch isn't available.
+ */
+async function gatherArtContext(db: Db, directive: DirectorDirective, project: Project): Promise<string> {
+  const parts: string[] = [];
+
+  // Directive text — the core description of what we're building
+  parts.push(directive.directive);
+
+  // Design docs — may contain art direction, theme, mood references
+  if (directive.design_doc_path) {
+    try { parts.push(readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8")); } catch { /* skip */ }
+  }
+  if (directive.design_docs) {
+    try {
+      for (const p of JSON.parse(directive.design_docs) as string[]) {
+        try { parts.push(readFileSync(resolve(project.workdir, p), "utf-8")); } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  }
+
+  // Search memories for art-related context
+  if (isMemsearchAvailable()) {
+    const results = await searchMemories(project.workdir, "art style visual direction", 5);
+    for (const r of results) {
+      if (r.content) parts.push(r.content);
+    }
+  } else {
+    // Fallback: include all conventions (they're short)
+    for (const entry of readConventions(project.workdir)) {
+      parts.push(entry.content);
+    }
+  }
+
+  return parts.join("\n\n");
+}
+
+/**
  * Used to tell the LLM what's already been generated so it doesn't repeat.
  */
 function collectPreviousPrompts(db: Db, projectId: string): string[] {
