@@ -12,8 +12,8 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { selectPlannerMachine } from "../planner-llm";
-import { readConventions } from "./persistent-memory";
 import { logEpisodic } from "./persistent-memory";
+import { getMemoryContext } from "./memory-context";
 import { nudgeForeman } from "../foreman/scheduler";
 
 const STYLE_PROMPT_SYSTEM = `You are an expert art director generating style exploration prompts for a game/project.
@@ -67,9 +67,9 @@ export async function createStyleExplorationTask(
   }
 
   // Conventions (art-related ones are most useful)
-  const conventions = readConventions(project.workdir);
-  if (conventions) {
-    contextParts.push("# Project Conventions\n\n" + conventions);
+  const { conventionText } = getMemoryContext(project.workdir);
+  if (conventionText) {
+    contextParts.push("# Project Conventions\n\n" + conventionText);
   }
 
   // CLAUDE.md

@@ -11,7 +11,7 @@ import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
-import { isDirectorBusy } from "../director/director-state";
+import { canForemanDispatch } from "../orchestrator";
 import { isStyleLocked } from "../director/style-lock";
 import { existsSync } from "fs";
 import { resolve as resolvePath } from "path";
@@ -62,8 +62,7 @@ export function notifyCapacityChange(machineType?: string): void {
 export function startForemanScheduler(db: Db): void {
   schedulerDb = db;
   console.log("Foreman scheduler ready (event-driven)");
-  // Initial nudge in case there are queued tasks from before restart
-  nudgeForeman(db);
+  // Don't nudge here — the orchestrator controls when the first dispatch happens.
   // Auto-bootstrap ComfyUI if a machine exists but no manifest is set up
   tryComfyUIBootstrap(db);
 }
@@ -105,8 +104,8 @@ async function schedulerTick(db: Db): Promise<void> {
   if (!config.project_id) return;
 
   // Wait for Director to finish before dispatching new tasks
-  if (isDirectorBusy()) {
-    console.log("Foreman: waiting — director is busy");
+  if (!canForemanDispatch()) {
+    console.log("Foreman: waiting — director has priority");
     return;
   }
 

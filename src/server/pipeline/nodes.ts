@@ -9,6 +9,7 @@ import { z } from "zod";
 import { readFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import { spawnSync } from "child_process";
+import { getStatus, getDiffStat, getDiff, getHeadCommitFull, getChangedFiles } from "../git-helpers";
 
 import type { PipelineStateType, PipelineConfig } from "./state";
 import { MAX_RETRIES } from "./state";
@@ -229,24 +230,13 @@ function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
 
 function captureGitContext(worktreePath: string, header = "## Git Changes"): string {
   try {
-    const statusResult = spawnSync("git", ["status", "--short"], { cwd: worktreePath, encoding: "utf-8", shell: true });
-    const diffStatResult = spawnSync("git", ["diff", "--stat"], { cwd: worktreePath, encoding: "utf-8", shell: true });
-    const diffResult = spawnSync("git", ["diff"], { cwd: worktreePath, encoding: "utf-8", shell: true });
-    const status = statusResult.stdout?.trim() || "(no changes)";
-    const diffStat = diffStatResult.stdout?.trim() || "";
-    const fullDiff = (diffResult.stdout || "").trim();
+    const status = getStatus(worktreePath) || "(no changes)";
+    const diffStat = getDiffStat(worktreePath);
+    const fullDiff = getDiff(worktreePath);
     return `${header}\n\n### Modified files:\n\`\`\`\n${status}\n\`\`\`\n\n### Diff summary:\n\`\`\`\n${diffStat}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${fullDiff}\n\`\`\``;
   } catch {
     return "";
   }
-}
-
-// ─── Scout Node (multi-cycle explore + compact) ──────────────────────────────
-
-function getHeadCommit(worktreePath: string): string {
-  try {
-    return spawnSync("git", ["rev-parse", "HEAD"], { cwd: worktreePath, encoding: "utf-8", shell: true }).stdout?.trim() || "";
-  } catch { return ""; }
 }
 
 export async function scoutNode(
@@ -256,7 +246,7 @@ export async function scoutNode(
   const { ctx, machine, project: _project, model, abortSignal } = config.configurable as PipelineConfig;
 
   // Check for cached scout brief — reuse if the codebase hasn't changed
-  const currentCommit = getHeadCommit(state.worktreePath);
+  const currentCommit = getHeadCommitFull(state.worktreePath) ?? "";
   const issue = ctx.db.getIssue(state.issueId);
   if (issue?.scout_brief && issue.scout_commit) {
     // Check if any of the relevant files changed since the scout ran
@@ -267,10 +257,7 @@ export async function scoutNode(
         const filePaths = manifest.files?.map(f => f.path) ?? [];
         if (filePaths.length > 0) {
           // Check if any relevant files differ between the cached commit and current HEAD
-          const diffResult = spawnSync("git", ["diff", "--name-only", issue.scout_commit, currentCommit, "--", ...filePaths], {
-            cwd: state.worktreePath, encoding: "utf-8", shell: true,
-          });
-          const changedFiles = (diffResult.stdout?.trim() || "").split("\n").filter(Boolean);
+          const changedFiles = getChangedFiles(state.worktreePath, issue.scout_commit, currentCommit, filePaths);
           filesChanged = changedFiles.length > 0;
           if (filesChanged) {
             console.log(`Pipeline: scout — ${changedFiles.length} relevant file(s) changed since last scout: ${changedFiles.join(", ")}`);

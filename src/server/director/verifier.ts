@@ -10,6 +10,7 @@ import { createModel, generate } from "../llm";
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
+import { fetchOrigin, getDiffBetween, getDiff, showFile } from "../git-helpers";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
@@ -189,18 +190,14 @@ export async function verifyMilestone(
 function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "main", isWorktree = false): string {
   if (!branch) return "(no branch)";
   try {
-    spawnSync("git", ["fetch", "origin"], { cwd: workdir, timeout: 30_000 });
-
+    fetchOrigin(workdir);
     const base = `origin/${defaultBranch}`;
     const head = isWorktree ? "HEAD" : `origin/${branch}`;
-    const stat = spawnSync("git", ["diff", `${base}...${head}`, "--stat"], { cwd: workdir, timeout: 10_000 });
-    const diff = spawnSync("git", ["diff", `${base}...${head}`], { cwd: workdir, timeout: 10_000 });
-    const committed = (stat.stdout?.toString() ?? "") + "\n\n" + (diff.stdout?.toString() ?? "").slice(0, 10000);
+    const { stat, diff } = getDiffBetween(workdir, base, head);
+    const committed = stat + "\n\n" + diff.slice(0, 10000);
 
-    // In worktrees, also capture uncommitted work (agent may not have committed everything)
     if (isWorktree) {
-      const wc = spawnSync("git", ["diff", "HEAD"], { cwd: workdir, timeout: 10_000 });
-      const uncommitted = wc.stdout?.toString() ?? "";
+      const uncommitted = getDiff(workdir, "HEAD");
       if (uncommitted.trim()) {
         return committed + "\n\n--- uncommitted changes ---\n" + uncommitted.slice(0, 5000);
       }
@@ -226,12 +223,7 @@ function readTargetFiles(workdir: string, targetFiles: string[], branch?: string
 
       // If file not found on disk and we have a branch, read from git
       if (!content && branch) {
-        const result = spawnSync("git", ["show", `origin/${branch}:${f}`], {
-          cwd: workdir, timeout: 10_000, encoding: "utf-8",
-        });
-        if (result.status === 0 && result.stdout) {
-          content = result.stdout;
-        }
+        content = showFile(workdir, `origin/${branch}:${f}`) ?? undefined;
       }
 
       if (content) {

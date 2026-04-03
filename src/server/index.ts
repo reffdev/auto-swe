@@ -15,12 +15,9 @@ import { existsSync } from "fs";
 import { Db } from "./db";
 import { createApiRouter } from "./api";
 import { createPlannerRouter } from "./planner-api";
-import { startStatsCollector } from "./stats";
-import { startAnalysisScheduler } from "./analysis";
 import { createForemanRouter } from "./foreman/api";
-import { startForemanScheduler } from "./foreman/scheduler";
 import { createDirectorRouter } from "./director/api";
-import { startDirectorScheduler } from "./director/scheduler";
+import { startOrchestrator } from "./orchestrator";
 import { createVoiceRouter } from "./voice";
 import { LlamaCppStt } from "./voice/stt-llamacpp";
 import { LlamaCppLlm } from "./voice/llm-llamacpp";
@@ -93,12 +90,7 @@ if (existsSync(clientDir)) {
 }
 
 // 7. Start background services
-import { clearAllLeases } from "./machine-manager";
-clearAllLeases();
-startStatsCollector(db);
-startAnalysisScheduler(db);
-startDirectorScheduler(db);  // Director first — creates style exploration before foreman dispatches
-startForemanScheduler(db);
+startOrchestrator(db);
 
 // 8. Start server
 const server = app.listen(PORT, () => {

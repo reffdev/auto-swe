@@ -11,6 +11,7 @@
 import { type StepResult, type ToolSet, type CoreMessage } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generate, stream as llmStream } from "../llm";
+import { getStatus, getDiff } from "../git-helpers";
 import { spawnSync } from "child_process";
 import type { Db } from "../db";
 import { EXPAND_FILES_MARKER } from "./nodes";
@@ -90,10 +91,8 @@ This is mandatory. Produce the checkpoint now. Do not call any tools.`;
 
 function captureGitDiff(worktreePath: string): string {
   try {
-    const status = spawnSync("git", ["status", "--short"], { cwd: worktreePath, encoding: "utf-8", shell: true });
-    const diff = spawnSync("git", ["diff"], { cwd: worktreePath, encoding: "utf-8", shell: true });
-    const statusOut = status.stdout?.trim() || "(no changes)";
-    const diffOut = (diff.stdout || "").trim();
+    const statusOut = getStatus(worktreePath) || "(no changes)";
+    const diffOut = getDiff(worktreePath);
     return `## Current worktree state\n\n### Modified files:\n\`\`\`\n${statusOut}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${diffOut}\n\`\`\``;
   } catch {
     return "";

@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { Db } from "../db";
 import { handleStyleLock } from "./style-lock-handler";
 import { getStyleLock, isStyleLocked, getStyleReferencePath } from "./style-lock";
+import { styleExplorationDir, styleExplorationRunDir } from "../foreman/paths";
 
 let db: Db;
 let projectDir: string;
@@ -40,7 +41,7 @@ function createStyleTask(directiveId: string) {
 }
 
 function createGallery(taskId: string, count: number) {
-  const galleryDir = join(projectDir, "assets", "style_exploration", taskId.slice(0, 8));
+  const galleryDir = styleExplorationDir(projectDir, taskId);
   mkdirSync(galleryDir, { recursive: true });
   for (let i = 1; i <= count; i++) {
     writeFileSync(join(galleryDir, `variation_${i}.png`), `fake-image-${i}`);
@@ -105,7 +106,7 @@ describe("handleStyleLock", () => {
     const task = createStyleTask(directive.id);
 
     // Create run_2 subdirectory
-    const runDir = join(projectDir, "assets", "style_exploration", task.id.slice(0, 8), "run_2");
+    const runDir = styleExplorationRunDir(projectDir, task.id, 2);
     mkdirSync(runDir, { recursive: true });
     writeFileSync(join(runDir, "variation_1.png"), "run2-image");
 
@@ -149,7 +150,7 @@ describe("handleStyleLock", () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     // Create empty gallery
-    const galleryDir = join(projectDir, "assets", "style_exploration", task.id.slice(0, 8));
+    const galleryDir = styleExplorationDir(projectDir, task.id);
     mkdirSync(galleryDir, { recursive: true });
 
     expect(() => {
@@ -164,7 +165,7 @@ describe("handleStyleLock", () => {
   it("sorts files numerically not alphabetically", () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
-    const galleryDir = join(projectDir, "assets", "style_exploration", task.id.slice(0, 8));
+    const galleryDir = styleExplorationDir(projectDir, task.id);
     mkdirSync(galleryDir, { recursive: true });
 
     // Create files that sort differently alphabetically vs numerically

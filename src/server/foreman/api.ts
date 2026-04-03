@@ -9,11 +9,12 @@ import type { Db } from "../db";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
 import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
-import { nudgeDirector } from "../director/scheduler";
+import { nudgeDirector, ensureStyleExploration } from "../director/scheduler";
 import { cleanupWorktrees } from "./cleanup";
 import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
 import { extractTag } from "./task-types";
 import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
+import { styleExplorationDir, styleExplorationRunDir, styleExplorationRelPath, artHistoryDir, artHistoryRunDir, artHistoryRelPath } from "./paths";
 
 /** Sort filenames numerically by embedded number (variation_1.png, variation_2.png, ...) */
 function numericSort(a: string, b: string): number {
@@ -294,15 +295,11 @@ export function createForemanRouter(db: Db): Router {
     // then nudge the Director. Order matters — style exploration must finish before
     // the planner runs, otherwise they compete for the same LLM machine.
     if (updates.enabled === 1 || updates.enabled === true) {
-      import("../director/scheduler").then(({ nudgeDirector: nudge, ensureStyleExploration }) => {
-        if (config.project_id) {
-          const project = db.getProject(config.project_id);
-          if (project) ensureStyleExploration(db, project);
-        }
-        // nudgeDirector uses queueMicrotask internally, and ensureStyleExploration
-        // sets directorBusy=true synchronously — so the Director tick will wait.
-        nudge(db);
-      }).catch(err => console.warn("Failed to nudge Director on enable:", err instanceof Error ? err.message : err));
+      if (config.project_id) {
+        const project = db.getProject(config.project_id);
+        if (project) ensureStyleExploration(db, project);
+      }
+      nudgeDirector(db);
     }
 
     res.json(config);
@@ -324,33 +321,26 @@ export function createForemanRouter(db: Db): Router {
     const runParam = req.query.run ? parseInt(req.query.run as string, 10) : null;
 
     // Check gallery directory for style exploration
-    const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
-    const galleryDir = runParam ? resolve(baseGalleryDir, `run_${runParam}`) : baseGalleryDir;
+    const galleryBase = styleExplorationDir(project.workdir, task.id);
+    const galleryDir = runParam ? styleExplorationRunDir(project.workdir, task.id, runParam) : galleryBase;
 
     try {
       if (existsSync(galleryDir)) {
         const files = readdirSync(galleryDir)
           .filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith("."))
           .sort(numericSort);
-        const availableRuns = getAvailableRuns(baseGalleryDir);
-        const basePath = runParam
-          ? `assets/style_exploration/${task.id.slice(0, 8)}/run_${runParam}`
-          : `assets/style_exploration/${task.id.slice(0, 8)}`;
-        res.json({ files, basePath, availableRuns });
+        res.json({ files, basePath: styleExplorationRelPath(task.id, runParam ?? undefined), availableRuns: getAvailableRuns(galleryBase) });
         return;
       }
     } catch { /* fall through */ }
 
     // Check art_history for single-output tasks with run param
     if (runParam) {
-      const historyDir = resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8), `run_${runParam}`);
+      const histDir = artHistoryRunDir(project.workdir, task.id, runParam);
       try {
-        if (existsSync(historyDir)) {
-          const files = readdirSync(historyDir)
-            .filter((f: string) => !f.startsWith("."))
-            .sort();
-          const availableRuns = getAvailableRuns(resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8)));
-          res.json({ files, basePath: `assets/art_history/${task.id.slice(0, 8)}/run_${runParam}`, availableRuns });
+        if (existsSync(histDir)) {
+          const files = readdirSync(histDir).filter((f: string) => !f.startsWith(".")).sort();
+          res.json({ files, basePath: artHistoryRelPath(task.id, runParam), availableRuns: getAvailableRuns(artHistoryDir(project.workdir, task.id)) });
           return;
         }
       } catch { /* fall through */ }
@@ -358,7 +348,7 @@ export function createForemanRouter(db: Db): Router {
 
     // Fall back to single asset
     const outputPath = extractTag(task.description, "output");
-    const availableRuns = getAvailableRuns(resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8)));
+    const availableRuns = getAvailableRuns(artHistoryDir(project.workdir, task.id));
     if (outputPath) {
       res.json({ files: [outputPath.split("/").pop()!], basePath: outputPath.replace(/\/[^/]+$/, ""), availableRuns });
     } else {
@@ -378,8 +368,9 @@ export function createForemanRouter(db: Db): Router {
     if (!project) return res.status(404).json({ error: "Project not found" });
 
     const runParam = req.query.run ? parseInt(req.query.run as string, 10) : null;
-    const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
-    const galleryDir = runParam ? resolve(baseGalleryDir, `run_${runParam}`) : baseGalleryDir;
+    const galleryDir = runParam
+      ? styleExplorationRunDir(project.workdir, task.id, runParam)
+      : styleExplorationDir(project.workdir, task.id);
 
     try {
       const files = readdirSync(galleryDir).filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort(numericSort);
@@ -394,11 +385,11 @@ export function createForemanRouter(db: Db): Router {
       // Try art_history for single-output tasks
       if (runParam) {
         try {
-          const historyDir = resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8), `run_${runParam}`);
-          const files = readdirSync(historyDir).filter((f: string) => !f.startsWith(".")).sort();
+          const histDir = artHistoryRunDir(project.workdir, task.id, runParam);
+          const files = readdirSync(histDir).filter((f: string) => !f.startsWith(".")).sort();
           const idx = parseInt(req.params.index, 10);
           if (idx >= 0 && idx < files.length) {
-            const filePath = resolve(historyDir, files[idx]);
+            const filePath = resolve(histDir, files[idx]);
             const buffer = readFileSync(filePath);
             const ext2 = extname(filePath).toLowerCase();
             res.setHeader("Content-Type", ext2 === ".jpg" || ext2 === ".jpeg" ? "image/jpeg" : "image/png");
@@ -428,7 +419,7 @@ export function createForemanRouter(db: Db): Router {
 
     // If requesting a historical run, serve from art_history
     if (runParam) {
-      const historyDir = resolve(project.workdir, "assets", "art_history", task.id.slice(0, 8), `run_${runParam}`);
+      const historyDir = artHistoryRunDir(project.workdir, task.id, runParam);
       try {
         if (existsSync(historyDir)) {
           const files = readdirSync(historyDir).filter((f: string) => !f.startsWith("."));

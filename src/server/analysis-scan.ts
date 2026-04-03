@@ -6,6 +6,7 @@
  */
 
 import { spawnSync } from "child_process";
+import { getChurnLog } from "./git-helpers";
 import { resolve, relative } from "path";
 import { readdirSync, readFileSync } from "fs";
 
@@ -145,13 +146,9 @@ function scanCodeMetrics(workdir: string): FileMetrics[] {
 
 function scanGitChurn(workdir: string): GitChurnEntry[] {
   try {
-    const result = spawnSync("git", ["log", "--numstat", "--since=90 days ago", "--format=%aI"], {
-      cwd: workdir,
-      encoding: "utf-8",
-      timeout: 15_000,
-      shell: true,
-    });
-    if (!result.stdout) return [];
+    const output = getChurnLog(workdir, 90);
+    if (!output) return [];
+    const result = { stdout: output };
 
     const churnMap = new Map<string, { count: number; lastDate: string }>();
     let currentDate = "";

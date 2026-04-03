@@ -26,7 +26,7 @@ import { validateAcceptanceCriteria } from "./validator";
 import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
 import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
-import { readConventions, readMemoryCategory } from "../director/persistent-memory";
+import { getMemoryContext } from "../director/memory-context";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
 
@@ -112,12 +112,7 @@ export async function executeForemanTask(
     const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
     // Build prompts
-    // Load conventions from .swe/ (uses project.workdir, not worktree)
-    const conventions = readConventions(project.workdir);
-    const procedural = readMemoryCategory(project.workdir, "procedural");
-    const conventionText = [...conventions, ...procedural]
-      .map(e => `## ${e.filename.replace(".md", "")}\n${e.content}`)
-      .join("\n\n");
+    const { conventionText } = getMemoryContext(project.workdir);
 
     const systemPrompt = buildForemanSystemPrompt({
       projectName: project.name,

@@ -7,6 +7,7 @@
 
 import { resolve } from "path";
 import { readdirSync } from "fs";
+import { styleExplorationDir, styleExplorationRunDir } from "../foreman/paths";
 import type { Db, DirectorDirective } from "../db";
 import { lockStyle } from "./style-lock";
 import { extractTag } from "../foreman/task-types";
@@ -39,8 +40,9 @@ export function handleStyleLock(
   const task = db.getForemanTask(taskId);
   if (!task) throw new Error(`Style lock: task ${taskId} not found`);
 
-  const baseGalleryDir = resolve(project.workdir, "assets", "style_exploration", task.id.slice(0, 8));
-  const galleryDir = parsed.run ? resolve(baseGalleryDir, `run_${parsed.run}`) : baseGalleryDir;
+  const galleryDir = parsed.run
+    ? styleExplorationRunDir(project.workdir, task.id, parsed.run)
+    : styleExplorationDir(project.workdir, task.id);
   const files = readdirSync(galleryDir)
     .filter(f => f.endsWith(".png"))
     .sort(numericSort);
