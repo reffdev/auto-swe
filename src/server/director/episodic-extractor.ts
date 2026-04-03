@@ -6,7 +6,7 @@
  */
 
 import { generateText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "../pipeline/index";
 import { writeMemory, readMemory } from "./persistent-memory";
 import type { Db } from "../db";
 
@@ -35,11 +35,7 @@ export async function extractPatternsFromLogs(
 
   const machine = machines[0];
   const modelId = machine.model_id ?? "default";
-  const provider = createOpenAICompatible({
-    name: "episodic-extractor",
-    baseURL: machine.base_url,
-    apiKey: machine.api_key || undefined,
-  });
+  const provider = createModelProvider(machine);
   const model = provider(modelId);
 
   // Combine logs, cap at reasonable size

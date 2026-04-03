@@ -8,7 +8,7 @@
  */
 
 import { generateText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "../pipeline/index";
 import { selectPlannerMachine } from "../planner-llm";
 import type { Db } from "../db";
 
@@ -93,11 +93,7 @@ async function revisePromptWithLLM(
 
   console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
 
-  const provider = createOpenAICompatible({
-    name: "art-feedback",
-    baseURL: machineInfo.machine.base_url,
-    apiKey: machineInfo.machine.api_key || undefined,
-  });
+  const provider = createModelProvider(machineInfo.machine);
   const model = provider(machineInfo.modelId);
 
   const result = await Promise.race([

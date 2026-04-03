@@ -18,7 +18,7 @@ import { selectPlannerMachine } from "./planner-llm";
 import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
 import { generateText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "./pipeline/index";
 import { acquireLease, releaseLease } from "./machine-manager";
 import { isDirectorBusy, isDirectorPlanning } from "./director/scheduler";
 import { notifyCapacityChange } from "./foreman/scheduler";
@@ -369,7 +369,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
 
     try {
-      const provider = createOpenAICompatible({ name: "decompose", baseURL: selected.machine.base_url });
+      const provider = createModelProvider(selected.machine);
       const model = provider(selected.modelId);
 
       const result = await generateText({

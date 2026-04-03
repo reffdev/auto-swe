@@ -7,7 +7,7 @@
  */
 
 import { generateText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "../pipeline/index";
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
@@ -75,11 +75,7 @@ export async function verifyTask(
   });
 
   // Call LLM
-  const provider = createOpenAICompatible({
-    name: "director-verifier",
-    baseURL: machine.base_url,
-    apiKey: machine.api_key || undefined,
-  });
+  const provider = createModelProvider(machine);
   const model = provider(modelId);
 
   try {
@@ -178,11 +174,7 @@ export async function verifyMilestone(
     projectState,
   });
 
-  const provider = createOpenAICompatible({
-    name: "director-milestone-verifier",
-    baseURL: machineInfo.machine.base_url,
-    apiKey: machineInfo.machine.api_key || undefined,
-  });
+  const provider = createModelProvider(machineInfo.machine);
 
   try {
     const result = await generateText({ model: provider(machineInfo.modelId), system, prompt: user });

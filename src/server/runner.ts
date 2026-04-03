@@ -6,6 +6,7 @@
  */
 
 import { streamText, type StepResult, type ToolSet } from "ai";
+import { createModelProvider } from "./pipeline/index";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { constructSystemPrompt } from "./prompts/system";
 import { ContextBudget, makeFilesystemTools, fetchUrlTool } from "./tools";
@@ -74,10 +75,7 @@ export async function executeIssue(
     // 2. Resolve model
     const modelId = project.model_id ?? machine.model_id;
     if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const provider = createOpenAICompatible({
-      name: `machine-${machine.id}`,
-      baseURL: machine.base_url,
-    });
+    const provider = createModelProvider(machine);
     const model = provider(modelId);
 
     // 3. Create tools (use machine's context_limit if configured)

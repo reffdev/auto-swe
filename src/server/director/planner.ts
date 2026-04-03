@@ -8,7 +8,7 @@
  */
 
 import { streamText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "../pipeline/index";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
@@ -106,11 +106,7 @@ export async function planNextTasks(
 
   console.log(`Director planner: [7/8] calling LLM at ${machine.base_url}...`);
   const llmStartTime = Date.now();
-  const provider = createOpenAICompatible({
-    name: "director-planner",
-    baseURL: machine.base_url,
-    apiKey: machine.api_key || undefined,
-  });
+  const provider = createModelProvider(machine);
   const model = provider(modelId);
 
   let resultText: string;

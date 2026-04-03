@@ -6,7 +6,7 @@
  */
 
 import { streamText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "./pipeline/index";
 import type { Db, Machine, Project } from "./db";
 import { constructPlannerSystemPrompt } from "./prompts/planner";
 
@@ -71,10 +71,7 @@ export async function generatePlannerResponse(opts: {
   projectName: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<void> {
-  const provider = createOpenAICompatible({
-    name: "planner",
-    baseURL: opts.machine.base_url,
-  });
+  const provider = createModelProvider(opts.machine);
   const model = provider(opts.modelId);
 
   const systemPrompt = constructPlannerSystemPrompt({

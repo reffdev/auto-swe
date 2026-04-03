@@ -6,7 +6,7 @@
  */
 
 import { streamText } from "ai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createModelProvider } from "../pipeline/index";
 import type { Db, Machine } from "../db";
 import { buildConversationSystemPrompt } from "./prompts";
 import { assembleDirectorContext } from "./memory";
@@ -50,11 +50,7 @@ export async function generateDirectorResponse(opts: {
   console.log(`Director: generating response for conversation ${opts.conversationId} (directive: ${opts.directiveId})`);
   console.log(`Director: using machine "${opts.machine.name || opts.machine.id}" at ${opts.machine.base_url} with model ${opts.modelId}`);
 
-  const provider = createOpenAICompatible({
-    name: "director",
-    baseURL: opts.machine.base_url,
-    apiKey: opts.machine.api_key || undefined,
-  });
+  const provider = createModelProvider(opts.machine);
   const model = provider(opts.modelId);
 
   // Build context from directive + project
