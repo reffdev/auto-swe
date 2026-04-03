@@ -9,7 +9,6 @@
 
 import { createModel, generate } from "../llm";
 import { writeMemory, readMemory } from "./persistent-memory";
-import { selectPlannerMachine } from "../planner-llm";
 import { getDiffBetween, fetchOrigin } from "../git-helpers";
 import type { Db, ForemanTask, Machine, Project } from "../db";
 
@@ -85,10 +84,8 @@ export async function extractTaskKnowledge(
   db: Db,
   task: ForemanTask,
   project: Project,
+  machineInfo: { machine: Machine; modelId: string },
 ): Promise<void> {
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) return;
-
   // Build context from the task
   const contextParts: string[] = [
     `## Task: ${task.title}`,
@@ -122,33 +119,6 @@ export async function extractTaskKnowledge(
         contextParts.push("", "## Agent Notes", "", agentNotes);
       }
     } catch { /* skip */ }
-  }
-
-  await runExtraction(db, project.workdir, contextParts.join("\n"), machineInfo);
-}
-
-/**
- * Extract knowledge from manually submitted commits.
- * Uses the user's description and the commit diffs as source material.
- */
-export async function extractManualCommitKnowledge(
-  db: Db,
-  project: Project,
-  title: string,
-  description: string,
-  diffSummary: string,
-): Promise<void> {
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) return;
-
-  const contextParts = [
-    `## Manual Commit: ${title}`,
-    "",
-    description,
-  ];
-
-  if (diffSummary.trim()) {
-    contextParts.push("", "## Files Changed", "", diffSummary);
   }
 
   await runExtraction(db, project.workdir, contextParts.join("\n"), machineInfo);

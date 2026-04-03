@@ -244,6 +244,7 @@ export class Db {
       "ALTER TABLE foreman_config ADD COLUMN analysis_enabled INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE foreman_config ADD COLUMN continuous_exploration INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_config ADD COLUMN exploration_preset TEXT NOT NULL DEFAULT 'concept'",
+      "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -886,6 +887,17 @@ export class Db {
     }
     return this.drizzle.select().from(schema.foremanTasks)
       .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at).all();
+  }
+
+  getTasksNeedingExtraction(projectId: string): ForemanTask[] {
+    return this.drizzle.select().from(schema.foremanTasks)
+      .where(and(
+        eq(schema.foremanTasks.project_id, projectId),
+        eq(schema.foremanTasks.status, "completed"),
+        eq(schema.foremanTasks.knowledge_extracted, 0),
+      ))
+      .orderBy(schema.foremanTasks.completed_at)
+      .all();
   }
 
   getForemanTask(id: string): ForemanTask | null {

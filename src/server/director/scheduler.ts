@@ -318,6 +318,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     await handleFailedTasks(db, directive);
     await advanceMilestone(db, directive, project);
     checkForUnattributedCommits(db, directive, project);
+    await processKnowledgeExtraction(db, project);
 
     if (shouldPauseDirective(db, directive)) {
       db.updateDirectorDirective(directive.id, { status: "paused" });
@@ -356,6 +357,31 @@ function checkForUnattributedCommits(db: Db, directive: DirectorDirective, proje
   }
 }
 
+/**
+ * Process one completed task that hasn't had knowledge extracted yet.
+ * Runs one per tick to avoid hogging the machine.
+ */
+async function processKnowledgeExtraction(db: Db, project: Project): Promise<void> {
+  const pending = db.getTasksNeedingExtraction(project.id);
+  if (pending.length === 0) return;
+
+  const task = pending[0];
+  const machineInfo = selectPlannerMachine(db, project);
+  if (!machineInfo) {
+    console.log(`Knowledge extraction: no machine available, will retry next tick (${pending.length} task(s) pending)`);
+    return;
+  }
+
+  console.log(`Knowledge extraction: processing "${task.title}"...`);
+  try {
+    await extractTaskKnowledge(db, task, project, machineInfo);
+    db.updateForemanTask(task.id, { knowledge_extracted: 1 });
+    console.log(`Knowledge extraction: completed "${task.title}"`);
+  } catch (err) {
+    console.warn(`Knowledge extraction: failed "${task.title}":`, err instanceof Error ? err.message : err);
+  }
+}
+
 /** Complete a verified task: mark completed, clean up worktree. */
 async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project, confidence: number): Promise<void> {
   db.updateForemanTask(task.id, { status: "completed", completed_at: new Date().toISOString() });
@@ -366,14 +392,6 @@ async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project,
   console.log(`Director: completed task "${task.title}" (confidence: ${confidence})`);
   logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${confidence}`);
   if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
-
-  // Extract knowledge from completed task (fire-and-forget)
-  if (task.type === "code") {
-    extractTaskKnowledge(db, task, project).catch(err => {
-      console.warn(`Director: knowledge extraction failed for "${task.title}":`, err instanceof Error ? err.message : err);
-    });
-  }
-
   nudgeForeman(db);
 }
 

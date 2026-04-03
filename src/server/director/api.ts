@@ -12,7 +12,7 @@ import { decomposeDirective } from "./decomposer";
 import { planNextTasks } from "./planner";
 import { nudgeDirector } from "./scheduler";
 import { acquireLease, releaseLease } from "../machine-manager";
-import { extractManualCommitKnowledge } from "./task-knowledge-extractor";
+
 
 export function createDirectorRouter(db: Db): Router {
   const router = Router();
@@ -423,17 +423,20 @@ export function createDirectorRouter(db: Db): Router {
       milestone_id: milestone_id ?? undefined,
     });
 
-    db.updateForemanTask(task.id, {
-      completed_at: new Date().toISOString(),
-    });
+    // Use the earliest commit's date as completed_at for chronological ordering
+    let completedAt = new Date().toISOString();
+    try {
+      const dateResult = spawnSync("git", ["show", "-s", "--format=%aI", commit_shas[commit_shas.length - 1]], {
+        cwd: project.workdir, encoding: "utf-8", timeout: 5_000,
+      });
+      if (dateResult.status === 0 && dateResult.stdout.trim()) {
+        completedAt = new Date(dateResult.stdout.trim()).toISOString();
+      }
+    } catch { /* fall back to now */ }
+
+    db.updateForemanTask(task.id, { completed_at: completedAt });
 
     console.log(`Director: manual commit submission "${title}" — ${commit_shas.length} commit(s)`);
-
-    // Extract knowledge from the manual commits (fire-and-forget)
-    extractManualCommitKnowledge(db, project, title, description, diffSummary).catch(err => {
-      console.warn(`Director: knowledge extraction failed for manual commits:`, err instanceof Error ? err.message : err);
-    });
-
     res.json(task);
   });
 
