@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { RefreshCw, Plus, AlertTriangle, Cpu, Trash2 } from 'lucide-react'
+import { RefreshCw, Plus, AlertTriangle, Cpu, Trash2, X } from 'lucide-react'
 import * as api from './api'
 import type { DirectorDirective, DirectorReview } from './api'
 
@@ -124,11 +124,20 @@ export function DirectorDashboard() {
             <span className="font-medium">{pendingReviews.length} review{pendingReviews.length !== 1 ? 's' : ''} need your attention</span>
           </div>
           <div className="mt-2 space-y-1">
-            {pendingReviews.slice(0, 3).map(r => (
-              <button key={r.id} onClick={() => navigate(`/director/review/${r.id}`)}
-                className="block text-xs text-muted-foreground hover:text-foreground transition-colors truncate w-full text-left">
-                [{r.review_type}] {r.question.slice(0, 100)}
-              </button>
+            {pendingReviews.map(r => (
+              <div key={r.id} className="flex items-center gap-1 group">
+                <button onClick={() => navigate(`/director/review/${r.id}`)}
+                  className="flex-1 text-xs text-muted-foreground hover:text-foreground transition-colors truncate text-left">
+                  [{r.review_type}] {r.question}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); void api.dismissReview(r.id).then(refresh) }}
+                  className="shrink-0 p-0.5 text-muted-foreground/50 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
+                  title="Dismiss review"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
             ))}
           </div>
         </div>
