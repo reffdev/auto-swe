@@ -32,6 +32,8 @@ function ConsoleLog() {
 
   useEffect(() => {
     const es = new EventSource('/api/console')
+    // Clear entries on each (re)connect so history replay doesn't duplicate
+    es.onopen = () => setEntries([])
     es.onmessage = (e) => {
       try {
         const entry = JSON.parse(e.data) as LogEntry
