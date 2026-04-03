@@ -22,17 +22,39 @@ export async function processArtFeedback(
   description: string,
   feedback: string,
 ): Promise<string> {
-  // Extract current prompt
+  // Parse feedback JSON if it came from a style_selection review response
+  let feedbackText = feedback;
+  try {
+    const parsed = JSON.parse(feedback) as { feedback?: string };
+    if (parsed.feedback) feedbackText = parsed.feedback;
+  } catch { /* plain text feedback, use as-is */ }
+
+  // Handle [prompts: [...]] (plural) — style exploration with multiple prompts
+  const promptsMatch = description.match(/\[prompts:\s*(\[[\s\S]*?\])\]/i);
+  if (promptsMatch) {
+    try {
+      const prompts = JSON.parse(promptsMatch[1]) as string[];
+      const revised = await revisePromptsWithLLM(db, prompts, feedbackText);
+      description = description.replace(promptsMatch[0], `[prompts: ${JSON.stringify(revised)}]`);
+      description = updateFeedbackNote(description, feedbackText);
+      return description;
+    } catch (err) {
+      console.error("Art feedback: failed to revise style exploration prompts:", err instanceof Error ? err.message : err);
+      // Fall through to append feedback tag
+    }
+  }
+
+  // Handle [prompt: ...] (singular) — single art task
   const promptMatch = description.match(/\[prompt:\s*(.+?)\]/i);
   const currentPrompt = promptMatch ? stripRevision(promptMatch[1].trim()) : null;
 
   if (!currentPrompt) {
     // No prompt tag — just append feedback note
-    return description + `\n\n[feedback: ${feedback}]`;
+    return description + `\n\n[feedback: ${feedbackText}]`;
   }
 
   // LLM must revise the prompt — throws on failure
-  const revisedPrompt = await revisePromptWithLLM(db, currentPrompt, feedback);
+  const revisedPrompt = await revisePromptWithLLM(db, currentPrompt, feedbackText);
 
   // Replace [prompt:] with the revised version
   description = description.replace(promptMatch![0], `[prompt: ${revisedPrompt}]`);
@@ -41,7 +63,7 @@ export async function processArtFeedback(
   description = updateParamsText(description, revisedPrompt);
 
   // Record the feedback for visibility
-  description = updateFeedbackNote(description, feedback);
+  description = updateFeedbackNote(description, feedbackText);
 
   return description;
 }
@@ -79,6 +101,57 @@ Examples:
 - Original: "explosion sound effect" + Feedback: "too long and boomy" → "short punchy explosion sound effect, quick burst, sharp impact, 1 second"
 
 Respond with ONLY the revised prompt text. No explanation, no quotes, no formatting.`;
+
+/**
+ * Revise an array of style exploration prompts based on user feedback.
+ * Each prompt is revised independently but with the same feedback applied.
+ */
+async function revisePromptsWithLLM(
+  db: Db,
+  prompts: string[],
+  feedback: string,
+): Promise<string[]> {
+  const machineInfo = selectPlannerMachine(db);
+  if (!machineInfo) {
+    throw new Error("No machine available for prompt revision");
+  }
+
+  console.log(`Art feedback: revising ${prompts.length} style exploration prompts via ${machineInfo.machine.base_url}`);
+
+  const model = createModel(machineInfo.machine, machineInfo.modelId);
+
+  const promptList = prompts.map((p, i) => `${i + 1}. ${p}`).join("\n");
+  const revised = (await generate(model, {
+    system: `You are an expert at writing image generation prompts for ComfyUI (Stable Diffusion XL).
+
+Given a set of style exploration prompts and user feedback, produce REVISED prompts that:
+1. Address the user's feedback across ALL prompts
+2. Maintain variety between prompts — each should still explore a different visual direction
+3. Are complete, standalone prompts (not appended feedback)
+4. Each describes ONE image with specific visual details
+
+Respond with a JSON array of exactly ${prompts.length} revised prompt strings. No explanation, no formatting — just the JSON array.`,
+    prompt: `Original prompts:\n${promptList}\n\nUser feedback: ${feedback}`,
+  })).trim();
+
+  const jsonMatch = revised.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) {
+    throw new Error(`LLM response is not a JSON array: ${revised.slice(0, 200)}`);
+  }
+  const parsed = JSON.parse(jsonMatch[0]) as unknown;
+  if (!Array.isArray(parsed) || !parsed.every(p => typeof p === "string")) {
+    throw new Error("LLM returned invalid prompt array");
+  }
+
+  const result = (parsed as string[]).slice(0, prompts.length);
+  // Pad if LLM returned fewer
+  while (result.length < prompts.length) {
+    result.push(result[result.length - 1]);
+  }
+
+  console.log(`Art feedback: revised ${result.length} prompts (feedback: "${feedback.slice(0, 80)}")`);
+  return result;
+}
 
 async function revisePromptWithLLM(
   db: Db,
