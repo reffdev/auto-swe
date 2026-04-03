@@ -3,6 +3,7 @@ import { ContextBudget } from "./context-budget";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { execSync } from "child_process";
 import { rmSync } from "fs";
 
 let workdir: string;
@@ -384,8 +385,6 @@ describe("moveFile", () => {
 describe("gitStatus and gitDiff", () => {
   // These need a git repo
   beforeEach(() => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { execSync } = require("child_process");
     execSync("git init", { cwd: workdir });
     execSync("git config user.email test@test.com", { cwd: workdir });
     execSync("git config user.name Test", { cwd: workdir });

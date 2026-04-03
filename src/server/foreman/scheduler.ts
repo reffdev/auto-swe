@@ -11,6 +11,12 @@ import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
 import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
+import { isDirectorBusy } from "../director/scheduler";
+import { isStyleLocked } from "../director/style-lock";
+import { existsSync } from "fs";
+import { resolve as resolvePath } from "path";
+import { getWorkflowDir } from "./workflow-manifest";
+import { bootstrapComfyUI } from "./comfyui-bootstrap";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -31,7 +37,6 @@ const exhaustedMachineTypes = new Set<string>();
 function styleGateActive(db: Db, project: import("../db").Project): boolean {
   const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
   if (!hasComfyUI) return false;
-  const { isStyleLocked } = require("../director/style-lock") as typeof import("../director/style-lock");
   if (isStyleLocked(project.workdir)) return false;
   return db.getDirectorDirectives(project.id).some(
     d => d.status === "active" || d.status === "paused" || d.status === "planning"
@@ -100,7 +105,6 @@ async function schedulerTick(db: Db): Promise<void> {
   if (!config.project_id) return;
 
   // Wait for Director to finish before dispatching new tasks
-  const { isDirectorBusy } = require("../director/scheduler") as typeof import("../director/scheduler");
   if (isDirectorBusy()) {
     console.log("Foreman: waiting — director is busy");
     return;
@@ -238,16 +242,11 @@ function tryComfyUIBootstrap(db: Db): void {
   if (!comfyMachine) return;
 
   // Bootstrap in background — don't block scheduler startup
-  import("./comfyui-bootstrap").then(async ({ bootstrapComfyUI }) => {
-    // Check if manifest already exists
-    const fs = await import("fs");
-    const { getWorkflowDir } = await import("./workflow-manifest");
-    const { resolve: resolvePath } = await import("path");
+  (async () => {
     const manifestPath = resolvePath(getWorkflowDir(project.workdir), "manifest.json");
-    if (fs.existsSync(manifestPath)) return;
-
+    if (existsSync(manifestPath)) return;
     await bootstrapComfyUI(comfyMachine.base_url, project.workdir);
-  }).catch(err =>
+  })().catch(err =>
     console.warn("ComfyUI auto-bootstrap failed:", err),
   );
 }

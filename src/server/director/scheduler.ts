@@ -25,6 +25,7 @@ import { logEpisodic } from "./persistent-memory";
 import { indexMemories } from "./memsearch";
 import { hasCapacity } from "../machine-manager";
 import { handleStyleLock } from "./style-lock-handler";
+import { createStyleExplorationTask } from "./style-exploration";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -133,9 +134,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   directorBusy = true;
   console.log("Director: art style not locked — creating style exploration task (blocking foreman)");
 
-  import("./style-exploration").then(({ createStyleExplorationTask }) => {
-    return createStyleExplorationTask(db, activeDirective, project, activeMilestone);
-  }).then(taskId => {
+  createStyleExplorationTask(db, activeDirective, project, activeMilestone).then(taskId => {
     if (taskId) {
       console.log(`Director: style exploration task created: ${taskId}`);
     } else {

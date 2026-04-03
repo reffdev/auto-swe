@@ -5,6 +5,8 @@
  * streamText → in-memory activeStreams → polling via GET /messages
  */
 
+import { readFileSync, existsSync } from "fs";
+import { resolve } from "path";
 import { createModel, stream as llmStream } from "../llm";
 import type { Db, Machine } from "../db";
 import { buildConversationSystemPrompt } from "./prompts";
@@ -67,8 +69,6 @@ export async function generateDirectorResponse(opts: {
 
     // Read input design docs referenced by the directive
     if (directive.design_docs) {
-      const { readFileSync, existsSync } = await import("fs");
-      const { resolve } = await import("path");
       const docPaths: string[] = JSON.parse(directive.design_docs);
       const docs: string[] = [];
       for (const p of docPaths) {

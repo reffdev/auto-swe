@@ -1,9 +1,9 @@
-import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Db } from "../db";
 import { handleStyleLock } from "./style-lock-handler";
-import { getStyleLock, isStyleLocked } from "./style-lock";
+import { getStyleLock, isStyleLocked, getStyleReferencePath } from "./style-lock";
 
 let db: Db;
 let projectDir: string;
@@ -96,8 +96,6 @@ describe("handleStyleLock", () => {
     );
 
     // The reference image should be variation_3.png content
-    const { readFileSync } = require("fs");
-    const { getStyleReferencePath } = require("./style-lock");
     const refPath = getStyleReferencePath(projectDir);
     expect(readFileSync(refPath, "utf-8")).toBe("fake-image-3");
   });
@@ -181,8 +179,6 @@ describe("handleStyleLock", () => {
       JSON.stringify({ selected: [2] }),
     );
 
-    const { readFileSync } = require("fs");
-    const { getStyleReferencePath } = require("./style-lock");
     expect(readFileSync(getStyleReferencePath(projectDir), "utf-8")).toBe("image-3");
   });
 

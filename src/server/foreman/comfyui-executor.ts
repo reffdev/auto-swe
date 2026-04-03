@@ -13,8 +13,8 @@
  *   [output: games/game1_clickonomicon/assets/sprites/symbol_fire.png]
  */
 
-import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
+import { readFileSync, existsSync, mkdirSync, copyFileSync, rmSync } from "fs";
+import { resolve, dirname } from "path";
 import { spawnSync } from "child_process";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { executeComfyUIWorkflow, buildWorkflowFromTemplate } from "./comfyui";
@@ -122,7 +122,7 @@ export async function executeComfyUITask(
         // Upload reference image to ComfyUI input directory
         const refFilename = `style_ref_${task.id.slice(0, 8)}.png`;
         try {
-          const { readFileSync: readFile } = await import("fs");
+          const readFile = readFileSync;
           const comfyBase = machine.base_url.replace(/\/v1\/?$/, "").replace(/\/$/, "");
           const formData = new FormData();
           const blob = new Blob([readFile(refPath)], { type: "image/png" });
@@ -220,8 +220,6 @@ export async function executeComfyUITask(
       throw new Error(`ComfyUI workflow produced no output files.${detail}`);
     }
 
-    const { mkdirSync, copyFileSync } = await import("fs");
-    const { dirname } = await import("path");
 
     // For style exploration: copy ALL outputs to a gallery directory
     // For normal art: copy first output to target path
@@ -253,7 +251,7 @@ export async function executeComfyUITask(
     }
 
     // Clean up temp dir
-    try { const { rmSync } = await import("fs"); rmSync(outputDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { rmSync(outputDir, { recursive: true, force: true }); } catch { /* best effort */ }
 
     // Verify files
     for (const p of savedPaths) {

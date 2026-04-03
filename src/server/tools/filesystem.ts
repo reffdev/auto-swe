@@ -19,6 +19,7 @@ import {
   appendFileSync,
   unlinkSync,
   renameSync,
+  realpathSync,
 } from "fs";
 import { spawnSync } from "child_process";
 import { join, dirname, resolve, isAbsolute, sep, relative } from "path";
@@ -245,8 +246,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           // Guard against symlink loops by tracking real paths
           let realDir: string;
           try {
-            // eslint-disable-next-line @typescript-eslint/no-require-imports
-            realDir = require("fs").realpathSync(dir);
+            realDir = realpathSync(dir);
           } catch {
             return; // Broken symlink — skip
           }

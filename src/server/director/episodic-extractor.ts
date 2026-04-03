@@ -6,6 +6,7 @@
  */
 
 import { createModel, generate } from "../llm";
+import { getGlobalDb } from "./scheduler";
 import { writeMemory, readMemory } from "./persistent-memory";
 import type { Db } from "../db";
 
@@ -18,7 +19,6 @@ export async function extractPatternsFromLogs(
   logContents: string[],
 ): Promise<void> {
   // Need a DB to find a machine
-  const { getGlobalDb } = await import("./scheduler");
   const db = getGlobalDb();
   if (!db) {
     console.log("Episodic extraction: no DB available, skipping");

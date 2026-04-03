@@ -1,4 +1,5 @@
 import { Db } from "./db";
+import { acquireLease, releaseLease } from "./machine-manager";
 
 let db: Db;
 
@@ -118,7 +119,6 @@ describe("analysis runs", () => {
   });
 
   it("analysis runs count toward machine availability", () => {
-    const { acquireLease, releaseLease } = require("./machine-manager");
     const m = db.createMachine({ base_url: "http://test/v1" }); // max_concurrent defaults to 1
 
     // Acquire a lease — machine should now be at capacity
