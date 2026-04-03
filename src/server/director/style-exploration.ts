@@ -183,44 +183,128 @@ export async function createStyleExplorationTask(
 }
 
 /**
- * Queue the next batch of continuous exploration.
- * Called from the ComfyUI executor after a style exploration task completes
- * when continuous_exploration is enabled. Generates fresh prompts via LLM
- * and creates a new style exploration task.
+ * Queue the next batch of continuous exploration by re-queuing the SAME task
+ * with fresh LLM-generated prompts. Keeps all runs in one gallery directory.
+ *
+ * If prompt generation fails, falls back to re-queuing with the same prompts
+ * (different seeds) so the loop doesn't die.
  */
 export async function queueContinuousExploration(
   db: Db,
-  completedTask: { directive_id: string | null; milestone_id: string | null; project_id: string | null },
+  task: { id: string; directive_id: string | null; project_id: string | null; description: string },
 ): Promise<void> {
-  if (!completedTask.directive_id) return;
+  if (!task.directive_id || !task.project_id) return;
 
-  const directive = db.getDirectorDirective(completedTask.directive_id);
-  if (!directive) return;
-
-  const project = db.getProject(directive.project_id);
+  const project = db.getProject(task.project_id);
   if (!project) return;
 
-  // Use the task's milestone or find the active one
-  const milestone = completedTask.milestone_id
-    ? db.getDirectorMilestone(completedTask.milestone_id)
-    : db.getActiveMilestone(directive.id);
-  if (!milestone) return;
-
-  // Check if style was locked while this batch was generating
+  // Check stop conditions
   if (isStyleLocked(project.workdir)) {
     console.log("Continuous exploration: style already locked, stopping");
     return;
   }
-
-  // Re-check config in case user turned it off
   const config = db.getForemanConfig();
   if (!config?.continuous_exploration) {
     console.log("Continuous exploration: disabled, stopping");
     return;
   }
 
-  console.log("Continuous exploration: generating fresh prompts for next batch...");
-  await createStyleExplorationTask(db, directive, project, milestone);
+  // Try to generate fresh prompts
+  let updatedDescription = task.description;
+  try {
+    const previousPrompts = collectPreviousPrompts(db, task.project_id);
+    const freshPrompts = await generateFreshPrompts(db, project, task.directive_id, previousPrompts);
+    if (freshPrompts) {
+      // Replace [prompts: [...]] in the description
+      const promptsMatch = updatedDescription.match(/\[prompts:\s*\[[\s\S]*?\]\]/i);
+      if (promptsMatch) {
+        updatedDescription = updatedDescription.replace(promptsMatch[0], `[prompts: ${JSON.stringify(freshPrompts)}]`);
+      }
+      console.log(`Continuous exploration: generated ${freshPrompts.length} fresh prompts`);
+    } else {
+      console.log("Continuous exploration: prompt generation returned null, re-queuing with same prompts (new seeds)");
+    }
+  } catch (err) {
+    console.warn(`Continuous exploration: prompt generation failed (${err instanceof Error ? err.message : err}), re-queuing with same prompts (new seeds)`);
+  }
+
+  // Also update preset if config changed
+  const preset = config.exploration_preset || "concept";
+  const presetMatch = updatedDescription.match(/\[preset:\s*\S+\]/i);
+  if (presetMatch) {
+    updatedDescription = updatedDescription.replace(presetMatch[0], `[preset: ${preset}]`);
+  }
+
+  // Re-queue the same task
+  db.updateForemanTask(task.id, {
+    description: updatedDescription,
+    status: "queued",
+    retry_count: 0,
+    error_message: null,
+    next_retry_at: null,
+    machine_id: null,
+  });
+  nudgeForeman(db);
+  console.log("Continuous exploration: re-queued task for next batch");
+}
+
+/**
+ * Generate fresh prompts via LLM for continuous exploration.
+ * Returns null if no machine is available.
+ */
+async function generateFreshPrompts(
+  db: Db,
+  project: Project,
+  directiveId: string,
+  previousPrompts: string[],
+): Promise<string[] | null> {
+  const directive = db.getDirectorDirective(directiveId);
+  if (!directive) return null;
+
+  // Gather project context (same as createStyleExplorationTask)
+  const contextParts: string[] = [];
+  if (directive.design_doc_path) {
+    try { contextParts.push("# Design Document\n\n" + readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8")); } catch { /* skip */ }
+  }
+  if (directive.design_docs) {
+    try {
+      for (const p of JSON.parse(directive.design_docs) as string[]) {
+        try { contextParts.push(`# Reference: ${p}\n\n` + readFileSync(resolve(project.workdir, p), "utf-8")); } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  }
+  const { conventionText } = getMemoryContext(project.workdir);
+  if (conventionText) contextParts.push("# Project Conventions\n\n" + conventionText);
+  const claudeMdPath = resolve(project.workdir, "CLAUDE.md");
+  if (existsSync(claudeMdPath)) {
+    try { contextParts.push("# Project Rules\n\n" + readFileSync(claudeMdPath, "utf-8")); } catch { /* skip */ }
+  }
+  contextParts.push("# Directive\n\n" + directive.directive);
+  const context = contextParts.join("\n\n---\n\n");
+
+  const machineInfo = selectPlannerMachine(db, project);
+  if (!machineInfo) return null;
+
+  const model = createModel(machineInfo.machine, machineInfo.modelId);
+
+  const avoidSection = previousPrompts.length > 0
+    ? `\n\nIMPORTANT — These prompts have ALREADY been generated. Do NOT repeat or closely paraphrase any of them:\n${previousPrompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
+    : "";
+
+  const text = (await generate(model, {
+    system: STYLE_PROMPT_SYSTEM,
+    prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
+  })).trim();
+
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) return null;
+
+  const parsed = JSON.parse(jsonMatch[0]) as unknown;
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string")) return null;
+
+  const result = (parsed as string[]).slice(0, 6);
+  while (result.length < 6) result.push(result[result.length - 1]);
+  return result;
 }
 
 /**

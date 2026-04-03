@@ -307,15 +307,15 @@ export async function executeComfyUITask(
       }
     }
 
-    // Continuous exploration: archive this batch and queue another with fresh prompts
+    // Continuous exploration: archive this batch, generate fresh prompts, re-queue same task
     if (isStyleExploration) {
       const config = db.getForemanConfig();
       if (config?.continuous_exploration && task.directive_id) {
         const runs = db.getForemanRunsForTask(task.id);
         const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
         archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
-        console.log(`ComfyUI: continuous exploration — archived run ${attempt}, queuing next batch`);
-        // Fire-and-forget — don't block the executor
+        console.log(`ComfyUI: continuous exploration — archived run ${attempt}, generating fresh prompts`);
+        // Fire-and-forget — generate new prompts via LLM, update this task's description, re-queue
         queueContinuousExploration(db, task).catch(err => {
           console.error("ComfyUI: continuous exploration failed to queue next batch:", err instanceof Error ? err.message : err);
         });
