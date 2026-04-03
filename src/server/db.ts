@@ -245,6 +245,7 @@ export class Db {
       "ALTER TABLE foreman_config ADD COLUMN continuous_exploration INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_config ADD COLUMN exploration_preset TEXT NOT NULL DEFAULT 'concept'",
       "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -917,6 +918,7 @@ export class Db {
     target_files?: string[]; depends_on?: string[]; acceptance_criteria?: string[];
     max_retries?: number; status?: string;
     directive_id?: string; milestone_id?: string;
+    comfyui_config?: string;
   }): ForemanTask {
     const id = randomUUID();
     this.drizzle.insert(schema.foremanTasks).values({
@@ -935,6 +937,7 @@ export class Db {
       status: data.status ?? "backlog",
       directive_id: data.directive_id ?? null,
       milestone_id: data.milestone_id ?? null,
+      comfyui_config: data.comfyui_config ?? null,
     }).run();
     return this.getForemanTask(id)!;
   }

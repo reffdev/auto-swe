@@ -10,6 +10,7 @@
 import { createModel, generate } from "../llm";
 import { selectPlannerMachine } from "../planner-llm";
 import type { Db } from "../db";
+import { serializeConfig, type ComfyUITaskConfig } from "./comfyui-config";
 
 export { isComfyUITaskType } from "./task-types";
 
@@ -34,7 +35,22 @@ export async function processArtFeedback(
   if (promptsMatch) {
     try {
       const prompts = JSON.parse(promptsMatch[1]) as string[];
-      const revised = await revisePromptsWithLLM(db, prompts, feedbackText);
+      const isEnhance = description.includes("[enhance_source:");
+
+      let revised: string[];
+      if (isEnhance) {
+        // Enhance tasks: [original, original, varA, varA, varB, varB]
+        // Revise the 3 unique prompts preserving the paired structure.
+        const unique = [prompts[0], prompts[2], prompts[4]].filter(Boolean);
+        const revisedUnique = await revisePromptsWithLLM(db, unique, feedbackText);
+        const p0 = revisedUnique[0] ?? unique[0];
+        const p1 = revisedUnique[1] ?? revisedUnique[0] ?? unique[0];
+        const p2 = revisedUnique[2] ?? revisedUnique[1] ?? unique[0];
+        revised = [p0, p0, p1, p1, p2, p2];
+      } else {
+        revised = await revisePromptsWithLLM(db, prompts, feedbackText);
+      }
+
       description = description.replace(promptsMatch[0], `[prompts: ${JSON.stringify(revised)}]`);
       description = updateFeedbackNote(description, feedbackText);
       return description;
@@ -73,6 +89,63 @@ export async function processArtFeedback(
  * Records feedback as a [feedback:] tag but NEVER modifies the [prompt:] tag.
  * Only the LLM revision path should rewrite the actual generation prompt.
  */
+/**
+ * Process feedback on a task that has structured config.
+ * Returns the updated config JSON string, or null if unable to process.
+ */
+export async function processConfigFeedback(
+  db: Db,
+  config: ComfyUITaskConfig,
+  feedback: string,
+): Promise<string | null> {
+  let feedbackText = feedback;
+  try {
+    const parsed = JSON.parse(feedback) as { feedback?: string };
+    if (parsed.feedback) feedbackText = parsed.feedback;
+  } catch { /* plain text */ }
+
+  if (config.enhance) {
+    // Enhance task refine: generate 3 new prompts, all creative (no upscale pair)
+    const existingPrompts = config.prompts ?? [];
+    const unique = [...new Set(existingPrompts)];
+    const revised = await revisePromptsWithLLM(db, unique, feedbackText);
+    // 3 prompts x 2 denoise levels
+    const r0 = revised[0] ?? unique[0] ?? "";
+    const r1 = revised[1] ?? revised[0] ?? unique[0] ?? "";
+    const r2 = revised[2] ?? revised[1] ?? unique[0] ?? "";
+    const updatedConfig: ComfyUITaskConfig = {
+      ...config,
+      prompts: [r0, r0, r1, r1, r2, r2],
+      variationCount: 6,
+      enhance: {
+        ...config.enhance,
+        denoiseLevels: [0.35, 0.60, 0.35, 0.60, 0.35, 0.60],
+      },
+    };
+    return serializeConfig(updatedConfig);
+  }
+
+  if (config.prompts) {
+    // Multi-prompt task (style exploration): revise all prompts
+    const revised = await revisePromptsWithLLM(db, config.prompts, feedbackText);
+    const updatedConfig: ComfyUITaskConfig = {
+      ...config,
+      prompts: revised,
+      variationCount: revised.length,
+    };
+    return serializeConfig(updatedConfig);
+  }
+
+  if (config.prompt) {
+    // Single-prompt task: revise the prompt
+    const revised = await revisePromptWithLLM(db, config.prompt, feedbackText);
+    const updatedConfig: ComfyUITaskConfig = { ...config, prompt: revised };
+    return serializeConfig(updatedConfig);
+  }
+
+  return null;
+}
+
 export function injectFeedbackIntoArtTask(description: string, feedback: string): string {
   description = updateFeedbackNote(description, feedback);
   return description;

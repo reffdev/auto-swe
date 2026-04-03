@@ -6,6 +6,8 @@
 import { existsSync, mkdirSync, copyFileSync, readdirSync } from "fs";
 import { resolve, basename } from "path";
 import { extractTag } from "./task-types";
+import { getConfig } from "./comfyui-config";
+import type { ForemanTask } from "../db";
 import { styleExplorationDir, styleExplorationRunDir, artHistoryRunDir } from "./paths";
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
@@ -73,19 +75,17 @@ export function archiveSingleAsset(
  */
 export function archiveCurrentAssets(
   projectWorkdir: string,
-  taskId: string,
-  taskType: string,
-  taskDescription: string,
+  task: ForemanTask,
   attempt: number,
 ): string[] {
-  if (taskType === "style_exploration") {
-    return archiveGalleryAssets(projectWorkdir, taskId, attempt);
+  if (task.type === "style_exploration") {
+    return archiveGalleryAssets(projectWorkdir, task.id, attempt);
   }
 
   // Single-output art/music/sfx
-  const outputPath = extractTag(taskDescription, "output");
+  const outputPath = getConfig(task)?.outputPath ?? extractTag(task.description, "output");
   if (outputPath) {
-    return archiveSingleAsset(projectWorkdir, taskId, outputPath, attempt);
+    return archiveSingleAsset(projectWorkdir, task.id, outputPath, attempt);
   }
 
   return [];

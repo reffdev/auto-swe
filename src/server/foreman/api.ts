@@ -14,6 +14,7 @@ import { cleanupWorktrees } from "./cleanup";
 import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
 import { extractTag } from "./task-types";
 import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
+import { getConfig as getConfigFn } from "./comfyui-config";
 import { styleExplorationDir, styleExplorationRunDir, styleExplorationRelPath, artHistoryDir, artHistoryRunDir, artHistoryRelPath } from "./paths";
 
 /** Sort filenames numerically by embedded number (variation_1.png, variation_2.png, ...) */
@@ -163,7 +164,7 @@ export function createForemanRouter(db: Db): Router {
         const runs = db.getForemanRunsForTask(task.id);
         const latestRun = runs[runs.length - 1];
         const attempt = latestRun?.attempt ?? 1;
-        const archived = archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
+        const archived = archiveCurrentAssets(project.workdir, task, attempt);
         if (archived.length > 0) {
           console.log(`Foreman reject: archived ${archived.length} asset(s) to run_${attempt}/`);
         }
@@ -347,7 +348,8 @@ export function createForemanRouter(db: Db): Router {
     }
 
     // Fall back to single asset
-    const outputPath = extractTag(task.description, "output");
+    const taskConfig = getConfigFn(task);
+    const outputPath = taskConfig?.outputPath ?? extractTag(task.description, "output");
     const availableRuns = getAvailableRuns(artHistoryDir(project.workdir, task.id));
     if (outputPath) {
       res.json({ files: [outputPath.split("/").pop()!], basePath: outputPath.replace(/\/[^/]+$/, ""), availableRuns });
@@ -441,8 +443,9 @@ export function createForemanRouter(db: Db): Router {
       return res.status(404).json({ error: "Historical asset not found" });
     }
 
-    // Current output — extract path from task description
-    const outputPath2 = extractTag(task.description, "output");
+    // Current output
+    const taskConfig2 = getConfigFn(task);
+    const outputPath2 = taskConfig2?.outputPath ?? extractTag(task.description, "output");
     if (!outputPath2) return res.status(404).json({ error: "No output path in task" });
 
     const assetPath = resolve(project.workdir, outputPath2);

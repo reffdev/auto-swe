@@ -278,6 +278,75 @@ export function buildFluxTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
   };
 }
 
+/**
+ * FLUX.2 img2img workflow: same pipeline as txt2img but replaces the empty
+ * latent with a VAE-encoded source image and uses denoise < 1.0.
+ *
+ * Used by the "Enhance with FLUX.2" feature to upscale SDXL style exploration images.
+ */
+export interface FluxImg2ImgOptions extends WorkflowOptions {
+  /** Filename of source image (must be in ComfyUI's input/ dir) */
+  sourceImage: string;
+  /** Denoise strength (0.0 = no change, 1.0 = full regeneration) */
+  denoise: number;
+}
+
+export function buildFluxImg2ImgWorkflow(opts: FluxImg2ImgOptions): Workflow {
+  const seed = opts.seed ?? Math.floor(Math.random() * 2147483647);
+
+  return {
+    "10": {
+      class_type: "UNETLoader",
+      inputs: { unet_name: opts.checkpoint, weight_dtype: "default" },
+    },
+    "11": {
+      class_type: "CLIPLoader",
+      inputs: { clip_name: "mistral_3_small_flux2_fp8.safetensors", type: "flux2" },
+    },
+    "12": {
+      class_type: "VAELoader",
+      inputs: { vae_name: "flux2-vae.safetensors" },
+    },
+    "6": {
+      class_type: "CLIPTextEncode",
+      inputs: { text: opts.prompt, clip: ["11", 0] },
+    },
+    // Load source image
+    "5": {
+      class_type: "LoadImage",
+      inputs: { image: opts.sourceImage },
+    },
+    // Encode source image to latent space
+    "13": {
+      class_type: "VAEEncode",
+      inputs: { pixels: ["5", 0], vae: ["12", 0] },
+    },
+    "3": {
+      class_type: "KSampler",
+      inputs: {
+        model: ["10", 0],
+        positive: ["6", 0],
+        negative: ["6", 0],
+        latent_image: ["13", 0],
+        seed,
+        steps: opts.steps ?? 20,
+        cfg: opts.cfg ?? 1.0,
+        sampler_name: opts.sampler ?? "euler",
+        scheduler: opts.scheduler ?? "simple",
+        denoise: opts.denoise,
+      },
+    },
+    "8": {
+      class_type: "VAEDecode",
+      inputs: { samples: ["3", 0], vae: ["12", 0] },
+    },
+    "9": {
+      class_type: "SaveImage",
+      inputs: { images: ["8", 0], filename_prefix: "comfyui_output" },
+    },
+  };
+}
+
 // ─── Audio Workflow Generators ───────────────────────────────────────────────
 
 export interface AudioWorkflowOptions {

@@ -246,6 +246,7 @@ export const foremanTasks = sqliteTable("foreman_tasks", {
   directive_id: text("directive_id"),                               // links to director_directives (null for manual tasks)
   milestone_id: text("milestone_id"),                               // links to director_milestones
   knowledge_extracted: integer("knowledge_extracted").notNull().default(0), // 0=pending, 1=done
+  comfyui_config: text("comfyui_config"),                                  // JSON ComfyUITaskConfig
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   yaml_synced_at: text("yaml_synced_at"),
 });

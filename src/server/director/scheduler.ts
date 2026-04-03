@@ -19,7 +19,7 @@ import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
 import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
-import { processArtFeedback } from "../foreman/art-feedback";
+import { processArtFeedback, processConfigFeedback } from "../foreman/art-feedback";
 import { isComfyUITaskType, MACHINE_TYPE_TASK_TYPES, extractTag } from "../foreman/task-types";
 import { isStyleLocked } from "./style-lock";
 import { logEpisodic } from "./persistent-memory";
@@ -27,9 +27,10 @@ import { indexMemories } from "./memsearch";
 import { hasCapacity } from "../machine-manager";
 import { handleStyleLock } from "./style-lock-handler";
 import { archiveCurrentAssets } from "../foreman/asset-archive";
-import { createStyleExplorationTask, queueContinuousExploration } from "./style-exploration";
+import { createStyleExplorationTask, queueContinuousExploration, createFluxEnhanceTask } from "./style-exploration";
 import { extractTaskKnowledge } from "./task-knowledge-extractor";
 import { getUnattributedCommits } from "./unattributed-commits";
+import { getConfig } from "../foreman/comfyui-config";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 
@@ -173,7 +174,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   if (isStyleLocked(project.workdir)) return;
 
   const allStyleTasks = db.getForemanTasks(project.id).filter(
-    (t: { type: string }) => t.type === "style_exploration"
+    (t: ForemanTask) => t.type === "style_exploration" && !getConfig(t)?.enhance
   );
   if (allStyleTasks.length > 0) {
     const failed = allStyleTasks.find((t: { status: string }) => t.status === "failed");
@@ -228,7 +229,7 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
   if (isStyleLocked(project.workdir)) return;
 
   const styleTasks = db.getForemanTasks(project.id).filter(
-    (t: ForemanTask) => t.type === "style_exploration"
+    (t: ForemanTask) => t.type === "style_exploration" && !getConfig(t)?.enhance
   );
   if (styleTasks.length === 0) return; // ensureStyleExploration handles first creation
 
@@ -243,7 +244,7 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
   // Archive current assets
   const runs = db.getForemanRunsForTask(idle.id);
   const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
-  archiveCurrentAssets(project.workdir, idle.id, idle.type, idle.description, attempt);
+  archiveCurrentAssets(project.workdir, idle, attempt);
 
   // Generate fresh prompts and re-queue
   console.log(`Director: continuous exploration — archived run ${attempt}, generating fresh prompts`);
@@ -459,6 +460,22 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
       }
     } catch (err) {
       console.error(`Director: verification error for task ${task.id}:`, err);
+      // Escalate to human review instead of silently retrying forever
+      const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
+      if (existing.length === 0) {
+        const prUrl = await ensureTaskPR(db, task, project);
+        const updated = db.getForemanTask(task.id) ?? task;
+        createReviewGate(db, {
+          directive_id: directive.id, task_id: task.id, review_type: "task_verify",
+          question: `Automated verification failed for "${task.title}". Please review manually.`,
+          context: {
+            issues: [err instanceof Error ? err.message : String(err)],
+            reasoning: "Verification LLM call failed — escalating to human review",
+            task_id: task.id, git_branch: updated.git_branch, git_pr_url: updated.git_pr_url, git_pr_number: updated.git_pr_number,
+          },
+        });
+        console.log(`Director: escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
+      }
     }
   }
 }
@@ -633,7 +650,14 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
           };
 
           if (isComfyUITaskType(retryTask.type) && review.response) {
-            updates.description = await processArtFeedback(db, retryTask.description, review.response);
+            // Use structured config feedback if available, fall back to legacy
+            const taskConfig = getConfig(retryTask);
+            if (taskConfig) {
+              const updatedConfig = await processConfigFeedback(db, taskConfig, review.response);
+              if (updatedConfig) updates.comfyui_config = updatedConfig;
+            } else {
+              updates.description = await processArtFeedback(db, retryTask.description, review.response);
+            }
           } else {
             // Inject human feedback into description for code tasks
             const feedbackTag = `\n\n[human_feedback: ${feedback}]`;
@@ -664,7 +688,7 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
           if (task) {
             const runs = db.getForemanRunsForTask(task.id);
             const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
-            archiveCurrentAssets(project.workdir, task.id, task.type, task.description, attempt);
+            archiveCurrentAssets(project.workdir, task, attempt);
             console.log(`Director: archived style exploration run ${attempt}, re-queuing with same prompts`);
           }
           db.updateForemanTask(review.task_id, {
@@ -685,6 +709,20 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
               status: "queued", retry_count: 0,
               error_message: `Style lock failed: ${err instanceof Error ? err.message : String(err)}`,
             });
+          }
+        }
+        break;
+      }
+
+      case "enhance_style": {
+        if (review.task_id) {
+          const task = db.getForemanTask(review.task_id);
+          if (task) {
+            try {
+              await createFluxEnhanceTask(db, task, project, directive, result.context);
+            } catch (err) {
+              console.error("Director: enhance task creation failed:", err instanceof Error ? err.message : err);
+            }
           }
         }
         break;

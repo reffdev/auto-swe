@@ -161,6 +161,7 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
               onLock={(selectedIndex, feedback, run) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback, run }))}
               onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }), true)}
               onRegenerate={() => handleRespond(JSON.stringify({ action: 'regenerate' }), true)}
+              onEnhance={(selectedIndex, run) => handleRespond(JSON.stringify({ action: 'enhance', selected: [selectedIndex], run }))}
               submitting={submitting}
             />
           )}
@@ -248,11 +249,12 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
 
 interface RunInfo { attempt: number; fileCount: number }
 
-function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, submitting }: {
+function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, onEnhance, submitting }: {
   taskId: string
   onLock: (selectedIndex: number, feedback: string, run?: number) => void
   onRefine: (feedback: string) => void
   onRegenerate: () => void
+  onEnhance?: (selectedIndex: number, run?: number) => void
   submitting: boolean
 }) {
   const [files, setFiles] = useState<string[]>([])
@@ -387,6 +389,15 @@ function StyleSelectionPanel({ taskId, onLock, onRefine, onRegenerate, submittin
         >
           Refine Prompts
         </Button>
+        {onEnhance && (
+          <Button
+            variant="outline"
+            onClick={() => selected !== null && onEnhance(selected, activeRun ?? undefined)}
+            disabled={selected === null || submitting}
+          >
+            Enhance with FLUX.2
+          </Button>
+        )}
       </div>
     </div>
   )

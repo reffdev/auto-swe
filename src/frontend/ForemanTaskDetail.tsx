@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ArrowLeft, Play, XCircle, CheckCircle, RotateCcw, ExternalLink, ChevronDown, ChevronRight, Image, Volume2, MessageSquare, Trash2 } from 'lucide-react'
+import { ArrowLeft, Play, XCircle, CheckCircle, RotateCcw, ExternalLink, ChevronDown, ChevronRight, Image, Volume2, MessageSquare, Trash2, Loader2 } from 'lucide-react'
 import * as api from './api'
 import type { ForemanTask, ForemanRun, StepData } from './api'
 
@@ -178,8 +178,8 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
           </section>
 
           {/* Asset preview for art/music/sfx tasks */}
-          {isAssetTask(task) && (task.status === 'awaiting_review' || task.status === 'completed') && (
-            <AssetPreview taskId={task.id} taskType={task.type} />
+          {isAssetTask(task) && (task.status === 'running' || task.status === 'awaiting_review' || task.status === 'completed') && (
+            <AssetPreview taskId={task.id} taskType={task.type} taskStatus={task.status} />
           )}
 
           {/* Target files */}
@@ -254,7 +254,7 @@ function isAssetTask(task: ForemanTask): boolean {
   return ASSET_TYPES.has(task.type)
 }
 
-function AssetPreview({ taskId, taskType }: { taskId: string; taskType: string }) {
+function AssetPreview({ taskId, taskType, taskStatus }: { taskId: string; taskType: string; taskStatus: string }) {
   const [error, setError] = useState(false)
   const [cacheKey] = useState(() => Date.now())
   const isAudio = taskType === 'music' || taskType === 'sfx'
@@ -262,7 +262,7 @@ function AssetPreview({ taskId, taskType }: { taskId: string; taskType: string }
 
   // For style exploration, show multi-image grid
   if (isStyleExploration) {
-    return <StyleExplorationGrid taskId={taskId} />
+    return <StyleExplorationGrid taskId={taskId} isRunning={taskStatus === 'running' || taskStatus === 'queued'} />
   }
 
   const assetUrl = `/api/foreman/tasks/${taskId}/asset?t=${cacheKey}`
@@ -348,15 +348,14 @@ function RunTabs({ runs, activeRun, onSelect }: {
   )
 }
 
-function StyleExplorationGrid({ taskId }: { taskId: string }) {
+function StyleExplorationGrid({ taskId, isRunning }: { taskId: string; isRunning?: boolean }) {
   const [files, setFiles] = useState<string[]>([])
   const [availableRuns, setAvailableRuns] = useState<RunInfo[]>([])
   const [activeRun, setActiveRun] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
-  const [cacheKey] = useState(() => Date.now())
+  const [pollKey, setPollKey] = useState(() => Date.now())
 
-  useEffect(() => {
-    setLoading(true)
+  const loadAssets = useCallback(() => {
     const runParam = activeRun !== null ? `?run=${activeRun}` : ''
     fetch(`/api/foreman/tasks/${taskId}/assets${runParam}`)
       .then(r => r.json())
@@ -368,11 +367,27 @@ function StyleExplorationGrid({ taskId }: { taskId: string }) {
       .catch(() => setLoading(false))
   }, [taskId, activeRun])
 
+  // Initial load
+  useEffect(() => {
+    setLoading(true)
+    loadAssets()
+  }, [loadAssets])
+
+  // Poll while running to show images as they arrive
+  useEffect(() => {
+    if (!isRunning) return
+    const interval = setInterval(() => {
+      loadAssets()
+      setPollKey(Date.now()) // bust image cache
+    }, 15_000)
+    return () => clearInterval(interval)
+  }, [isRunning, loadAssets])
+
   if (loading && files.length === 0) {
     return <section><h3 className="text-sm font-medium mb-2">Style Variations</h3><p className="text-xs text-muted-foreground">Loading...</p></section>
   }
 
-  if (files.length === 0 && availableRuns.length === 0) {
+  if (files.length === 0 && availableRuns.length === 0 && !isRunning) {
     return <section><h3 className="text-sm font-medium mb-2">Style Variations</h3><p className="text-xs text-muted-foreground">No variations generated yet</p></section>
   }
 
@@ -380,13 +395,20 @@ function StyleExplorationGrid({ taskId }: { taskId: string }) {
 
   return (
     <section>
-      <h3 className="text-sm font-medium mb-2">Style Variations ({files.length})</h3>
+      <h3 className="text-sm font-medium mb-2 flex items-center gap-2">
+        Style Variations ({files.length})
+        {isRunning && (
+          <span className="text-xs text-emerald-400 flex items-center gap-1">
+            <Loader2 className="size-3 animate-spin" /> Generating...
+          </span>
+        )}
+      </h3>
       <RunTabs runs={availableRuns} activeRun={activeRun} onSelect={setActiveRun} />
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         {files.map((_, i) => (
-          <div key={i} className="relative bg-muted/50 rounded border border-border overflow-hidden">
+          <div key={`${activeRun}-${i}`} className="relative bg-muted/50 rounded border border-border overflow-hidden">
             <img
-              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${cacheKey}${runSuffix}`}
+              src={`/api/foreman/tasks/${taskId}/asset/${i}?t=${pollKey}${runSuffix}`}
               alt={`Variation ${i + 1}`}
               className="w-full aspect-square object-contain"
               style={{ imageRendering: 'pixelated' }}
@@ -397,9 +419,11 @@ function StyleExplorationGrid({ taskId }: { taskId: string }) {
           </div>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground mt-2">
-        Use the Director review to select a style and lock it, or reject to generate new variations.
-      </p>
+      {!isRunning && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Use the Director review to select a style and lock it, or reject to generate new variations.
+        </p>
+      )}
     </section>
   )
 }

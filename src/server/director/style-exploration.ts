@@ -11,7 +11,8 @@ import { createModel, generate } from "../llm";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } from "../db";
-import { extractTag } from "../foreman/task-types";
+
+import { getConfig, serializeConfig, type ComfyUITaskConfig } from "../foreman/comfyui-config";
 import { selectPlannerMachine } from "../planner-llm";
 import { logEpisodic } from "./persistent-memory";
 
@@ -102,21 +103,22 @@ export async function createStyleExplorationTask(
   }
 
   // Use configured preset (continuous exploration mode uses FLUX.2 "concept", default uses SDXL "fast_draft")
-  const config = db.getForemanConfig();
-  const preset = config?.continuous_exploration ? (config.exploration_preset || "concept") : "fast_draft";
+  const foremanConfig = db.getForemanConfig();
+  const preset = foremanConfig?.continuous_exploration ? (foremanConfig.exploration_preset || "concept") : "fast_draft";
 
-  const description = [
-    `[preset: ${preset}]`,
-    `[prompts: ${JSON.stringify(stylePrompts)}]`,
-    `[variation_count: 6]`,
-    `[output: .swe/art/style_exploration/]`,
-    `[needs_human_review]`,
-  ].join("\n");
+  const comfyuiConfig: ComfyUITaskConfig = {
+    mode: "txt2img",
+    preset,
+    prompts: stylePrompts,
+    variationCount: 6,
+    outputPath: ".swe/art/style_exploration/",
+  };
 
   const task = db.createForemanTask({
     project_id: project.id,
     title: `Style exploration: ${project.name} visual identity`,
-    description,
+    description: `Generate 6 style variations for visual style exploration.`,
+    comfyui_config: serializeConfig(comfyuiConfig),
     priority: 1,
     type: "style_exploration",
     model: "auto",
@@ -145,7 +147,7 @@ export async function createStyleExplorationTask(
  */
 export async function queueContinuousExploration(
   db: Db,
-  task: { id: string; directive_id: string | null; project_id: string | null; description: string },
+  task: ForemanTask,
 ): Promise<void> {
   if (!task.directive_id || !task.project_id) return;
 
@@ -157,24 +159,22 @@ export async function queueContinuousExploration(
     console.log("Continuous exploration: style already locked, stopping");
     return;
   }
-  const config = db.getForemanConfig();
-  if (!config?.continuous_exploration) {
+  const foremanConfig = db.getForemanConfig();
+  if (!foremanConfig?.continuous_exploration) {
     console.log("Continuous exploration: disabled, stopping");
     return;
   }
 
+  // Read existing config
+  const existingConfig = getConfig(task);
+
   // Try to generate fresh prompts
-  let updatedDescription = task.description;
+  let newPrompts: string[] | null = null;
   try {
     const previousPrompts = collectPreviousPrompts(db, task.project_id);
-    const freshPrompts = await generateFreshPrompts(db, project, task.directive_id, previousPrompts);
-    if (freshPrompts) {
-      // Replace [prompts: [...]] in the description
-      const promptsMatch = updatedDescription.match(/\[prompts:\s*\[[\s\S]*?\]\]/i);
-      if (promptsMatch) {
-        updatedDescription = updatedDescription.replace(promptsMatch[0], `[prompts: ${JSON.stringify(freshPrompts)}]`);
-      }
-      console.log(`Continuous exploration: generated ${freshPrompts.length} fresh prompts`);
+    newPrompts = await generateFreshPrompts(db, project, task.directive_id, previousPrompts);
+    if (newPrompts) {
+      console.log(`Continuous exploration: generated ${newPrompts.length} fresh prompts`);
     } else {
       console.log("Continuous exploration: prompt generation returned null, re-queuing with same prompts (new seeds)");
     }
@@ -182,16 +182,17 @@ export async function queueContinuousExploration(
     console.warn(`Continuous exploration: prompt generation failed (${err instanceof Error ? err.message : err}), re-queuing with same prompts (new seeds)`);
   }
 
-  // Also update preset if config changed
-  const preset = config.exploration_preset || "concept";
-  const presetMatch = updatedDescription.match(/\[preset:\s*\S+\]/i);
-  if (presetMatch) {
-    updatedDescription = updatedDescription.replace(presetMatch[0], `[preset: ${preset}]`);
-  }
+  // Update config
+  const preset = foremanConfig.exploration_preset || "concept";
+  const updatedConfig: ComfyUITaskConfig = {
+    ...(existingConfig ?? { mode: "txt2img" as const, variationCount: 6 }),
+    preset,
+    ...(newPrompts ? { prompts: newPrompts, variationCount: newPrompts.length } : {}),
+  };
 
   // Re-queue the same task
   db.updateForemanTask(task.id, {
-    description: updatedDescription,
+    comfyui_config: serializeConfig(updatedConfig),
     status: "queued",
     retry_count: 0,
     error_message: null,
@@ -292,17 +293,118 @@ function collectPreviousPrompts(db: Db, projectId: string): string[] {
 
   const allPrompts: string[] = [];
   for (const task of tasks) {
-    const promptsTag = extractTag(task.description, "prompts");
-    if (promptsTag) {
-      try {
-        const parsed = JSON.parse(promptsTag);
-        if (Array.isArray(parsed)) {
-          for (const p of parsed) {
-            if (typeof p === "string") allPrompts.push(p);
-          }
-        }
-      } catch { /* skip unparseable */ }
+    const taskConfig = getConfig(task);
+    if (taskConfig?.prompts) {
+      for (const p of taskConfig.prompts) {
+        allPrompts.push(p);
+      }
     }
   }
   return allPrompts;
+}
+
+// ─── FLUX.2 Enhance ────────────────────────────────────────────────────────
+
+const ENHANCE_VARIATION_PROMPT = `Given an image generation prompt, create 2 variations that keep the same subject and color palette but shift emphasis.
+
+Rules:
+- Variation A: subtly reinterpret the composition or framing while keeping the same core subject and palette
+- Variation B: explore a different angle, perspective, or emphasis while staying true to the original aesthetic
+- Both must name the same specific colors as the original
+- Both must describe the same base art medium (pixel art, etc.)
+- Keep each under 80 words
+
+Respond with a JSON array of exactly 2 prompt strings. No explanation, no formatting — just the JSON array.`;
+
+/**
+ * Create a FLUX.2 img2img enhance task from a selected style exploration image.
+ * Generates 6 variations at graduated denoise levels with prompt variations.
+ */
+export async function createFluxEnhanceTask(
+  db: Db,
+  sourceTask: ForemanTask,
+  project: Project,
+  directive: DirectorDirective,
+  responseContext: string,
+): Promise<string | null> {
+  const parsed = JSON.parse(responseContext) as { selected?: number[]; run?: number };
+  const selectedIndex = parsed.selected?.[0] ?? 0;
+  const sourceRun = parsed.run ?? null;
+
+  // Get the original prompt for the selected image
+  const sourceConfig = getConfig(sourceTask);
+  let originalPrompt = "pixel art scene";
+  if (sourceConfig?.prompts?.[selectedIndex]) {
+    originalPrompt = sourceConfig.prompts[selectedIndex];
+  } else if (sourceConfig?.prompt) {
+    originalPrompt = sourceConfig.prompt;
+  }
+
+  // Generate 2 prompt variations via LLM
+  let varA = originalPrompt;
+  let varB = originalPrompt;
+
+  const machineInfo = selectPlannerMachine(db, project);
+  if (machineInfo) {
+    try {
+      const model = createModel(machineInfo.machine, machineInfo.modelId);
+      const text = (await generate(model, {
+        system: ENHANCE_VARIATION_PROMPT,
+        prompt: `Original prompt: ${originalPrompt}`,
+      })).trim();
+
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const variations = JSON.parse(jsonMatch[0]) as string[];
+        if (variations[0]) varA = variations[0];
+        if (variations[1]) varB = variations[1];
+      }
+      console.log(`Enhance: generated 2 prompt variations`);
+    } catch (err) {
+      console.warn(`Enhance: prompt variation generation failed, using original:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // Build the 6-variation arrays
+  const prompts = [originalPrompt, originalPrompt, varA, varA, varB, varB];
+  const denoiseLevels = [0.25, 0.50, 0.35, 0.60, 0.35, 0.60];
+
+  const comfyuiConfig: ComfyUITaskConfig = {
+    mode: "img2img",
+    preset: "concept",
+    prompts,
+    variationCount: 6,
+    outputPath: ".swe/art/style_exploration/",
+    enhance: {
+      sourceTaskId: sourceTask.id.slice(0, 8),
+      sourceVariation: selectedIndex,
+      sourceRun: sourceRun ?? undefined,
+      denoiseLevels,
+    },
+  };
+
+  const milestone = sourceTask.milestone_id
+    ? db.getDirectorMilestone(sourceTask.milestone_id)
+    : db.getActiveMilestone(directive.id);
+
+  const task = db.createForemanTask({
+    project_id: project.id,
+    title: `Enhance style: FLUX.2 img2img from "${sourceTask.title}"`,
+    description: `FLUX.2 img2img enhancement — 6 variations at graduated denoise levels.`,
+    comfyui_config: serializeConfig(comfyuiConfig),
+    priority: 1,
+    type: "style_exploration",
+    model: "auto",
+    target_files: [],
+    depends_on: [],
+    acceptance_criteria: [],
+    max_retries: 3,
+    status: "queued",
+    directive_id: directive.id,
+    milestone_id: milestone?.id,
+  });
+
+  console.log(`Enhance: created task ${task.id} — 6 FLUX.2 img2img variations from ${sourceTask.id.slice(0, 8)}/${selectedIndex}`);
+  nudgeForeman(db);
+  return task.id;
 }

@@ -10,7 +10,7 @@ import { readdirSync } from "fs";
 import { styleExplorationDir, styleExplorationRunDir } from "../foreman/paths";
 import type { Db, DirectorDirective } from "../db";
 import { lockStyle } from "./style-lock";
-import { extractTag } from "../foreman/task-types";
+import { getConfig } from "../foreman/comfyui-config";
 import { PRESETS } from "../foreman/comfyui-workflows";
 import { addKeyDecision } from "./memory";
 import { logEpisodic } from "./persistent-memory";
@@ -50,7 +50,7 @@ export function handleStyleLock(
 
   if (!selectedFile) throw new Error("Style lock: no variation files found in gallery");
 
-  const taskPreset = extractTag(task.description, "preset") ?? "pixel_sprite";
+  const taskPreset = getConfig(task)?.preset ?? "pixel_sprite";
   const presetConfig = PRESETS[taskPreset as keyof typeof PRESETS];
 
   lockStyle(project.workdir, {
