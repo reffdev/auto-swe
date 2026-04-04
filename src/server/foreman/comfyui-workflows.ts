@@ -680,6 +680,63 @@ export const PRESETS = {
     scheduler: "karras",
     negative: "blurry, photorealistic, 3d render, ray tracing, watermark, text, complex background, deformed",
   },
+
+  // ─── FLUX.2 Presets ───────────────────────────────────────────────────────
+
+  /** FLUX.2 pixel art sprite */
+  flux_pixel_sprite: {
+    checkpoint: "flux2-dev.safetensors",
+    width: 1024,
+    height: 1024,
+    steps: 25,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 game background (landscape) */
+  flux_background: {
+    checkpoint: "flux2-dev.safetensors",
+    width: 1216,
+    height: 832,
+    steps: 25,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 icon / UI element */
+  flux_icon: {
+    checkpoint: "flux2-dev.safetensors",
+    width: 1024,
+    height: 1024,
+    steps: 20,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 portrait / character art */
+  flux_portrait: {
+    checkpoint: "flux2-dev.safetensors",
+    width: 832,
+    height: 1216,
+    steps: 25,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 game asset (items, props, sprites) */
+  flux_game_asset: {
+    checkpoint: "flux2-dev.safetensors",
+    width: 1024,
+    height: 1024,
+    steps: 25,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
 } as const satisfies Record<string, Partial<WorkflowOptions>>;
 
 /** Audio presets — separate from image presets since they use different workflows */

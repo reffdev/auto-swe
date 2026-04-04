@@ -255,39 +255,41 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
   }
 }
 
-/** Signal the Director that something changed. Debounced via microtask. */
+/**
+ * Signal the Director that something changed.
+ * Debounced — rapid-fire nudges collapse into one tick.
+ */
 export function nudgeDirector(db?: Db): void {
   const d = db ?? schedulerDb;
   if (!d) return;
   if (pendingNudge) return;
   pendingNudge = true;
-  queueMicrotask(() => {
+  setTimeout(() => {
     pendingNudge = false;
     directorTick(d).catch(err => console.error("Director scheduler error:", err));
-  });
+  }, 0);
 }
 
 // ─── Director Tick ──────────────────────────────────────────────────────────
 
 async function directorTick(db: Db): Promise<void> {
   const config = db.getForemanConfig();
-  if (!config?.enabled) { console.log("Director tick: skipped — not enabled"); return; }
-  if (processing) { console.log("Director tick: skipped — already processing"); return; }
-  if (isDirectorBusy()) { console.log("Director tick: skipped — director busy"); return; }
+  if (!config?.enabled) return;
+  if (processing) return;
+  if (isDirectorBusy()) return;
   processing = true;
 
   try {
-    const directives = db.getActiveDirectives();
-    for (const directive of directives) {
-      console.log(`Director tick: directive "${directive.directive.slice(0, 40)}..." status=${directive.status}`);
-      if (directive.status === "active") {
-        await processActiveDirective(db, directive);
-      } else if (directive.status === "paused") {
-        await processPausedDirective(db, directive);
+    for (const directive of db.getActiveDirectives()) {
+      // Re-read status in case a previous iteration changed it (e.g., unpause → active)
+      const current = db.getDirectorDirective(directive.id);
+      if (!current) continue;
+
+      if (current.status === "active") {
+        await processActiveDirective(db, current);
+      } else if (current.status === "paused") {
+        await processPausedDirective(db, current);
       }
-    }
-    if (directives.length === 0) {
-      console.log("Director tick: no active/paused directives found");
     }
   } finally {
     processing = false;
@@ -449,53 +451,49 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
 
   const task = codeTask;
   try {
-      const result = await verifyTask(db, task, project);
+    const result = await verifyTask(db, task, project);
 
-      if (result.verdict === "pass") {
-        if (task.description.includes("[needs_human_review]") && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
-          await escalateForHumanReview(db, directive, task, project,
-            `Task "${task.title}" passed automated verification but was flagged for human review.`,
-            result);
-        } else {
-          // Auto-accept: create PR, merge, complete
-          await createAndMergePR(db, task, project, `Auto-accepted (confidence: ${result.confidence})`);
-          await completeVerifiedTask(db, task, project, result.confidence);
-        }
-      } else if (result.verdict === "fail") {
-        db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
-        console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
-        logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
+    if (result.verdict === "pass") {
+      if (task.description.includes("[needs_human_review]") && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
+        await escalateForHumanReview(db, directive, task, project,
+          `Task "${task.title}" passed automated verification but was flagged for human review.`,
+          result);
       } else {
-        // Escalate — low confidence
-        if (shouldEscalate(directive.autonomy_level, "low_confidence")) {
-          await escalateForHumanReview(db, directive, task, project,
-            `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`,
-            result);
-        } else {
-          // High autonomy: auto-accept despite low confidence
-          await createAndMergePR(db, task, project, `Auto-accepted (low confidence: ${result.confidence}, high autonomy)`);
-          await completeVerifiedTask(db, task, project, result.confidence);
-        }
+        await createAndMergePR(db, task, project, `Auto-accepted (confidence: ${result.confidence})`);
+        await completeVerifiedTask(db, task, project, result.confidence);
       }
-    } catch (err) {
-      console.error(`Director: verification error for task ${task.id}:`, err);
-      // Escalate to human review instead of silently retrying forever
-      const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
-      if (existing.length === 0) {
-        const prUrl = await ensureTaskPR(db, task, project);
-        const updated = db.getForemanTask(task.id) ?? task;
-        createReviewGate(db, {
-          directive_id: directive.id, task_id: task.id, review_type: "task_verify",
-          question: `Automated verification failed for "${task.title}". Please review manually.`,
-          context: {
-            issues: [err instanceof Error ? err.message : String(err)],
-            reasoning: "Verification LLM call failed — escalating to human review",
-            task_id: task.id, git_branch: updated.git_branch, git_pr_url: updated.git_pr_url, git_pr_number: updated.git_pr_number,
-          },
-        });
-        console.log(`Director: escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
+    } else if (result.verdict === "fail") {
+      db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
+      console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
+      logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
+    } else {
+      if (shouldEscalate(directive.autonomy_level, "low_confidence")) {
+        await escalateForHumanReview(db, directive, task, project,
+          `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`,
+          result);
+      } else {
+        await createAndMergePR(db, task, project, `Auto-accepted (low confidence: ${result.confidence}, high autonomy)`);
+        await completeVerifiedTask(db, task, project, result.confidence);
       }
     }
+  } catch (err) {
+    console.error(`Director: verification error for task ${task.id}:`, err);
+    const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
+    if (existing.length === 0) {
+      const prUrl = await ensureTaskPR(db, task, project);
+      const updated = db.getForemanTask(task.id) ?? task;
+      createReviewGate(db, {
+        directive_id: directive.id, task_id: task.id, review_type: "task_verify",
+        question: `Automated verification failed for "${task.title}". Please review manually.`,
+        context: {
+          issues: [err instanceof Error ? err.message : String(err)],
+          reasoning: "Verification LLM call failed — escalating to human review",
+          task_id: task.id, git_branch: updated.git_branch, git_pr_url: updated.git_pr_url, git_pr_number: updated.git_pr_number,
+        },
+      });
+      console.log(`Director: escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
+    }
+  }
 }
 
 // ─── Step 2: Handle failed tasks ────────────────────────────────────────────
@@ -527,7 +525,11 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
 
   const tasks = db.getDirectiveTasks(directive.id, activeMilestone.id);
   const allComplete = tasks.length > 0 && tasks.every(t => t.status === "completed");
-  const hasActiveWork = tasks.some(t => t.status === "queued" || t.status === "running" || t.status === "awaiting_review");
+  // Art tasks awaiting review don't block — they're reviewed independently
+  const hasActiveWork = tasks.some(t =>
+    (t.status === "queued" || t.status === "running") ||
+    (t.status === "awaiting_review" && !isComfyUITaskType(t.type))
+  );
 
   if (allComplete) {
     await completeMilestone(db, directive, project, activeMilestone, tasks.length);
@@ -759,19 +761,10 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 
   const acted = await processRespondedReviews(db, directive, project);
 
-  const pendingReviews = db.getPendingReviewsForDirective(directive.id);
-  const shouldStayPaused = shouldPauseDirective(db, directive);
-  console.log(`Director: processPausedDirective — acted=${acted}, shouldStayPaused=${shouldStayPaused}, pendingReviews=${pendingReviews.length}`);
-  for (const r of pendingReviews) {
-    const task = r.task_id ? db.getForemanTask(r.task_id) : null;
-    console.log(`  review ${r.id.slice(0, 8)}: type=${r.review_type}, task_id=${r.task_id?.slice(0, 8) ?? "none"}, task_type=${task?.type ?? "n/a"}, task_status=${task?.status ?? "n/a"}`);
-  }
-
-  // Resume if the pause condition no longer applies
-  if (!shouldStayPaused || acted) {
+  if (acted || !shouldPauseDirective(db, directive)) {
     db.updateDirectorDirective(directive.id, { status: "active" });
     saveProgress(db, directive);
-    nudgeDirector(db);
+    console.log("Director: directive resumed");
   }
 }
 
