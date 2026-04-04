@@ -122,7 +122,7 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
         </Button>
         <div>
           <h2 className="text-sm font-semibold">Review Required</h2>
-          <p className="text-xs text-muted-foreground">{review.review_type.replace('_', ' ')}</p>
+          <p className="text-xs text-muted-foreground">{review.review_type.replaceAll('_', ' ')}</p>
         </div>
       </div>
 
@@ -148,7 +148,7 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
                 <p className="text-xs text-muted-foreground bg-muted p-2 rounded">{context.reasoning}</p>
               )}
               {context.error && (
-                <pre className="text-xs text-destructive bg-destructive/10 p-2 rounded whitespace-pre-wrap">{context.error.slice(0, 2000)}</pre>
+                <pre className="text-xs text-destructive bg-destructive/10 p-2 rounded whitespace-pre-wrap">{context.error as string}</pre>
               )}
             </div>
           )}
@@ -187,52 +187,49 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
             </div>
           )}
 
-          {/* Code task review UI */}
-          {review.review_type === 'task_verify' && (
+          {/* Task review UI — shown for any review linked to a task */}
+          {task && review.review_type !== 'style_selection' && (
             <div className="space-y-4">
-              {/* Task details */}
-              {task && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => navigate(`/foreman/task/${task.id}`)}
-                      className="flex items-center gap-1.5 text-xs text-primary hover:underline">
-                      <FileText className="size-3" />
-                      View full task detail
-                    </button>
-                    <span className="text-[10px] text-muted-foreground">{task.type} | {task.status}</span>
-                  </div>
-                  <div className="bg-muted/50 rounded-md p-3 text-xs space-y-2">
-                    <p className="font-medium">{task.title}</p>
-                    <p className="text-muted-foreground whitespace-pre-wrap">{task.description}</p>
-                    {task.target_files && (() => {
-                      try {
-                        const files = JSON.parse(task.target_files) as string[]
-                        return files.length > 0 ? (
-                          <div>
-                            <span className="text-muted-foreground font-medium">Target files:</span>
-                            <ul className="mt-1 space-y-0.5">
-                              {files.map((f, i) => <li key={i} className="text-muted-foreground font-mono">{f}</li>)}
-                            </ul>
-                          </div>
-                        ) : null
-                      } catch { return null }
-                    })()}
-                    {task.acceptance_criteria && (() => {
-                      try {
-                        const criteria = JSON.parse(task.acceptance_criteria) as string[]
-                        return criteria.length > 0 ? (
-                          <div>
-                            <span className="text-muted-foreground font-medium">Acceptance criteria:</span>
-                            <ul className="mt-1 space-y-0.5">
-                              {criteria.map((c, i) => <li key={i} className="text-muted-foreground">- {c}</li>)}
-                            </ul>
-                          </div>
-                        ) : null
-                      } catch { return null }
-                    })()}
-                  </div>
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => navigate(`/foreman/task/${task.id}`)}
+                    className="flex items-center gap-1.5 text-xs text-primary hover:underline">
+                    <FileText className="size-3" />
+                    View full task detail
+                  </button>
+                  <span className="text-[10px] text-muted-foreground">{task.type} | {task.status}</span>
                 </div>
-              )}
+                <div className="bg-muted/50 rounded-md p-3 text-xs space-y-2">
+                  <p className="font-medium">{task.title}</p>
+                  <p className="text-muted-foreground whitespace-pre-wrap">{task.description}</p>
+                  {task.target_files && (() => {
+                    try {
+                      const files = JSON.parse(task.target_files) as string[]
+                      return files.length > 0 ? (
+                        <div>
+                          <span className="text-muted-foreground font-medium">Target files:</span>
+                          <ul className="mt-1 space-y-0.5">
+                            {files.map((f, i) => <li key={i} className="text-muted-foreground font-mono">{f}</li>)}
+                          </ul>
+                        </div>
+                      ) : null
+                    } catch { return null }
+                  })()}
+                  {task.acceptance_criteria && (() => {
+                    try {
+                      const criteria = JSON.parse(task.acceptance_criteria) as string[]
+                      return criteria.length > 0 ? (
+                        <div>
+                          <span className="text-muted-foreground font-medium">Acceptance criteria:</span>
+                          <ul className="mt-1 space-y-0.5">
+                            {criteria.map((c, i) => <li key={i} className="text-muted-foreground">- {c}</li>)}
+                          </ul>
+                        </div>
+                      ) : null
+                    } catch { return null }
+                  })()}
+                </div>
+              </div>
 
               {/* PR link */}
               {!!context.git_pr_url && (
@@ -278,8 +275,8 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
             </div>
           )}
 
-          {/* Generic free-text response (non-task-verify, non-style-selection) */}
-          {review.review_type !== 'style_selection' && review.review_type !== 'task_verify' && <div className="space-y-2">
+          {/* Generic free-text response — only for reviews without a task-specific UI */}
+          {review.review_type !== 'style_selection' && !task && <div className="space-y-2">
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               {options.length > 0 ? 'Or provide custom response' : 'Your response'}
             </h3>
