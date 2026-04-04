@@ -8,6 +8,11 @@ jest.mock('./Terminal', () => ({
   TerminalView: () => <div data-testid="terminal">Terminal Mock</div>,
 }))
 
+// Mock DocsView to avoid streamdown ESM dependency in jsdom
+jest.mock('./DocsView', () => ({
+  DocsView: () => <div data-testid="docs">Docs Mock</div>,
+}))
+
 const TEST_ROUTES: Array<{ path: string; view: ViewName }> = [
   { path: '/', view: 'landing' },
   { path: '/project/:projectId', view: 'issue-list' },

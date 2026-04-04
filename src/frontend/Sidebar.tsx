@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, FolderGit2, RefreshCw, Activity, Cpu, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope, BookOpen } from 'lucide-react'
+import { Plus, FolderGit2, RefreshCw, Activity, Cpu, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope, BookOpen, BrainCircuit } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -299,11 +299,11 @@ function NewMachineDialog({ open, onClose, onCreated }: {
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [modelId, setModelId] = useState('')
-  const [machineType, setMachineType] = useState<'inference' | 'comfyui'>('inference')
+  const [machineType, setMachineType] = useState<'inference' | 'comfyui' | 'npu'>('inference')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const resetForm = () => { setName(''); setBaseUrl(''); setModelId(''); setMachineType('inference'); setError('') }
+  const resetForm = () => { setName(''); setBaseUrl(''); setModelId(''); setMachineType('inference' as 'inference' | 'comfyui' | 'npu'); setError('') }
   const handleClose = () => { resetForm(); onClose() }
 
   const handleSubmit = async () => {
@@ -339,6 +339,10 @@ function NewMachineDialog({ open, onClose, onCreated }: {
                 onClick={() => { setMachineType('comfyui'); }}
                 className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'comfyui' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
               >ComfyUI</button>
+              <button
+                onClick={() => { setMachineType('npu'); }}
+                className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'npu' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+              >NPU</button>
             </div>
           </div>
           <Input placeholder="Base URL (e.g. http://192.168.1.50:8080/v1)" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} />
@@ -346,7 +350,7 @@ function NewMachineDialog({ open, onClose, onCreated }: {
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
-          <Button onClick={handleSubmit} disabled={!baseUrl || (machineType === 'inference' && !modelId) || submitting}>
+          <Button onClick={handleSubmit} disabled={!baseUrl || (machineType !== 'comfyui' && !modelId) || submitting}>
             {submitting ? 'Adding...' : 'Add Machine'}
           </Button>
         </DialogFooter>
@@ -618,6 +622,8 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                 >
                   {m.machine_type === 'comfyui'
                     ? <Palette className="size-3.5 shrink-0 text-purple-400" />
+                    : m.machine_type === 'npu'
+                    ? <BrainCircuit className="size-3.5 shrink-0 text-cyan-400" />
                     : <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
                   }
                   <span className="truncate flex-1">{m.name || m.model_id || 'Unnamed'}</span>

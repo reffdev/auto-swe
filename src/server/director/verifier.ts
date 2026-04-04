@@ -3,7 +3,7 @@
  *
  * Two-layer verification:
  * 1. Mechanical (existing foreman/validator.ts) — file checks, grep, shell commands
- * 2. LLM review — independent model evaluates the git diff against requirements
+ * 2. LLM review — agent with read-only tool access evaluates the work against requirements
  */
 
 import { createModel, generate } from "../llm";
@@ -11,6 +11,8 @@ import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
+import { runStage } from "../pipeline/run-stage";
+import { makeVerifyTools } from "../tools/filesystem";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
@@ -24,8 +26,9 @@ export interface VerificationResult {
 }
 
 /**
- * Verify a completed task using LLM-based review.
- * Called after the mechanical acceptance criteria have already passed.
+ * Verify a completed task using LLM-based review with tool access.
+ * The verifier agent can read files, search, and run commands to
+ * thoroughly check the work — not just review the diff.
  */
 export async function verifyTask(
   db: Db,
@@ -35,7 +38,6 @@ export async function verifyTask(
   // Select a machine for verification (ideally different from executor)
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) {
-    // No machine available — pass with low confidence (will be re-checked)
     return { verdict: "pass", confidence: 0.5, issues: ["No machine available for LLM verification"], reasoning: "Skipped LLM verification" };
   }
 
@@ -43,7 +45,7 @@ export async function verifyTask(
 
   const workdir = resolveTaskWorkdir(task, project);
 
-  // Get git diff and supplemental file contents
+  // Get git diff and supplemental file contents for initial context
   const gitDiff = getTaskBranchDiff(workdir, task, project) ?? "(no diff available)";
   const supplementalFiles = getSupplementalFileContents(workdir, task, gitDiff);
 
@@ -58,7 +60,7 @@ export async function verifyTask(
 
   // Build verification context: diff + any target files not in the diff
   const verificationContext = supplementalFiles
-    ? `${gitDiff}\n\n## Target Files (not in diff — already existed or from prior work)\n\n${supplementalFiles}`
+    ? `${gitDiff}\n\n## Target Files (full contents, not shown in diff above)\n\n${supplementalFiles}`
     : gitDiff;
 
   const { system, user } = buildVerificationPrompt({
@@ -69,13 +71,31 @@ export async function verifyTask(
     projectConventions: conventions,
   });
 
-  // Call LLM
   const model = createModel(machine, modelId);
+  const tools = makeVerifyTools(workdir);
 
   try {
-    // Verification should be fast — abort after 3 minutes to avoid blocking the director
-    const verifyTimeout = AbortSignal.timeout(3 * 60 * 1000);
-    const text = await generate(model, { system, prompt: user, abortSignal: verifyTimeout });
+    const verifyAbort = new AbortController();
+    const verifyTimeout = setTimeout(() => verifyAbort.abort(), 5 * 60 * 1000);
+
+    const text = await runStage({
+      db,
+      runId: "",  // no pipeline run — verifier is standalone
+      issueId: `verifier:${task.id}`,
+      stageName: `verifier:${task.title}`,
+      model,
+      modelId,
+      systemPrompt: system,
+      userPrompt: user,
+      tools,
+      maxSteps: 30,
+      abortSignal: verifyAbort.signal,
+      contextLimit: machine.context_limit ?? undefined,
+      worktreePath: workdir,
+    });
+
+    clearTimeout(verifyTimeout);
+
     const parsed = parseVerdict(text);
 
     if (!parsed) {
@@ -87,7 +107,6 @@ export async function verifyTask(
       };
     }
 
-    // Map ParsedVerdict to VerificationResult
     const mapped: VerificationResult = {
       verdict: parsed.result,
       confidence: parsed.confidence,

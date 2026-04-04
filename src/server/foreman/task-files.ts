@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
+import { spawnSync } from "child_process";
 import { fetchOrigin, getDiffBetween, getDiff } from "../git-helpers";
 import type { ForemanTask, Project } from "../db";
 
@@ -28,8 +29,8 @@ export function resolveTaskWorkdir(task: ForemanTask, project: Project): string 
 }
 
 /**
- * Read the target files for a task from disk.
- * Returns existence status and file contents for each target file.
+ * Read the target files for a task from disk, falling back to `git show`
+ * to read from the task branch when the worktree has been cleaned up.
  */
 export function readTaskTargetFiles(workdir: string, task: ForemanTask): TaskFileRead[] {
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
@@ -41,6 +42,14 @@ export function readTaskTargetFiles(workdir: string, task: ForemanTask): TaskFil
       if (existsSync(fullPath)) {
         const content = readFileSync(fullPath, "utf-8");
         results.push({ path: f, exists: true, content: content || "(empty file)" });
+      } else if (task.git_branch) {
+        // Worktree may be cleaned up — read from the task branch via git
+        const branchContent = readFileFromBranch(workdir, task.git_branch, f);
+        if (branchContent !== null) {
+          results.push({ path: f, exists: true, content: branchContent || "(empty file)" });
+        } else {
+          results.push({ path: f, exists: false, content: null });
+        }
       } else {
         results.push({ path: f, exists: false, content: null });
       }
@@ -50,6 +59,23 @@ export function readTaskTargetFiles(workdir: string, task: ForemanTask): TaskFil
   }
 
   return results;
+}
+
+/**
+ * Read a file from a git branch without checking it out.
+ * Returns file content, empty string for empty files, or null if not found.
+ */
+function readFileFromBranch(workdir: string, branch: string, filePath: string): string | null {
+  // Try origin/branch first (pushed), then local branch
+  for (const ref of [`origin/${branch}`, branch]) {
+    try {
+      const result = spawnSync("git", ["show", `${ref}:${filePath}`], {
+        cwd: workdir, encoding: "utf-8", timeout: 5_000, shell: false,
+      });
+      if (result.status === 0) return result.stdout;
+    } catch { /* try next ref */ }
+  }
+  return null;
 }
 
 /**

@@ -8,7 +8,7 @@
  */
 
 import { createModel, generate } from "../llm";
-import { selectPlannerMachine } from "../planner-llm";
+import { selectPlannerMachine, selectLightMachine } from "../planner-llm";
 import type { Db } from "../db";
 import { serializeConfig, type ComfyUITaskConfig } from "./comfyui-config";
 
@@ -184,7 +184,8 @@ async function revisePromptsWithLLM(
   prompts: string[],
   feedback: string,
 ): Promise<string[]> {
-  const machineInfo = selectPlannerMachine(db);
+  // Prefer NPU for lightweight prompt revision, fall back to inference
+  const machineInfo = selectLightMachine(db) ?? selectPlannerMachine(db);
   if (!machineInfo) {
     throw new Error("No machine available for prompt revision");
   }
@@ -231,9 +232,10 @@ async function revisePromptWithLLM(
   currentPrompt: string,
   feedback: string,
 ): Promise<string> {
-  const machineInfo = selectPlannerMachine(db);
+  // Prefer NPU for lightweight prompt revision, fall back to inference
+  const machineInfo = selectLightMachine(db) ?? selectPlannerMachine(db);
   if (!machineInfo) {
-    throw new Error("No machine available for prompt revision (selectPlannerMachine returned null)");
+    throw new Error("No machine available for prompt revision (no npu or inference machine found)");
   }
 
   console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);

@@ -6,6 +6,7 @@
  */
 
 import { createModel, generate } from "../llm";
+import { selectLightMachine } from "../planner-llm";
 import { getGlobalDb } from "./scheduler";
 import { writeMemory, readMemory } from "./persistent-memory";
 import type { Db } from "../db";
@@ -25,16 +26,15 @@ export async function extractPatternsFromLogs(
     return;
   }
 
-  // Find any enabled inference machine
-  const machines = db.getMachines().filter((m: any) => m.enabled && m.machine_type === "inference");
-  if (machines.length === 0) {
-    console.log("Episodic extraction: no inference machine available, skipping");
+  // Prefer NPU for lightweight extraction, fall back to inference
+  const machineInfo = selectLightMachine(db);
+  if (!machineInfo) {
+    console.log("Episodic extraction: no machine available, skipping");
     return;
   }
 
-  const machine = machines[0];
-  const modelId = machine.model_id ?? "default";
-  const model = createModel(machine, modelId);
+  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  console.log(`Episodic extraction: using ${machineInfo.machine.machine_type} machine (${machineInfo.machine.name || machineInfo.machine.id})`);
 
   const combined = logContents.join("\n\n---\n\n");
 

@@ -60,6 +60,33 @@ export function selectPlannerMachine(db: Db, project?: Project): { machine: Mach
   return { machine, modelId };
 }
 
+/**
+ * Select a machine for lightweight single-shot tasks (knowledge extraction,
+ * episodic extraction, art feedback). Prefers NPU machines, falls back to inference.
+ *
+ * Unlike selectPlannerMachine, this does NOT respect director_machine_id config —
+ * the whole point is to avoid using the heavy inference machine for simple work.
+ */
+export function selectLightMachine(db: Db): { machine: Machine; modelId: string } | null {
+  const machines = db.getMachines().filter((m: Machine) => m.enabled === 1);
+  if (machines.length === 0) return null;
+
+  // Prefer NPU machines
+  const npuMachines = machines.filter((m: Machine) => m.machine_type === "npu");
+  if (npuMachines.length > 0) {
+    const machine = npuMachines[0];
+    const modelId = machine.model_id;
+    if (modelId) return { machine, modelId };
+  }
+
+  // Fall back to any inference machine
+  const inferenceMachines = machines.filter((m: Machine) => m.machine_type === "inference");
+  const machine = inferenceMachines[0] ?? machines[0];
+  const modelId = machine.model_id;
+  if (!modelId) return null;
+  return { machine, modelId };
+}
+
 // ─── Response generation ─────────────────────────────────────────────────────
 
 export async function generatePlannerResponse(opts: {

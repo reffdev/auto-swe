@@ -16,7 +16,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   const [name, setName] = useState(machine.name)
   const [baseUrl, setBaseUrl] = useState(machine.base_url)
   const [modelId, setModelId] = useState(machine.model_id ?? '')
-  const [machineType, setMachineType] = useState<'inference' | 'comfyui'>(machine.machine_type as 'inference' | 'comfyui' ?? 'inference')
+  const [machineType, setMachineType] = useState<'inference' | 'comfyui' | 'npu'>(machine.machine_type as 'inference' | 'comfyui' | 'npu' ?? 'inference')
   const [enabled, setEnabled] = useState(!!machine.enabled)
   const [contextLimit, setContextLimit] = useState(machine.context_limit?.toString() ?? '')
   const [maxConcurrent, setMaxConcurrent] = useState(machine.max_concurrent?.toString() ?? '1')
@@ -31,7 +31,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     setName(machine.name)
     setBaseUrl(machine.base_url)
     setModelId(machine.model_id ?? '')
-    setMachineType(machine.machine_type as 'inference' | 'comfyui' ?? 'inference')
+    setMachineType(machine.machine_type as 'inference' | 'comfyui' | 'npu' ?? 'inference')
     setEnabled(!!machine.enabled)
     setContextLimit(machine.context_limit?.toString() ?? '')
     setMaxConcurrent(machine.max_concurrent?.toString() ?? '1')
@@ -132,8 +132,12 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
                 onClick={() => { setMachineType('comfyui'); }}
                 className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'comfyui' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
               >ComfyUI</button>
+              <button
+                onClick={() => { setMachineType('npu'); }}
+                className={cn('px-3 py-1.5 text-sm rounded-md border transition-colors', machineType === 'npu' ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground')}
+              >NPU</button>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">Inference machines run LLM tasks. ComfyUI machines run art/music/sfx generation.</p>
+            <p className="text-xs text-muted-foreground mt-1">Inference: heavy LLM tasks. ComfyUI: art/music/sfx. NPU: lightweight extraction &amp; feedback.</p>
           </div>
 
           <div>
@@ -208,7 +212,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
 
       {/* Actions */}
       <div className="px-6 py-4 border-t border-border flex items-center gap-3">
-        <Button onClick={handleSave} disabled={!hasChanges || !baseUrl || (machineType === 'inference' && !modelId) || saving}>
+        <Button onClick={handleSave} disabled={!hasChanges || !baseUrl || (machineType !== 'comfyui' && !modelId) || saving}>
           <Save className="size-3.5 mr-1.5" />
           {saving ? 'Saving...' : 'Save Changes'}
         </Button>

@@ -42,7 +42,7 @@ let lastPlanError: { timestamp: number; message: string } | null = null;
 // Re-export from isolated state module (no circular dep issues)
 export { isDirectorBusy, isDirectorPlanning } from "./director-state";
 import { isDirectorBusy, setDirectorReservedMachine, getDirectorReservedMachine, isDirectorPlanning, setDirectorPlanning } from "./director-state";
-import { selectPlannerMachine } from "../planner-llm";
+import { selectPlannerMachine, selectLightMachine } from "../planner-llm";
 
 /** Consecutive zero-task plan attempts per milestone — backs off after 2. */
 const zeroTaskCounts = new Map<string, number>();
@@ -375,7 +375,8 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
   if (pending.length === 0) return;
 
   const task = pending[0];
-  const machineInfo = selectPlannerMachine(db, project);
+  // Prefer NPU for lightweight extraction work — no need to tie up the big model
+  const machineInfo = selectLightMachine(db) ?? selectPlannerMachine(db, project);
   if (!machineInfo) {
     console.log(`Knowledge extraction: no machine available, will retry next tick (${pending.length} task(s) pending)`);
     return;
@@ -772,7 +773,8 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 
 function getIdleMachineTypes(db: Db, directiveId: string, milestoneId: string): string[] {
   const machines = db.getMachines().filter(m => m.enabled);
-  const machineTypes = new Set(machines.map(m => m.machine_type));
+  // Exclude NPU — it handles lightweight extraction/feedback, not Foreman tasks
+  const machineTypes = new Set(machines.filter(m => m.machine_type !== "npu").map(m => m.machine_type));
 
   const tasks = db.getDirectiveTasks(directiveId, milestoneId);
   const activeTasks = tasks.filter(t => t.status === "queued" || t.status === "running");

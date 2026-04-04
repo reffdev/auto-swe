@@ -12,10 +12,19 @@ export const COMFYUI_TASK_TYPES = new Set(["art", "music", "sfx", "style_explora
 /** All task types that route to inference machines */
 export const INFERENCE_TASK_TYPES = new Set(["code", "review", "content", "claude"]);
 
+/**
+ * NPU machines handle the same task types as inference but at lower capability.
+ * They're preferred for lightweight single-shot tasks (extraction, feedback)
+ * via selectLightMachine(), not through Foreman dispatch routing.
+ * For Foreman dispatch purposes, NPU is treated as inference-compatible.
+ */
+export const NPU_TASK_TYPES = INFERENCE_TASK_TYPES;
+
 /** Map machine type → task types it handles */
 export const MACHINE_TYPE_TASK_TYPES: Record<string, Set<string>> = {
   inference: INFERENCE_TASK_TYPES,
   comfyui: COMFYUI_TASK_TYPES,
+  npu: NPU_TASK_TYPES,
 };
 
 /** Check if a task type routes to a ComfyUI machine */

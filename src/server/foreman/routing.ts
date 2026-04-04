@@ -4,6 +4,7 @@
  * Machine types:
  *   "inference" — Ollama/OpenAI-compatible LLM endpoints (code, content, review tasks)
  *   "comfyui"   — ComfyUI image/audio generation server (art, music, sfx tasks)
+ *   "npu"       — NPU-hosted small models for lightweight tasks (extraction, feedback)
  */
 
 import type { ForemanTask } from "../db";
@@ -11,7 +12,7 @@ import { isComfyUITaskType } from "./task-types";
 
 export interface RouteResult {
   modelId: string;
-  machineType: "inference" | "comfyui";
+  machineType: "inference" | "comfyui" | "npu";
 }
 
 const COMPLEX_KEYWORDS = /architect|system|manager|refactor|implement|engine|framework/i;

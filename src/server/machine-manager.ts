@@ -5,7 +5,7 @@
  * before using a machine. The manager handles:
  * - Mutual exclusion (one consumer per machine slot)
  * - Priority-based queuing (director > foreman by default)
- * - Machine type routing (inference vs comfyui)
+ * - Machine type routing (inference vs comfyui vs npu)
  * - Lease expiry (prevents stuck leases from crashed consumers)
  * - Observability (who's using what)
  */
@@ -71,6 +71,8 @@ export function acquireLease(
     machineType?: string;
     preferredMachineId?: string;
     timeoutMs?: number;
+    /** If no machine of the primary type is available, try these types in order. */
+    fallbackMachineTypes?: string[];
   },
 ): { lease: MachineLease; machine: Machine } | null {
   // Clean expired leases first
@@ -95,32 +97,38 @@ export function acquireLease(
     }
   }
 
-  // Find any available machine of the right type
-  const candidates = machines.filter(m =>
-    m.enabled &&
-    m.machine_type === machineType &&
-    hasCapacity(m) &&
-    getBreaker(m.id).canExecute()
-  );
+  // Build ordered list of machine types to try: primary first, then fallbacks
+  const typesToTry = [machineType, ...(opts?.fallbackMachineTypes ?? [])];
 
-  if (candidates.length === 0) {
-    // Rate-limit this log to once per machine type per minute
-    const now = Date.now();
-    const lastLog = lastNoMachineLog.get(machineType) ?? 0;
-    if (now - lastLog >= NO_MACHINE_LOG_INTERVAL_MS) {
-      lastNoMachineLog.set(machineType, now);
-      const allOfType = machines.filter(m => m.machine_type === machineType);
-      console.log(`Machine manager: no ${machineType} machine available for ${consumer}/${label}. Total: ${allOfType.length}, enabled: ${allOfType.filter(m => m.enabled).length}, with capacity: ${allOfType.filter(m => hasCapacity(m)).length}, breaker ok: ${allOfType.filter(m => getBreaker(m.id).canExecute()).length}`);
+  for (const tryType of typesToTry) {
+    const candidates = machines.filter(m =>
+      m.enabled &&
+      m.machine_type === tryType &&
+      hasCapacity(m) &&
+      getBreaker(m.id).canExecute()
+    );
+
+    if (candidates.length > 0) {
+      // Pick the machine with the fewest active leases
+      candidates.sort((a, b) => getLeaseCount(a.id) - getLeaseCount(b.id));
+      const machine = candidates[0];
+      const lease = createLease(machine.id, consumer, label, timeoutMs);
+      if (tryType !== machineType) {
+        console.log(`Machine manager: using fallback ${tryType} machine for ${consumer}/${label} (no ${machineType} available)`);
+      }
+      return { lease, machine };
     }
-    return null;
   }
 
-  // Pick the machine with the fewest active leases
-  candidates.sort((a, b) => getLeaseCount(a.id) - getLeaseCount(b.id));
-  const machine = candidates[0];
-  const lease = createLease(machine.id, consumer, label, timeoutMs);
-
-  return { lease, machine };
+  // No machine available in any type
+  const now = Date.now();
+  const lastLog = lastNoMachineLog.get(machineType) ?? 0;
+  if (now - lastLog >= NO_MACHINE_LOG_INTERVAL_MS) {
+    lastNoMachineLog.set(machineType, now);
+    const allOfType = machines.filter(m => m.machine_type === machineType);
+    console.log(`Machine manager: no ${machineType} machine available for ${consumer}/${label}. Total: ${allOfType.length}, enabled: ${allOfType.filter(m => m.enabled).length}, with capacity: ${allOfType.filter(m => hasCapacity(m)).length}, breaker ok: ${allOfType.filter(m => getBreaker(m.id).canExecute()).length}`);
+  }
+  return null;
 }
 
 /**
