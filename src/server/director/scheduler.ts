@@ -753,8 +753,8 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 
   const acted = await processRespondedReviews(db, directive, project);
 
-  const stillPending = db.getPendingReviewsForDirective(directive.id);
-  if (stillPending.length === 0 || acted) {
+  // Resume if the pause condition no longer applies
+  if (!shouldPauseDirective(db, directive) || acted) {
     db.updateDirectorDirective(directive.id, { status: "active" });
     saveProgress(db, directive);
     nudgeDirector(db);
