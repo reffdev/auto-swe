@@ -25,12 +25,10 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
       if (r) {
         setReview(r)
         // Fetch the associated task for detail display
-        try {
-          const ctx = JSON.parse(r.context)
-          if (ctx.task_id) {
-            api.getForemanTask(ctx.task_id).then(setTask).catch(() => {})
-          }
-        } catch { /* ignore */ }
+        const taskId = r.task_id ?? (() => { try { return JSON.parse(r.context)?.task_id } catch { return null } })()
+        if (taskId) {
+          api.getForemanTask(taskId).then(setTask).catch(() => {})
+        }
       }
     }).catch(() => {})
   }, [reviewId])
@@ -38,7 +36,7 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
   // Poll for new review gate after regenerate/refine
   useEffect(() => {
     if (!waitingForRegeneration || !review) return
-    const taskId = (() => { try { return JSON.parse(review.context)?.task_id } catch { return null } })()
+    const taskId = review.task_id ?? (() => { try { return JSON.parse(review.context)?.task_id } catch { return null } })()
     if (!taskId) return
 
     const interval = setInterval(() => {
@@ -167,9 +165,9 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
           )}
 
           {/* Style selection UI */}
-          {review.review_type === 'style_selection' && context.task_id && !waitingForRegeneration && (
+          {review.review_type === 'style_selection' && review.task_id && !waitingForRegeneration && (
             <StyleSelectionPanel
-              taskId={context.task_id ?? ""}
+              taskId={review.task_id}
               onLock={(selectedIndex, feedback, run) => handleRespond(JSON.stringify({ action: 'lock', selected: [selectedIndex], feedback, run }))}
               onRefine={(feedback) => handleRespond(JSON.stringify({ action: 'refine', feedback }), true)}
               onRegenerate={() => handleRespond(JSON.stringify({ action: 'regenerate' }), true)}
