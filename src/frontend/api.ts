@@ -556,6 +556,10 @@ export function queueAllForemanTasks(): Promise<{ queued: number }> {
   return json("/api/foreman/queue-all", { method: "POST" });
 }
 
+export function getForemanTask(taskId: string): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${taskId}`);
+}
+
 export function getForemanTaskRuns(taskId: string): Promise<ForemanRun[]> {
   return json(`/api/foreman/tasks/${taskId}/runs`);
 }

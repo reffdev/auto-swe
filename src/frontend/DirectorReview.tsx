@@ -1,16 +1,19 @@
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Send, X, CheckCircle, Lock, Check, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Send, X, CheckCircle, Lock, Check, ExternalLink, FileText } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import * as api from './api'
-import type { DirectorReview as DirectorReviewType } from './api'
+import type { DirectorReview as DirectorReviewType, ForemanTask } from './api'
 
 export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
   reviewId: string
   onBack: () => void
   onNavigateReview?: (reviewId: string) => void
 }) {
+  const navigate = useNavigate()
   const [review, setReview] = useState<DirectorReviewType | null>(null)
+  const [task, setTask] = useState<ForemanTask | null>(null)
   const [response, setResponse] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [waitingForRegeneration, setWaitingForRegeneration] = useState(false)
@@ -19,7 +22,16 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
   useEffect(() => {
     api.getDirectorReviews().then(reviews => {
       const r = reviews.find(rev => rev.id === reviewId)
-      if (r) setReview(r)
+      if (r) {
+        setReview(r)
+        // Fetch the associated task for detail display
+        try {
+          const ctx = JSON.parse(r.context)
+          if (ctx.task_id) {
+            api.getForemanTask(ctx.task_id).then(setTask).catch(() => {})
+          }
+        } catch { /* ignore */ }
+      }
     }).catch(() => {})
   }, [reviewId])
 
@@ -178,6 +190,50 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
           {/* Code task review UI */}
           {review.review_type === 'task_verify' && (
             <div className="space-y-4">
+              {/* Task details */}
+              {task && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => navigate(`/foreman/task/${task.id}`)}
+                      className="flex items-center gap-1.5 text-xs text-primary hover:underline">
+                      <FileText className="size-3" />
+                      View full task detail
+                    </button>
+                    <span className="text-[10px] text-muted-foreground">{task.type} | {task.status}</span>
+                  </div>
+                  <div className="bg-muted/50 rounded-md p-3 text-xs space-y-2">
+                    <p className="font-medium">{task.title}</p>
+                    <p className="text-muted-foreground whitespace-pre-wrap">{task.description}</p>
+                    {task.target_files && (() => {
+                      try {
+                        const files = JSON.parse(task.target_files) as string[]
+                        return files.length > 0 ? (
+                          <div>
+                            <span className="text-muted-foreground font-medium">Target files:</span>
+                            <ul className="mt-1 space-y-0.5">
+                              {files.map((f, i) => <li key={i} className="text-muted-foreground font-mono">{f}</li>)}
+                            </ul>
+                          </div>
+                        ) : null
+                      } catch { return null }
+                    })()}
+                    {task.acceptance_criteria && (() => {
+                      try {
+                        const criteria = JSON.parse(task.acceptance_criteria) as string[]
+                        return criteria.length > 0 ? (
+                          <div>
+                            <span className="text-muted-foreground font-medium">Acceptance criteria:</span>
+                            <ul className="mt-1 space-y-0.5">
+                              {criteria.map((c, i) => <li key={i} className="text-muted-foreground">- {c}</li>)}
+                            </ul>
+                          </div>
+                        ) : null
+                      } catch { return null }
+                    })()}
+                  </div>
+                </div>
+              )}
+
               {/* PR link */}
               {!!context.git_pr_url && (
                 <a href={context.git_pr_url as string} target="_blank" rel="noopener noreferrer"
@@ -186,6 +242,13 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
                   <span>Review PR #{String(context.git_pr_number)}</span>
                   <span className="text-xs text-muted-foreground ml-auto">on {String(context.git_branch)}</span>
                 </a>
+              )}
+
+              {/* No PR available */}
+              {!context.git_pr_url && task?.git_branch && (
+                <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
+                  No PR created (branch: {task.git_branch}). The task may have had no changes to commit.
+                </div>
               )}
 
               {/* Reject feedback */}

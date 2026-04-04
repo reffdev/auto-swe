@@ -46,9 +46,29 @@ export async function verifyTask(
   const isWorktree = !!(task.git_worktree && existsSync(task.git_worktree));
   const workdir = isWorktree ? task.git_worktree! : project.workdir;
 
-  // Get git diff for the task's branch — this contains the full file changes,
-  // so we don't need to read the files separately
-  const gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch, isWorktree);
+  // Get git diff for the task's branch
+  let gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch, isWorktree);
+
+  // If diff is empty (files already existed or were committed in a prior attempt),
+  // fall back to reading the target files directly so the verifier has something to check
+  const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
+  let fileContents = "";
+  if (gitDiff.length < 50 && targetFiles.length > 0) {
+    const parts: string[] = [];
+    for (const f of targetFiles) {
+      try {
+        const fullPath = resolve(workdir, f);
+        if (existsSync(fullPath)) {
+          const content = readFileSync(fullPath, "utf-8");
+          parts.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``);
+        } else {
+          parts.push(`### ${f}\n(file does not exist)`);
+        }
+      } catch { /* skip */ }
+    }
+    fileContents = parts.join("\n\n");
+    console.log(`Verifier: empty diff — read ${parts.length} target file(s) instead`);
+  }
 
   // Read project conventions
   const claudeMdPath = resolve(workdir, "CLAUDE.md");
@@ -57,16 +77,18 @@ export async function verifyTask(
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
-  // Diagnostic: log what the verifier is working with
-  console.log(`Verifier: "${task.title}" — ${isWorktree ? "worktree" : "project"}, branch: ${task.git_branch}, diff: ${gitDiff.length} chars`);
-  if (gitDiff.length < 50) console.warn(`Verifier: empty/short diff: ${JSON.stringify(gitDiff)}`);
+  console.log(`Verifier: "${task.title}" — ${isWorktree ? "worktree" : "project"}, branch: ${task.git_branch}, diff: ${gitDiff.length} chars${fileContents ? `, fallback files: ${targetFiles.length}` : ""}`);
 
   // Build verification prompt
+  const verificationContext = fileContents
+    ? `${gitDiff}\n\n## Target Files (read directly — no diff available)\n\n${fileContents}`
+    : gitDiff;
+
   const { system, user } = buildVerificationPrompt({
     taskTitle: task.title,
     taskDescription: task.description,
     acceptanceCriteria: criteria,
-    gitDiff,
+    gitDiff: verificationContext,
     projectConventions: conventions,
   });
 

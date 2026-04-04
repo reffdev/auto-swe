@@ -262,7 +262,7 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
 export function nudgeDirector(db?: Db): void {
   const d = db ?? schedulerDb;
   if (!d) return;
-  if (pendingNudge) return;
+  if (pendingNudge) { console.log("Director: nudge skipped (already pending)"); return; }
   pendingNudge = true;
   setTimeout(() => {
     pendingNudge = false;
