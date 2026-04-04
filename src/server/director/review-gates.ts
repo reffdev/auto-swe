@@ -88,14 +88,16 @@ export function shouldPauseDirective(db: Db, directive: DirectorDirective): bool
 
   // Don't pause if the only pending reviews are for art/comfyui tasks —
   // art reviews shouldn't block code task planning
-  const hasNonArtReviews = pendingReviews.some(r => {
-    if (!r.task_id) return true; // non-task review (e.g., milestone gate) blocks
+  const hasBlockingReviews = pendingReviews.some(r => {
+    // Reviews without a task_id: only milestone gates block
+    if (!r.task_id) return r.review_type === "milestone_gate";
+    // Reviews for code/content tasks block
     const task = tasks.find(t => t.id === r.task_id);
-    if (!task) return true;
+    if (!task) return false;
     return task.type === "code" || task.type === "content";
   });
 
-  return hasNonArtReviews;
+  return hasBlockingReviews;
 }
 
 /**
