@@ -276,12 +276,17 @@ async function directorTick(db: Db): Promise<void> {
   processing = true;
 
   try {
-    for (const directive of db.getActiveDirectives()) {
+    const directives = db.getActiveDirectives();
+    for (const directive of directives) {
+      console.log(`Director tick: directive "${directive.directive.slice(0, 40)}..." status=${directive.status}`);
       if (directive.status === "active") {
         await processActiveDirective(db, directive);
       } else if (directive.status === "paused") {
         await processPausedDirective(db, directive);
       }
+    }
+    if (directives.length === 0) {
+      console.log("Director tick: no active/paused directives found");
     }
   } finally {
     processing = false;
@@ -753,8 +758,11 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 
   const acted = await processRespondedReviews(db, directive, project);
 
+  const shouldStayPaused = shouldPauseDirective(db, directive);
+  console.log(`Director: processPausedDirective — acted=${acted}, shouldStayPaused=${shouldStayPaused}, pendingReviews=${db.getPendingReviewsForDirective(directive.id).length}`);
+
   // Resume if the pause condition no longer applies
-  if (!shouldPauseDirective(db, directive) || acted) {
+  if (!shouldStayPaused || acted) {
     db.updateDirectorDirective(directive.id, { status: "active" });
     saveProgress(db, directive);
     nudgeDirector(db);
