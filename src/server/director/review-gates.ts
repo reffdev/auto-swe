@@ -91,9 +91,11 @@ export function shouldPauseDirective(db: Db, directive: DirectorDirective): bool
   const hasBlockingReviews = pendingReviews.some(r => {
     // Reviews without a task_id: only milestone gates block
     if (!r.task_id) return r.review_type === "milestone_gate";
-    // Reviews for code/content tasks block
+    // Reviews for tasks that are already completed/failed are stale — don't block
     const task = tasks.find(t => t.id === r.task_id);
     if (!task) return false;
+    if (task.status === "completed" || task.status === "failed") return false;
+    // Only code/content reviews block
     return task.type === "code" || task.type === "content";
   });
 
