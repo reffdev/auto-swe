@@ -10,7 +10,7 @@ import { createModel, generate } from "../llm";
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { fetchOrigin, getDiffBetween, getDiff, showFile } from "../git-helpers";
+import { fetchOrigin, getDiffBetween, getDiff } from "../git-helpers";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
@@ -46,12 +46,9 @@ export async function verifyTask(
   const isWorktree = !!(task.git_worktree && existsSync(task.git_worktree));
   const workdir = isWorktree ? task.git_worktree! : project.workdir;
 
-  // Get git diff for the task's branch
+  // Get git diff for the task's branch — this contains the full file changes,
+  // so we don't need to read the files separately
   const gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch, isWorktree);
-
-  // Read modified files
-  const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
-  const fileContents = readTargetFiles(workdir, targetFiles, task.git_branch);
 
   // Read project conventions
   const claudeMdPath = resolve(workdir, "CLAUDE.md");
@@ -61,7 +58,7 @@ export async function verifyTask(
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
   // Diagnostic: log what the verifier is working with
-  console.log(`Verifier: "${task.title}" — ${isWorktree ? "worktree" : "project"}, branch: ${task.git_branch}, diff: ${gitDiff.length} chars, files: ${targetFiles.length}`);
+  console.log(`Verifier: "${task.title}" — ${isWorktree ? "worktree" : "project"}, branch: ${task.git_branch}, diff: ${gitDiff.length} chars`);
   if (gitDiff.length < 50) console.warn(`Verifier: empty/short diff: ${JSON.stringify(gitDiff)}`);
 
   // Build verification prompt
@@ -70,7 +67,6 @@ export async function verifyTask(
     taskDescription: task.description,
     acceptanceCriteria: criteria,
     gitDiff,
-    fileContents,
     projectConventions: conventions,
   });
 
@@ -78,7 +74,9 @@ export async function verifyTask(
   const model = createModel(machine, modelId);
 
   try {
-    const text = await generate(model, { system, prompt: user });
+    // Verification should be fast — abort after 3 minutes to avoid blocking the director
+    const verifyTimeout = AbortSignal.timeout(3 * 60 * 1000);
+    const text = await generate(model, { system, prompt: user, abortSignal: verifyTimeout });
     const parsed = parseVerdict(text);
 
     if (!parsed) {
@@ -176,7 +174,8 @@ export async function verifyMilestone(
   const model = createModel(machineInfo.machine, machineInfo.modelId);
 
   try {
-    const text = await generate(model, { system, prompt: user });
+    const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
+    const text = await generate(model, { system, prompt: user, abortSignal: milestoneTimeout });
     const parsed = parseVerdict(text);
     if (!parsed) return { passed: true, issues: ["Could not parse milestone verdict"] };
     return { passed: parsed.result === "pass", issues: parsed.issues };
@@ -207,31 +206,6 @@ function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "ma
   } catch {
     return "(could not generate diff)";
   }
-}
-
-function readTargetFiles(workdir: string, targetFiles: string[], branch?: string | null): string {
-  const parts: string[] = [];
-  for (const f of targetFiles.slice(0, 10)) {
-    try {
-      let content: string | undefined;
-
-      // First try reading from disk (works if workdir is the correct worktree)
-      const fullPath = resolve(workdir, f);
-      if (existsSync(fullPath)) {
-        content = readFileSync(fullPath, "utf-8");
-      }
-
-      // If file not found on disk and we have a branch, read from git
-      if (!content && branch) {
-        content = showFile(workdir, `origin/${branch}:${f}`) ?? undefined;
-      }
-
-      if (content) {
-        parts.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``);
-      }
-    } catch { /* skip */ }
-  }
-  return parts.join("\n\n") || "(no target files found)";
 }
 
 function getProjectState(workdir: string): string {

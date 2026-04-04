@@ -212,7 +212,6 @@ export function buildVerificationPrompt(opts: {
   taskDescription: string;
   acceptanceCriteria: string[];
   gitDiff: string;
-  fileContents: string;
   projectConventions?: string;
 }): { system: string; user: string } {
   const system = [
@@ -251,9 +250,6 @@ export function buildVerificationPrompt(opts: {
     "```diff",
     opts.gitDiff,
     "```",
-    "",
-    "## Modified Files",
-    opts.fileContents,
   ].join("\n");
 
   if (opts.projectConventions) {

@@ -433,7 +433,12 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
   }
 
   // Verify ONE code task per tick to avoid blocking the system on long LLM calls
-  const codeTask = awaitingTasks.find(t => !isComfyUITaskType(t.type));
+  // Skip tasks that already have a pending review gate (already escalated)
+  const pendingReviews = db.getDirectorReviews(directive.id).filter(r => r.status === "pending");
+  const codeTask = awaitingTasks.find(t =>
+    !isComfyUITaskType(t.type) &&
+    !pendingReviews.some(r => r.task_id === t.id)
+  );
   if (!codeTask) return;
 
   const task = codeTask;
