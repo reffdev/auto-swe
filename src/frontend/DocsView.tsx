@@ -5,7 +5,7 @@ import { Streamdown } from 'streamdown'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
 import { math } from '@streamdown/math'
-import { mermaid } from '@streamdown/mermaid'
+import { createMermaidPlugin } from '@streamdown/mermaid'
 import { ChevronRight, ChevronDown, FileText, Folder, BookOpen } from 'lucide-react'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -24,7 +24,18 @@ interface DocsTree {
 
 // ─── Streamdown renderer ────────────────────────────────────────────────────
 
-const streamdownPlugins = { cjk, code, math, mermaid }
+const docsMermaid = createMermaidPlugin({
+  config: {
+    theme: 'dark',
+    flowchart: { useMaxWidth: true, padding: 16 },
+    sequence: { useMaxWidth: true },
+    themeVariables: {
+      fontSize: '14px',
+    },
+  },
+})
+
+const streamdownPlugins = { cjk, code, math, mermaid: docsMermaid }
 
 const MarkdownRenderer = memo(({ content }: { content: string }) => (
   <Streamdown
@@ -184,7 +195,7 @@ export function DocsView() {
           <div className="p-6 text-destructive text-sm">Error loading file: {error}</div>
         )}
         {!loading && !error && content !== null && (
-          <div className="max-w-4xl mx-auto px-8 py-6">
+          <div className="px-8 py-6">
             <div className="mb-4 text-xs text-muted-foreground font-mono">
               {selectedPath}
             </div>
@@ -208,8 +219,11 @@ export function DocsView() {
               [&_td]:p-2 [&_td]:border [&_td]:border-border [&_td]:text-foreground/90
               [&_tr:hover]:bg-accent/30
               [&_hr]:border-border [&_hr]:my-6
-              [&_.mermaid]:my-4 [&_.mermaid]:flex [&_.mermaid]:justify-center
             ">
+              <style dangerouslySetInnerHTML={{ __html: `
+                article [role="img"] { width: 100%; overflow-x: auto; margin: 1.5rem 0; }
+                article [role="img"] svg { width: 100%; height: auto; min-height: 200px; max-height: 80vh; }
+              `}} />
               <MarkdownRenderer content={content} />
             </article>
           </div>
