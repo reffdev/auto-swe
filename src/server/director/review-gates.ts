@@ -84,9 +84,18 @@ export function shouldPauseDirective(db: Db, directive: DirectorDirective): bool
     (t.status === "queued" || t.status === "running") &&
     !pendingReviews.some(r => r.task_id === t.id)
   );
+  if (unblockedTasks.length > 0) return false;
 
-  // If there are unblocked tasks, don't pause — let them continue
-  return unblockedTasks.length === 0;
+  // Don't pause if the only pending reviews are for art/comfyui tasks —
+  // art reviews shouldn't block code task planning
+  const hasNonArtReviews = pendingReviews.some(r => {
+    if (!r.task_id) return true; // non-task review (e.g., milestone gate) blocks
+    const task = tasks.find(t => t.id === r.task_id);
+    if (!task) return true;
+    return task.type === "code" || task.type === "content";
+  });
+
+  return hasNonArtReviews;
 }
 
 /**
