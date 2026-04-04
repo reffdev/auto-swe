@@ -80,8 +80,8 @@ export async function executeComfyUITask(
     // ─── Style lock (IP-Adapter injection) ─────────────────────────────────
 
     // IP-Adapter style lock — only for SDXL workflows (not FLUX.2 or audio)
-    const isFlux = config.preset?.startsWith("flux") || config.preset === "concept";
-    if (config.styleLock && !isFlux && config.mode !== "audio") {
+    const isFluxWorkflow = config.preset?.startsWith("flux") || config.preset === "concept" || config.mode === "img2img";
+    if (config.styleLock && !isFluxWorkflow && config.mode !== "audio") {
       workflow = await applyStyleLock(workflow, project, task, comfyBase);
     }
 
