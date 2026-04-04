@@ -271,8 +271,9 @@ export function nudgeDirector(db?: Db): void {
 
 async function directorTick(db: Db): Promise<void> {
   const config = db.getForemanConfig();
-  if (!config?.enabled) return;
-  if (processing || isDirectorBusy()) return;
+  if (!config?.enabled) { console.log("Director tick: skipped — not enabled"); return; }
+  if (processing) { console.log("Director tick: skipped — already processing"); return; }
+  if (isDirectorBusy()) { console.log("Director tick: skipped — director busy"); return; }
   processing = true;
 
   try {
