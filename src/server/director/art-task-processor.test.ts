@@ -151,7 +151,7 @@ describe("postProcessArtTasks", () => {
     });
     // No background workflow in test manifest, so falls back to preset
     const result = postProcessArtTasks([bgTask], projectDir);
-    expect(result[0].description).toContain("[preset: flux_background]");
+    expect(result[0].description).toContain("[preset: flux_fast_background]");
     expect(result[0].description).toContain("[prompt:");
   });
 
@@ -191,7 +191,7 @@ describe("postProcessArtTasks", () => {
     const task = makeTask();
     const result = postProcessArtTasks([task], noManifestDir);
     // Should inject preset tags instead of manifest-based tags
-    expect(result[0].description).toContain("[preset: flux_pixel_sprite]");
+    expect(result[0].description).toContain("[preset: flux_fast]");
     expect(result[0].description).toContain("[prompt:");
     expect(result[0].description).toContain("[output:");
     expect(result[0].needs_human_review).toBe(true);

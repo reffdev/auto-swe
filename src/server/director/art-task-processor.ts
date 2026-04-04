@@ -124,14 +124,14 @@ function injectPresetTags(task: ParsedTask): ParsedTask {
  */
 function selectPreset(assetType: string): string | null {
   const map: Record<string, string> = {
-    sprite: "flux_pixel_sprite",
-    icon: "flux_icon",
-    tileset: "flux_pixel_sprite",
-    portrait: "flux_portrait",
-    background: "flux_background",
+    sprite: "flux_fast",
+    icon: "flux_fast",
+    tileset: "flux_fast",
+    portrait: "flux_fast_portrait",
+    background: "flux_fast_background",
     concept: "concept",
-    ui: "flux_icon",
-    game_asset: "flux_game_asset",
+    ui: "flux_fast",
+    game_asset: "flux_fast",
     music: "music",
     sfx: "sfx",
   };

@@ -484,6 +484,9 @@ export function buildWorkflow(opts: WorkflowOptions): Workflow {
   const isFlux = opts.checkpoint.toLowerCase().includes("flux");
 
   if (isFlux) {
+    if (opts.lora) {
+      return buildFluxTxt2ImgWithLoRAWorkflow(opts as WorkflowOptions & { lora: string });
+    }
     return buildFluxTxt2ImgWorkflow(opts);
   }
 
@@ -492,6 +495,32 @@ export function buildWorkflow(opts: WorkflowOptions): Workflow {
   }
 
   return buildTxt2ImgWorkflow(opts);
+}
+
+/**
+ * FLUX.2 txt2img with LoRA (e.g., Turbo LoRA for faster generation).
+ * Inserts a LoraLoader between UNETLoader and KSampler.
+ * Uses strength_clip=0 since FLUX.2's CLIP is a separate model.
+ */
+function buildFluxTxt2ImgWithLoRAWorkflow(opts: WorkflowOptions & { lora: string }): Workflow {
+  const base = buildFluxTxt2ImgWorkflow(opts);
+
+  // Insert LoRA loader between UNET and KSampler
+  base["14"] = {
+    class_type: "LoraLoader",
+    inputs: {
+      model: ["10", 0],    // from UNETLoader
+      clip: ["11", 0],     // from CLIPLoader (passed through)
+      lora_name: opts.lora,
+      strength_model: opts.lora_strength ?? 1.0,
+      strength_clip: 0,    // FLUX.2 CLIP is separate, don't modify it
+    },
+  };
+
+  // Rewire KSampler to use LoRA-modified model
+  (base["3"] as { inputs: Record<string, unknown> }).inputs.model = ["14", 0];
+
+  return base;
 }
 
 // ─── IP-Adapter ─────────────────────────────────────────────────────────────
@@ -554,7 +583,7 @@ export function applyIPAdapter(workflow: Workflow, opts: IPAdapterOptions): Work
       ipadapter: [unifiedLoaderId, 1],
       image: [loadImageId, 0],
       weight: opts.weight,
-      weight_type: "style transfer precise",
+      weight_type: "style transfer",
       start_at: 0.0,
       end_at: 1.0,
     },
@@ -733,6 +762,45 @@ export const PRESETS = {
     width: 1024,
     height: 1024,
     steps: 25,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 fast — Turbo LoRA for 4-6x faster generation at near-full quality */
+  flux_fast: {
+    checkpoint: "flux2-dev.safetensors",
+    lora: "Flux2TurboComfyv2.safetensors",
+    lora_strength: 1.0,
+    width: 1024,
+    height: 1024,
+    steps: 8,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 fast landscape */
+  flux_fast_background: {
+    checkpoint: "flux2-dev.safetensors",
+    lora: "Flux2TurboComfyv2.safetensors",
+    lora_strength: 1.0,
+    width: 1216,
+    height: 832,
+    steps: 8,
+    cfg: 1.0,
+    sampler: "euler",
+    scheduler: "simple",
+  },
+
+  /** FLUX.2 fast portrait */
+  flux_fast_portrait: {
+    checkpoint: "flux2-dev.safetensors",
+    lora: "Flux2TurboComfyv2.safetensors",
+    lora_strength: 1.0,
+    width: 832,
+    height: 1216,
+    steps: 8,
     cfg: 1.0,
     sampler: "euler",
     scheduler: "simple",

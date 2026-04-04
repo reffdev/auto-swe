@@ -135,12 +135,10 @@ export function buildPlanningPrompt(opts: {
     "Include 'transparent background' in prompts for sprites/icons that need alpha.",
     "",
     "Asset type → preset mapping:",
-    "- sprite/tileset → FLUX.2 (1024x1024)",
-    "- icon/ui → FLUX.2 (1024x1024)",
-    "- portrait → FLUX.2 (832x1216)",
-    "- background → FLUX.2 (1216x832)",
-    "- concept → FLUX.2 (1024x1024, 30 steps)",
-    "- game_asset → FLUX.2 (1024x1024)",
+    "- sprite/tileset/icon/ui/game_asset → FLUX.2 Turbo (1024x1024, 8 steps, fast)",
+    "- portrait → FLUX.2 Turbo (832x1216, 8 steps, fast)",
+    "- background → FLUX.2 Turbo (1216x832, 8 steps, fast)",
+    "- concept → FLUX.2 (1024x1024, 30 steps, high quality)",
   ];
 
   if (opts.workflowSummary) {
