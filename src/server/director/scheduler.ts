@@ -423,13 +423,21 @@ async function escalateForHumanReview(
 // ─── Step 1: Verify tasks awaiting review ───────────────────────────────────
 
 async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
-  for (const task of db.getDirectiveTasksAwaitingReview(directive.id)) {
-    try {
-      if (isComfyUITaskType(task.type)) {
-        ensureArtReviewGate(db, directive.id, task);
-        continue;
-      }
+  const awaitingTasks = db.getDirectiveTasksAwaitingReview(directive.id);
 
+  // Handle art review gates (fast, no LLM call)
+  for (const task of awaitingTasks) {
+    if (isComfyUITaskType(task.type)) {
+      ensureArtReviewGate(db, directive.id, task);
+    }
+  }
+
+  // Verify ONE code task per tick to avoid blocking the system on long LLM calls
+  const codeTask = awaitingTasks.find(t => !isComfyUITaskType(t.type));
+  if (!codeTask) return;
+
+  const task = codeTask;
+  try {
       const result = await verifyTask(db, task, project);
 
       if (result.verdict === "pass") {
@@ -477,7 +485,6 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
         console.log(`Director: escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
       }
     }
-  }
 }
 
 // ─── Step 2: Handle failed tasks ────────────────────────────────────────────
