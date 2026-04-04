@@ -330,6 +330,21 @@ export async function commitAll(
   try {
     await git("add -A", worktreePath);
 
+    // Unstage files over 100MB to prevent pushing binaries that exceed GitHub's file size limit
+    try {
+      const { stdout: staged } = await execAsync("git diff --cached --name-only", { cwd: worktreePath, encoding: "utf-8" });
+      for (const file of staged.split("\n").filter(Boolean)) {
+        try {
+          const { stdout: sizeOut } = await execAsync(`git cat-file -s :${file}`, { cwd: worktreePath, encoding: "utf-8" });
+          const sizeBytes = parseInt(sizeOut.trim(), 10);
+          if (sizeBytes > 100 * 1024 * 1024) {
+            await git(`reset HEAD -- "${file}"`, worktreePath);
+            console.warn(`Git: unstaged large file ${file} (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
+          }
+        } catch { /* skip — file might be deleted */ }
+      }
+    } catch { /* non-critical */ }
+
     const { stdout: stagedOut } = await execAsync("git diff --cached --stat", {
       cwd: worktreePath,
       encoding: "utf-8",

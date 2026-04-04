@@ -19,6 +19,7 @@ import { startStatsCollector, stopStatsCollector } from "./stats";
 import { startAnalysisScheduler, stopAnalysisScheduler } from "./analysis";
 import { startDirectorScheduler, stopDirectorScheduler, nudgeDirector } from "./director/scheduler";
 import { startForemanScheduler, stopForemanScheduler, nudgeForeman } from "./foreman/scheduler";
+import { cleanupWorktrees } from "./foreman/cleanup";
 import { getDirectorReservedMachine } from "./director/director-state";
 
 let foremanReady = false;
@@ -33,6 +34,11 @@ export function startOrchestrator(database: Db): void {
   clearAllLeases();
   startStatsCollector(db);
   startAnalysisScheduler(db);
+
+  // Clean up stale worktrees from failed/completed tasks
+  cleanupWorktrees(db).then(result => {
+    if (result.cleaned > 0) console.log(`Startup: cleaned ${result.cleaned} stale worktree(s)`);
+  }).catch(() => {});
 
   // Director starts first — may reserve a machine for style exploration
   startDirectorScheduler(db);

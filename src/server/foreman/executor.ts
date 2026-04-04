@@ -79,7 +79,7 @@ export async function executeForemanTask(
   const acceptanceCriteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
   // Determine branch and worktree
-  const slug = (task.yaml_id || task.id.slice(0, 8)) + "-" + task.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+  const slug = (task.yaml_id || task.id.slice(0, 8)) + "-" + task.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30).replace(/-$/, "");
   const branch = `foreman/${slug}`;
   const worktreePath = makeWorktreePath(project.workdir, `foreman-${task.id.slice(0, 8)}`);
 
