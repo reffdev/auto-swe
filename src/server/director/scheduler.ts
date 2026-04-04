@@ -758,8 +758,13 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
 
   const acted = await processRespondedReviews(db, directive, project);
 
+  const pendingReviews = db.getPendingReviewsForDirective(directive.id);
   const shouldStayPaused = shouldPauseDirective(db, directive);
-  console.log(`Director: processPausedDirective — acted=${acted}, shouldStayPaused=${shouldStayPaused}, pendingReviews=${db.getPendingReviewsForDirective(directive.id).length}`);
+  console.log(`Director: processPausedDirective — acted=${acted}, shouldStayPaused=${shouldStayPaused}, pendingReviews=${pendingReviews.length}`);
+  for (const r of pendingReviews) {
+    const task = r.task_id ? db.getForemanTask(r.task_id) : null;
+    console.log(`  review ${r.id.slice(0, 8)}: type=${r.review_type}, task_id=${r.task_id?.slice(0, 8) ?? "none"}, task_type=${task?.type ?? "n/a"}, task_status=${task?.status ?? "n/a"}`);
+  }
 
   // Resume if the pause condition no longer applies
   if (!shouldStayPaused || acted) {
