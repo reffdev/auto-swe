@@ -10,7 +10,7 @@ import { createModel, generate } from "../llm";
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { fetchOrigin, getDiffBetween, getDiff } from "../git-helpers";
+import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
@@ -41,34 +41,11 @@ export async function verifyTask(
 
   const { machine, modelId } = machineInfo;
 
-  // Use the task's worktree if it still exists (kept alive for Director verification),
-  // otherwise fall back to the main project workdir.
-  const isWorktree = !!(task.git_worktree && existsSync(task.git_worktree));
-  const workdir = isWorktree ? task.git_worktree! : project.workdir;
+  const workdir = resolveTaskWorkdir(task, project);
 
-  // Get git diff for the task's branch
-  let gitDiff = getTaskDiff(workdir, task.git_branch, project.git_default_branch, isWorktree);
-
-  // If diff is empty (files already existed or were committed in a prior attempt),
-  // fall back to reading the target files directly so the verifier has something to check
-  const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
-  let fileContents = "";
-  if (gitDiff.length < 50 && targetFiles.length > 0) {
-    const parts: string[] = [];
-    for (const f of targetFiles) {
-      try {
-        const fullPath = resolve(workdir, f);
-        if (existsSync(fullPath)) {
-          const content = readFileSync(fullPath, "utf-8");
-          parts.push(`### ${f}\n\`\`\`\n${content}\n\`\`\``);
-        } else {
-          parts.push(`### ${f}\n(file does not exist)`);
-        }
-      } catch { /* skip */ }
-    }
-    fileContents = parts.join("\n\n");
-    console.log(`Verifier: empty diff — read ${parts.length} target file(s) instead`);
-  }
+  // Get git diff and supplemental file contents
+  const gitDiff = getTaskBranchDiff(workdir, task, project) ?? "(no diff available)";
+  const supplementalFiles = getSupplementalFileContents(workdir, task, gitDiff);
 
   // Read project conventions
   const claudeMdPath = resolve(workdir, "CLAUDE.md");
@@ -77,11 +54,11 @@ export async function verifyTask(
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
-  console.log(`Verifier: "${task.title}" — ${isWorktree ? "worktree" : "project"}, branch: ${task.git_branch}, diff: ${gitDiff.length} chars${fileContents ? `, fallback files: ${targetFiles.length}` : ""}`);
+  console.log(`Verifier: "${task.title}" — branch: ${task.git_branch}, diff: ${gitDiff.length} chars${supplementalFiles ? ", has supplemental files" : ""}`);
 
-  // Build verification prompt
-  const verificationContext = fileContents
-    ? `${gitDiff}\n\n## Target Files (read directly — no diff available)\n\n${fileContents}`
+  // Build verification context: diff + any target files not in the diff
+  const verificationContext = supplementalFiles
+    ? `${gitDiff}\n\n## Target Files (not in diff — already existed or from prior work)\n\n${supplementalFiles}`
     : gitDiff;
 
   const { system, user } = buildVerificationPrompt({
@@ -207,28 +184,6 @@ export async function verifyMilestone(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function getTaskDiff(workdir: string, branch: string | null, defaultBranch = "main", isWorktree = false): string {
-  if (!branch) return "(no branch)";
-  try {
-    fetchOrigin(workdir);
-    const base = `origin/${defaultBranch}`;
-    const head = isWorktree ? "HEAD" : `origin/${branch}`;
-    const { stat, diff } = getDiffBetween(workdir, base, head);
-    const committed = stat + "\n\n" + diff;
-
-    if (isWorktree) {
-      const uncommitted = getDiff(workdir, "HEAD");
-      if (uncommitted.trim()) {
-        return committed + "\n\n--- uncommitted changes ---\n" + uncommitted;
-      }
-    }
-
-    return committed.trim() ? committed : "(empty diff)";
-  } catch {
-    return "(could not generate diff)";
-  }
-}
 
 function getProjectState(workdir: string): string {
   try {

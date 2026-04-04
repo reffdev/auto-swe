@@ -556,6 +556,16 @@ export function queueAllForemanTasks(): Promise<{ queued: number }> {
   return json("/api/foreman/queue-all", { method: "POST" });
 }
 
+export interface TaskFileInfo {
+  path: string;
+  exists: boolean;
+  content: string | null;
+}
+
+export function getForemanTaskFiles(taskId: string): Promise<{ files: TaskFileInfo[]; diff: string | null }> {
+  return json(`/api/foreman/tasks/${taskId}/files`);
+}
+
 export async function getForemanTask(taskId: string): Promise<ForemanTask> {
   const data = await json<{ task: ForemanTask }>(`/api/foreman/tasks/${taskId}`);
   return data.task;

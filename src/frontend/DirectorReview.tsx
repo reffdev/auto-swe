@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ArrowLeft, Send, X, CheckCircle, Lock, Check, ExternalLink, FileText } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import * as api from './api'
-import type { DirectorReview as DirectorReviewType, ForemanTask } from './api'
+import type { DirectorReview as DirectorReviewType, ForemanTask, TaskFileInfo } from './api'
 
 export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
   reviewId: string
@@ -14,6 +14,8 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
   const navigate = useNavigate()
   const [review, setReview] = useState<DirectorReviewType | null>(null)
   const [task, setTask] = useState<ForemanTask | null>(null)
+  const [taskFiles, setTaskFiles] = useState<TaskFileInfo[]>([])
+  const [taskDiff, setTaskDiff] = useState<string | null>(null)
   const [response, setResponse] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [waitingForRegeneration, setWaitingForRegeneration] = useState(false)
@@ -28,6 +30,10 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
         const taskId = r.task_id ?? (() => { try { return JSON.parse(r.context)?.task_id } catch { return null } })()
         if (taskId) {
           api.getForemanTask(taskId).then(setTask).catch(() => {})
+          api.getForemanTaskFiles(taskId).then(data => {
+            setTaskFiles(data.files)
+            setTaskDiff(data.diff)
+          }).catch(() => {})
         }
       }
     }).catch(() => {})
@@ -243,6 +249,36 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
               {!context.git_pr_url && task?.git_branch && (
                 <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3">
                   No PR created (branch: {task.git_branch}). The task may have had no changes to commit.
+                </div>
+              )}
+
+              {/* Git diff */}
+              {taskDiff && taskDiff.trim().length > 10 && (
+                <div>
+                  <h4 className="text-xs font-medium text-muted-foreground mb-1">Git Diff</h4>
+                  <pre className="text-[11px] bg-muted/50 rounded-md p-3 overflow-x-auto max-h-80 overflow-y-auto whitespace-pre-wrap font-mono">{taskDiff}</pre>
+                </div>
+              )}
+
+              {/* Target files */}
+              {taskFiles.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-medium text-muted-foreground mb-1">Target Files</h4>
+                  <div className="space-y-2">
+                    {taskFiles.map((f, i) => (
+                      <div key={i} className="bg-muted/50 rounded-md p-2">
+                        <div className="flex items-center gap-2 text-xs mb-1">
+                          <span className="font-mono font-medium">{f.path}</span>
+                          <span className={f.exists ? 'text-emerald-500' : 'text-destructive'}>
+                            {f.exists ? 'exists' : 'missing'}
+                          </span>
+                        </div>
+                        {f.content && (
+                          <pre className="text-[11px] bg-background rounded p-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap font-mono">{f.content}</pre>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 

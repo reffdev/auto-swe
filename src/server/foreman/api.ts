@@ -15,6 +15,7 @@ import { isComfyUITaskType, processArtFeedback } from "./art-feedback";
 import { extractTag } from "./task-types";
 import { archiveCurrentAssets, getAvailableRuns } from "./asset-archive";
 import { getConfig as getConfigFn } from "./comfyui-config";
+import { resolveTaskWorkdir, readTaskTargetFiles, getTaskBranchDiff } from "./task-files";
 import { styleExplorationDir, styleExplorationRunDir, styleExplorationRelPath, artHistoryDir, artHistoryRunDir, artHistoryRelPath } from "./paths";
 
 /** Sort filenames numerically by embedded number (variation_1.png, variation_2.png, ...) */
@@ -49,6 +50,23 @@ export function createForemanRouter(db: Db): Router {
     if (!task) return res.status(404).json({ error: "Task not found" });
     const runs = db.getForemanRunsForTask(task.id);
     res.json({ task, runs });
+  });
+
+  /** Get target file contents and git diff for a task — used by human review */
+  router.get("/tasks/:id/files", (req, res) => {
+    const task = db.getForemanTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+
+    const config = db.getForemanConfig();
+    const projectId = task.project_id || config?.project_id;
+    const project = projectId ? db.getProject(projectId) : null;
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const workdir = resolveTaskWorkdir(task, project);
+    const files = readTaskTargetFiles(workdir, task);
+    const diff = getTaskBranchDiff(workdir, task, project);
+
+    res.json({ files, diff });
   });
 
   router.post("/tasks", (req, res) => {
