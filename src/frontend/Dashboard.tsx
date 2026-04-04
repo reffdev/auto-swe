@@ -21,6 +21,7 @@ import { ProjectOverview } from './ProjectOverview'
 import { TerminalView } from './Terminal'
 import { ManualCommits } from './ManualCommits'
 import { DirectorDetail } from './DirectorDetail'
+import { DocsView } from './DocsView'
 import type { Issue, Run } from './api'
 import type { ViewName } from './routes'
 
@@ -149,6 +150,8 @@ export function DashboardLayout({ view }: { view: ViewName }) {
               return projectId ? <ManualCommits projectId={projectId} onBack={() => navigate('/director')} /> : null
             case 'terminal':
               return <TerminalView projectId={projectId ?? ''} onBack={() => navigate('/')} />
+            case 'docs':
+              return <DocsView />
           }
         })() : null}
       </main>

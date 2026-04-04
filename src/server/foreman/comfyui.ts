@@ -80,10 +80,15 @@ export async function executeComfyUIWorkflow(
     throw new Error(`ComfyUI workflow has node errors: ${JSON.stringify(node_errors).slice(0, 500)}`);
   }
 
+  console.log(`ComfyUI: prompt accepted — prompt_id: ${prompt_id}, polling for completion (timeout: ${MAX_POLL_TIME_MS / 1000}s)`);
+
   // 2. Poll for completion
   const startTime = Date.now();
   let lastLogTime = 0;
   let lastQueueLog = 0;
+  let emptyQueueMissingCount = 0; // consecutive checks where queue is empty AND prompt not in history
+  let lastQueueEmpty = false;
+  const MAX_EMPTY_MISSING_CHECKS = 3; // fail after 3 consecutive empty-queue + missing-prompt checks (~90s)
 
   while (Date.now() - startTime < MAX_POLL_TIME_MS) {
     if (signal?.aborted) throw new Error("ComfyUI execution aborted");
@@ -102,6 +107,7 @@ export async function executeComfyUIWorkflow(
           };
           const running = queue.queue_running?.length ?? 0;
           const pending = queue.queue_pending?.length ?? 0;
+          lastQueueEmpty = running === 0 && pending === 0;
           console.log(`ComfyUI: queue status — ${running} running, ${pending} pending (${Math.round(elapsed / 1000)}s elapsed, prompt_id: ${prompt_id})`);
         }
       } catch { /* best effort */ }
@@ -130,6 +136,19 @@ export async function executeComfyUIWorkflow(
 
     const entry = history[prompt_id];
     if (!entry) {
+      // Detect server crash/restart: queue is empty but our prompt vanished from history
+      if (lastQueueEmpty && elapsed > 60_000) {
+        emptyQueueMissingCount++;
+        if (emptyQueueMissingCount >= MAX_EMPTY_MISSING_CHECKS) {
+          throw new Error(
+            `ComfyUI server likely crashed or restarted — queue is empty and prompt ${prompt_id} is not in history ` +
+            `after ${emptyQueueMissingCount} consecutive checks (${Math.round(elapsed / 1000)}s elapsed)`
+          );
+        }
+        console.warn(`ComfyUI: queue empty but prompt ${prompt_id} missing from history (${emptyQueueMissingCount}/${MAX_EMPTY_MISSING_CHECKS} before fail-fast, ${Math.round(elapsed / 1000)}s elapsed)`);
+      } else {
+        emptyQueueMissingCount = 0; // reset if queue has items (prompt is legitimately queued)
+      }
       if (elapsed - lastLogTime > 60_000) {
         console.log(`ComfyUI: prompt ${prompt_id} not in history yet (${Math.round(elapsed / 1000)}s elapsed, queued or running)`);
         lastLogTime = elapsed;
@@ -219,6 +238,9 @@ export async function executeComfyUIWorkflow(
         outputFiles.push({ filename: file.filename, localPath });
       }
     }
+
+    const totalElapsed = Date.now() - startTime;
+    console.log(`ComfyUI: prompt ${prompt_id} completed — ${outputFiles.length}/${totalFiles} file(s) downloaded in ${Math.round(totalElapsed / 1000)}s`);
 
     if (outputFiles.length === 0 && totalFiles > 0) {
       throw new Error(

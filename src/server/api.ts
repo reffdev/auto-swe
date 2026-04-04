@@ -5,7 +5,7 @@
  */
 
 import { Router } from "express";
-import { existsSync, statSync, mkdirSync } from "fs";
+import { existsSync, statSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { resolve } from "path";
 import { spawnSync, spawn } from "child_process";
 import type { Db } from "./db";
@@ -1061,6 +1061,81 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       tokenStats,
       activeDirectives,
     });
+  });
+
+  // ─── Docs Browser ──────────────────────────────────────────────────────────
+
+  const DOCS_ROOT = resolve(__dirname, "../../docs");
+
+  /** List all markdown files under docs/, returning a tree structure */
+  router.get("/docs", (_req, res) => {
+    interface DocEntry { path: string; name: string; type: "file" | "dir"; children?: DocEntry[] }
+
+    function scanDir(dir: string, rel: string): DocEntry[] {
+      if (!existsSync(dir)) return [];
+      const entries: DocEntry[] = [];
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const entRel = rel ? `${rel}/${ent.name}` : ent.name;
+        if (ent.isDirectory()) {
+          entries.push({ path: entRel, name: ent.name, type: "dir", children: scanDir(resolve(dir, ent.name), entRel) });
+        } else if (ent.name.endsWith(".md")) {
+          entries.push({ path: entRel, name: ent.name, type: "file" });
+        }
+      }
+      // Sort: dirs first, then files, alphabetical within each
+      entries.sort((a, b) => {
+        if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return entries;
+    }
+
+    // Also include top-level markdown files (CLAUDE.md, AGENTS.md, etc.)
+    const projectRoot = resolve(__dirname, "../..");
+    const topLevelMd: DocEntry[] = [];
+    for (const name of ["CLAUDE.md", "AGENTS.md", "MVP_PLAN.md"]) {
+      if (existsSync(resolve(projectRoot, name))) {
+        topLevelMd.push({ path: `../${name}`, name, type: "file" });
+      }
+    }
+
+    res.json({ tree: scanDir(DOCS_ROOT, ""), topLevel: topLevelMd });
+  });
+
+  /** Read a single markdown file from docs/ or top-level */
+  router.get("/docs/file", (req, res) => {
+    const filePath = req.query.path as string | undefined;
+    if (!filePath) return res.status(400).json({ error: "path required" });
+
+    // Resolve: top-level files use ../ prefix, docs files are relative to DOCS_ROOT
+    let absPath: string;
+    if (filePath.startsWith("../")) {
+      absPath = resolve(__dirname, "../..", filePath.slice(3));
+    } else {
+      absPath = resolve(DOCS_ROOT, filePath);
+    }
+
+    // Security: must be under docs/ or one of the allowed top-level files
+    const projectRoot = resolve(__dirname, "../..");
+    const allowedTopLevel = new Set(["CLAUDE.md", "AGENTS.md", "MVP_PLAN.md"]);
+    const normalizedAbs = absPath.replace(/\\/g, "/");
+    const normalizedDocs = DOCS_ROOT.replace(/\\/g, "/");
+    const normalizedRoot = projectRoot.replace(/\\/g, "/");
+    const isUnderDocs = normalizedAbs.startsWith(normalizedDocs + "/");
+    const relToRoot = normalizedAbs.startsWith(normalizedRoot + "/") ? normalizedAbs.slice(normalizedRoot.length + 1) : "";
+    const isAllowedTopLevel = allowedTopLevel.has(relToRoot);
+    if (!isUnderDocs && !isAllowedTopLevel) {
+      return res.status(403).json({ error: "access denied" });
+    }
+    if (!absPath.endsWith(".md")) {
+      return res.status(400).json({ error: "only .md files" });
+    }
+    if (!existsSync(absPath)) {
+      return res.status(404).json({ error: "not found" });
+    }
+
+    const content = readFileSync(absPath, "utf-8");
+    res.json({ path: filePath, content });
   });
 
   return router;

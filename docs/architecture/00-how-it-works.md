@@ -1,136 +1,264 @@
 # How It Works
 
-You describe what you want. AI agents build it, test it, review it, and open a PR.
+You describe what you want. The Director breaks it down, the Foreman dispatches work to AI agents, reviews happen automatically, and PRs get opened — all with human oversight at configurable gates.
 
 ## The Big Picture
 
 ```mermaid
 graph LR
     You["🧑 You"]
-    Plan["💬 Describe\nwhat you want"]
-    Stories["📋 Stories\nwith requirements"]
-    Agents["🤖 Agents\nresearch, code,\ntest, review"]
-    PR["🔀 Pull Request\nready to merge"]
+    Directive["💬 Directive\n(describe what you want)"]
+    Milestones["📋 Milestones\nwith tasks"]
+    Agents["🤖 Agents\ncode, art,\nmusic, review"]
+    Result["🔀 Pull Requests\n+ Assets"]
 
-    You --> Plan --> Stories --> Agents --> PR --> You
+    You --> Directive --> Milestones --> Agents --> Result --> You
 
     style You fill:#2d4a22
-    style Plan fill:#1e3a5f
-    style Stories fill:#1e3a5f
+    style Directive fill:#1e3a5f
+    style Milestones fill:#1e3a5f
     style Agents fill:#1e3a5f
-    style PR fill:#2d4a22
+    style Result fill:#2d4a22
 ```
 
-## From Idea to Code
+## Two-Level Orchestration
+
+The system has two orchestration levels, managed by a central Orchestrator:
 
 ```mermaid
 graph TD
-    subgraph Phase1["1. Planning"]
-        Idea["You have an idea"]
-        Chat["Chat with AI planner\nto refine requirements"]
-        Issue["Structured issue created\n(or epic with stories)"]
-        Idea --> Chat --> Issue
+    subgraph Orchestrator["Orchestrator (startup + dispatch ordering)"]
+        direction TB
+
+        subgraph Director["Director (high-level autonomy)"]
+            D1["Conversation with user"]
+            D2["Decompose into milestones"]
+            D3["Plan tasks per milestone"]
+            D4["Verify completed work"]
+            D1 --> D2 --> D3 --> D4
+            D4 -->|next milestone| D3
+        end
+
+        subgraph Foreman["Foreman (task execution)"]
+            F1["Pick task from queue"]
+            F2["Route to machine by type"]
+            F3["Execute in isolation"]
+            F4["Validate results"]
+            F1 --> F2 --> F3 --> F4
+        end
+
+        Director -->|"generates tasks"| Foreman
     end
 
-    subgraph Phase2["2. Execution"]
-        Research["Agent researches\nthe codebase"]
-        Build["Agent implements\nthe changes"]
-        BuildCheck["Build gate\n(automated)"]
-        Test["Agent writes\nand runs tests"]
-        TestCheck["Test gate\n(automated)"]
-        Research --> Build --> BuildCheck --> Test --> TestCheck
-        BuildCheck -.->|"fail"| Build
-        TestCheck -.->|"fail"| Build
+    subgraph Machines["Machine Pool"]
+        M1["Inference\n(code, review, content, claude)"]
+        M2["ComfyUI\n(art, music, sfx, style_exploration)"]
     end
 
-    subgraph Phase3["3. Quality"]
-        Review["Automated reviews\nthrough multiple lenses"]
-        Fix["Agent fixes\nany issues found"]
-        Review -->|"problems found"| Fix --> Review
-        Review -->|"all clear"| Ship
-        Ship["Commit, push,\nopen PR"]
+    Foreman --> M1
+    Foreman --> M2
+
+    style Director fill:none,stroke:#4a6
+    style Foreman fill:none,stroke:#46a
+```
+
+**Director** handles the strategic layer: talking to the user, decomposing directives into milestones, generating task batches, verifying results, and managing memory.
+
+**Foreman** handles the tactical layer: dispatching tasks to machines, executing code in git worktrees, running ComfyUI workflows for art/music, and validating outputs.
+
+The **Orchestrator** ensures correct startup order (Director gets first tick, Foreman waits) and prevents the Foreman from dispatching to machines the Director has reserved.
+
+## Director Flow
+
+```mermaid
+graph TD
+    subgraph Phase1["1. Conversation"]
+        Idea["User creates directive"]
+        Chat["Director chats with user\nresearches codebase, refines plan"]
+        Approve["User approves plan"]
+        Idea --> Chat --> Approve
     end
 
-    Issue --> Research
-    TestCheck --> Review
+    subgraph Phase2["2. Decomposition"]
+        Design["Generate design document"]
+        Miles["Extract milestones\nwith verification criteria"]
+        Design --> Miles
+    end
+
+    subgraph Phase3["3. Execution Loop"]
+        Plan["Plan 1-5 tasks\nfor current milestone"]
+        Dispatch["Foreman dispatches\nto machines"]
+        Execute["Agents execute\n(code in worktrees,\nart via ComfyUI)"]
+        Verify["Director verifies\ncompleted tasks"]
+        Plan --> Dispatch --> Execute --> Verify
+        Verify -->|"tasks remaining"| Dispatch
+        Verify -->|"milestone done"| NextMile["Next milestone"]
+        NextMile --> Plan
+    end
+
+    subgraph Phase4["4. Human Oversight"]
+        Gate["Review Gate"]
+        Human["Human decision"]
+        Gate --> Human
+        Human -->|"approve"| Resume["Resume"]
+        Human -->|"reject/feedback"| Retry["Retry with feedback"]
+    end
+
+    Approve --> Design
+    Miles --> Plan
+    Verify -.->|"gate triggered"| Gate
+    Resume -.-> Verify
+    Retry -.-> Execute
 
     style Phase1 fill:none,stroke:#4a6
     style Phase2 fill:none,stroke:#46a
     style Phase3 fill:none,stroke:#a64
+    style Phase4 fill:none,stroke:#aa4
 ```
 
-## What Makes This Different
+## Task Types and Routing
+
+Tasks route to different machine types based on their type:
 
 ```mermaid
 graph LR
-    subgraph Traditional["Traditional AI Coding"]
-        T1["One prompt"] --> T2["One response"] --> T3["Hope it works"]
+    subgraph InferenceTasks["Inference Machine Tasks"]
+        Code["code — implement features"]
+        Review["review — code review"]
+        Content["content — docs, text"]
+        Claude["claude — general AI tasks"]
     end
 
-    subgraph ThisSystem["This System"]
-        S1["Research phase\nfinds relevant code"] --> S2["Implementation\nwith full context"]
-        S2 --> S3["Tests written\nautomatically"]
-        S3 --> S4["Multiple review passes\n(security, UI, perf...)"]
-        S4 -->|"issues found"| S2
-        S4 -->|"all pass"| S5["PR created"]
+    subgraph ComfyUITasks["ComfyUI Machine Tasks"]
+        Art["art — sprites, backgrounds"]
+        Music["music — background tracks"]
+        SFX["sfx — sound effects"]
+        Style["style_exploration — style discovery"]
     end
+
+    InferenceTasks --> Inference["🖥️ Inference Machine\n(Ollama / OpenRouter)"]
+    ComfyUITasks --> ComfyUI["🎨 ComfyUI Machine\n(ROCm / CUDA)"]
 ```
 
-## The Agent Harness
+## Review Gates (Human-in-the-Loop)
 
-Agents don't run free — a harness controls what they can see and do at each step.
+The Director creates review gates at key decision points. Gate behavior depends on the directive's autonomy level:
+
+| Gate Type | Conservative | Standard | Aggressive |
+|-----------|:----------:|:-------:|:---------:|
+| Task verification | Pause | Pause | Pause |
+| Design choice | Pause | Skip | Skip |
+| Milestone completion | Pause | Pause | Skip |
+| Failure escalation | Pause | Pause | Pause |
+| Style selection | Pause | Pause | Pause |
+
+Art-related review gates don't block code task planning — only the art pipeline pauses.
+
+## Art Style System
+
+For directives that include art assets, the Director manages style consistency:
 
 ```mermaid
 graph LR
-    subgraph Research["🔍 Research"]
-        R["Read-only access\nExplore & find files"]
-    end
-
-    subgraph Code["⚙️ Code"]
-        C["Read + write access\nMake changes & verify"]
-    end
-
-    subgraph Test["🧪 Test"]
-        T["Write tests only\nNo touching implementation"]
-    end
-
-    subgraph Review["📋 Review"]
-        V["Read + run access\nCheck code & run tests\nCan't change anything"]
-    end
-
-    Research -->|"file list"| Code -->|"changes"| Test -->|"results"| Review
+    Explore["Style Exploration\n(6 varied prompts via LLM)"] --> Review["Human Review\n(select favorite)"]
+    Review -->|"select"| Lock["Style Lock\n(checkpoint + preset +\nprompt prefix + reference image)"]
+    Review -->|"reject all"| Explore
+    Review -->|"enhance"| Enhance["Flux Enhance\n(img2img refinement\n6 denoise levels)"]
+    Lock --> Tasks["All future art tasks\nuse locked style"]
 ```
 
-Each stage gets **different tools**. The research agent can't write files. The test agent can't modify implementation code. The reviewer can't change anything — only read and run tests. This prevents agents from going off-script.
+Style exploration generates prompts with 4–6 specific colors each, varied rendering techniques, and no UI elements. When continuous exploration is enabled, new prompts are auto-queued after each batch.
+
+## The Pipeline (Single-Issue Execution)
+
+For standalone issues (not part of a directive), the original pipeline still operates:
+
+```mermaid
+graph LR
+    Scout["🔍 Scout\n(read-only)"]
+    Implement["⚙️ Implement\n(read + write)"]
+    BuildGate{"🔨 Build\nGate"}
+    TestWrite["🧪 Test-Write\n(write tests only)"]
+    TestGate{"✅ Test\nGate"}
+    Review["📋 Review\n(11 lenses)"]
+    GitOps["🚀 GitOps\n(commit + push + PR)"]
+
+    Scout -->|file manifest| Implement
+    Implement --> BuildGate
+    BuildGate -->|pass| TestWrite
+    BuildGate -->|"fail (up to 3x)"| Implement
+    TestWrite --> TestGate
+    TestGate -->|pass| Review
+    TestGate -->|"fail (up to 3x)"| Implement
+    Review -->|accept| GitOps
+    Review -->|reject| Implement
+```
+
+See [Pipeline Stages](02-pipeline-stages.md) for details.
 
 ## Review Lenses
 
-Every change gets reviewed through focused lenses. Think of it like having multiple specialists look at the same PR:
+Every code change gets reviewed through focused lenses — like having multiple specialists look at the same PR:
 
 ```mermaid
 graph LR
-    Code["Code\nChanges"] --> G["⬜ General\nDoes it work?\nIs the scope right?"]
-    G --> S["🟠 Security\nInput validation?\nSecrets exposed?"]
-    S --> U["🟣 UI\nAccessible?\nResponsive?"]
-    U --> P["🔵 Performance\nN+1 queries?\nBundle size?"]
-    P --> T["🟢 Testing\nMeaningful tests?\nEdge cases?"]
-    T --> E["🔴 Errors\nWhat if it fails?\nSilent failures?"]
-    E --> Done["✅ All Clear\n→ PR Created"]
+    subgraph Core["Core Lenses"]
+        G["⬜ General"]
+        S["🟠 Security"]
+        U["🟣 UI"]
+        P["🔵 Performance"]
+        T["🟢 Testing"]
+        E["🔴 Error Handling"]
+    end
 
-    G -.->|"reject"| Fix["🔧 Fix & retry"]
-    S -.->|"reject"| Fix
-    U -.->|"reject"| Fix
-    P -.->|"reject"| Fix
-    T -.->|"reject"| Fix
-    E -.->|"reject"| Fix
-    Fix -.-> Code
+    subgraph Stack["Stack-Specific Lenses"]
+        R["⚛️ React"]
+        TS["📘 TypeScript"]
+        N["🟩 Node"]
+        EX["📡 Express"]
+        SQ["🗄️ SQLite"]
+    end
+
+    Code["Code Changes"] --> Core --> Stack --> Done["✅ All Clear"]
 ```
 
-You choose which lenses apply per issue. A backend API change might only need General + Security + Testing. A frontend feature might need General + UI + Performance.
+Reviews use a cache-friendly three-part prompt structure (system + shared context + lens-specific instructions) for ~77% token savings across lenses. See [Review Lenses](03-review-lenses.md) for all 11 lenses.
 
-## Epics & Stories
+## Memory System
 
-Large features get broken into independent stories that can run in parallel:
+The Director maintains persistent knowledge across tasks:
+
+```mermaid
+graph TD
+    subgraph SweDir[".swe/ Directory"]
+        Conv["conventions/\nProject rules\n(highest priority)"]
+        Proc["conventions/procedural/\nHow-to workflows"]
+        Sem["memory/semantic/\nStable knowledge"]
+        Epi["memory/episodic/\nDaily activity logs"]
+        ArtDir["art/\nStyle lock + references"]
+    end
+
+    subgraph Operations
+        Search["memsearch CLI\nSemantic search"]
+        Extract["Task Knowledge Extractor\nPost-completion learning"]
+        Prune["Episodic Pruner\n30-day auto-prune"]
+    end
+
+    Extract -->|writes| Sem
+    Prune -->|cleans| Epi
+    Search -->|queries| Sem
+    Search -->|queries| Epi
+```
+
+- **Conventions** and **procedural** docs are always injected into Director context
+- **Semantic** and **episodic** memories are searched via memsearch (not dumped)
+- **Task Knowledge Extractor** analyzes completed tasks (git diff + agent output) for reusable patterns: conventions, API patterns, gotchas, architecture decisions
+- **Episodic logs** auto-prune at 30 days (patterns extracted first via LLM)
+- **Unattributed commit tracking** detects manual/external commits not linked to foreman tasks
+
+## Epics & Stories (Pipeline System)
+
+Large features can be broken into independent stories that run in parallel:
 
 ```mermaid
 graph TD
@@ -159,119 +287,54 @@ graph TD
 
 Stories declare dependencies (`depends_on`). Stories 2 and 3 can run in parallel since they only depend on Story 1. Story 4 waits for both.
 
-## Example: End-to-End Walkthrough
+## Example: End-to-End Directive
 
-Here's what actually happens when you ask the system to add a health check endpoint:
+Here's what happens when you create a directive to "add a health check endpoint":
 
 ```mermaid
 sequenceDiagram
     actor You
-    participant Planner as 💬 Planner
-    participant Scout as 🔍 Scout
-    participant Impl as ⚙️ Implement
-    participant BG as 🔨 Build Gate
-    participant TW as 🧪 Test-Write
-    participant TG as ✅ Test Gate
-    participant Rev as 📋 Review
-    participant Git as 🚀 GitOps
+    participant Dir as 🎯 Director
+    participant FM as ⚙️ Foreman
+    participant Agent as 🤖 Agent
+    participant Machine as 🖥️ Machine
 
-    Note over You,Planner: 1. Planning
-    You->>Planner: "Add a health check endpoint"
-    Planner->>You: What should it return?
-    You->>Planner: JSON with status, uptime, and DB connectivity
-    Planner->>You: Here's the issue proposal...
-    Note right of Planner: title: Add /api/health endpoint<br/>description: GET /api/health returns<br/>{ status, uptime, db_ok }<br/>lenses: general, error_handling
-    You->>Planner: Looks good, create it
+    Note over You,Dir: 1. Conversation
+    You->>Dir: Create directive: "Add health check endpoint"
+    Dir->>You: What should it return? DB connectivity?
+    You->>Dir: JSON with status, uptime, db_ok
+    Dir->>You: Here's my plan...
+    You->>Dir: Approve
 
-    Note over Scout,Impl: 2. Research
-    Scout->>Scout: searchFiles("health")
-    Scout->>Scout: readFile("src/server/api.ts")
-    Scout->>Scout: readFile("src/server/db.ts")
-    Scout->>Scout: listDirectory("src/server")
-    Note right of Scout: Manifest:<br/>- src/server/api.ts (pattern)<br/>- src/server/db.ts (DB access)<br/>- src/server/index.ts (mounting)
+    Note over Dir: 2. Decomposition
+    Dir->>Dir: Generate design doc
+    Dir->>Dir: Create milestone: "Health endpoint"
+    Dir->>Dir: Verification: GET /api/health returns 200
 
-    Note over Impl,BG: 3. Implementation
-    Impl->>Impl: readRelevantFiles()
-    Note right of Impl: Gets all 3 files in one call
-    Impl->>Impl: replaceInFile("api.ts", add endpoint)
-    Impl->>Impl: checkBuild()
-    Note right of Impl: "success" ✓
+    Note over Dir,FM: 3. Task Planning
+    Dir->>FM: Task: "Implement GET /api/health"
+    Note right of Dir: type: code, priority: 1
+    Dir->>FM: Task: "Write health endpoint tests"
+    Note right of Dir: type: code, priority: 2, depends_on: task 1
 
-    Note over BG: 4. Build Gate
-    BG->>BG: Run: npx tsc --noEmit
-    Note right of BG: Exit 0 → pass ✓
+    Note over FM,Machine: 4. Execution
+    FM->>FM: Acquire lease on Machine
+    FM->>Agent: Execute task 1 in git worktree
+    Agent->>Agent: Read api.ts, db.ts
+    Agent->>Agent: Add endpoint, verify build
+    Agent-->>FM: Task complete (branch: foreman/health-endpoint)
 
-    Note over TW,TG: 5. Test Writing
-    TW->>TW: readFile("src/server/api.test.ts")
-    TW->>TW: writeFile("add health endpoint tests")
-    TW->>TW: checkTests()
-    Note right of TW: 3 tests pass ✓
+    FM->>Agent: Execute task 2 (depends_on satisfied)
+    Agent->>Agent: Write tests, run them
+    Agent-->>FM: Task complete
 
-    Note over TG: 6. Test Gate
-    TG->>TG: Run: npx jest
-    Note right of TG: All pass → pass ✓
+    Note over Dir: 5. Verification
+    Dir->>Dir: Review completed tasks
+    Dir->>Dir: Extract task knowledge → .swe/semantic/
+    Dir->>Dir: Check milestone criteria
+    Dir->>Dir: Milestone verified ✓
 
-    Note over Rev: 7. Review — General Lens
-    Rev->>Rev: readFile("src/server/api.ts")
-    Rev->>Rev: checkBuild()
-    Rev->>Rev: checkTests()
-    Note right of Rev: ✓ Addresses the issue<br/>✓ Additive change<br/>✓ No rewrites<br/>→ status: accept
-
-    Note over Rev: 8. Review — Error Handling Lens
-    Rev->>Rev: readFile("src/server/api.ts")
-    Note right of Rev: ✓ DB check has try/catch<br/>✓ Returns 503 if DB is down<br/>→ status: accept
-
-    Note over Git: 9. GitOps
-    Git->>Git: Create GitHub issue #42
-    Git->>Git: git commit "Add /api/health endpoint (#42)"
-    Git->>Git: git push
-    Git->>Git: Create PR → Closes #42
-    Note right of Git: PR #15 ready for your review
-
-    Git->>You: PR ready — Approve or Reject?
-```
-
-### What the agent actually sees at each step
-
-**Scout's file manifest:**
-```
-- src/server/api.ts (590 lines) — endpoint patterns to follow
-- src/server/db.ts (425 lines) — DB access for health check
-- src/server/index.ts (94 lines) — route mounting pattern
-```
-
-**Implementer's first action:**
-```
-Tool: readRelevantFiles()
-Result: ### src/server/api.ts (590 lines)
-        [full file contents]
-        ### src/server/db.ts (425 lines)
-        [full file contents]
-        ...
-```
-
-**Build gate output:**
-```
-success
-```
-
-**Review verdict (General):**
-```
-status: accept
-summary: Endpoint is additive, follows existing patterns,
-         no signature changes, tests cover the key behaviors.
-```
-
-**Review verdict (Error Handling):**
-```
-status: accept
-summary: DB connectivity check uses try/catch, returns 503
-         on failure with useful error message. Timeout is set.
-```
-
-**Final PR:**
-```
-Title: Add /api/health endpoint (#42)
-Body: GET /api/health returns { status: "ok", uptime: 1234, db_ok: true }
-      Closes #42
+    Note over Dir: 6. GitOps
+    Dir->>Dir: Merge branches, create PR
+    Dir->>You: PR ready for review
 ```

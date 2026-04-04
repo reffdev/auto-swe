@@ -1,13 +1,13 @@
 # AGENTS.md — Open SWE
 
-> **Note**: This file covers the original pipeline system. For the full current architecture including Director, Foreman, ComfyUI, memory system, and machine manager, see **CLAUDE.md**.
+> **For the full current architecture**, see **CLAUDE.md** and **docs/architecture/**.
 
 ## What this project is
 
 Open SWE is an autonomous software engineering orchestration system. It operates at two levels:
 
-1. **Director + Foreman** (primary): High-level directives decomposed into milestones and tasks, dispatched to inference and ComfyUI machines for code + art generation.
-2. **Pipeline** (legacy): Single-issue agent pipeline with scout → implement → review stages.
+1. **Director + Foreman** (primary): High-level directives decomposed into milestones and tasks, dispatched to inference and ComfyUI machines for code + art + music + SFX generation, with human-in-the-loop review gates.
+2. **Pipeline** (single-issue): Scout → implement → build/test gates → review (11 lenses) → GitOps for standalone issues.
 
 ## How to run
 
@@ -15,7 +15,8 @@ Open SWE is an autonomous software engineering orchestration system. It operates
 npm run dev          # starts Express server (port 3001) + Vite frontend (port 5173)
 npm run dev:server   # server only
 npm run dev:dashboard # frontend only
-npm test             # jest test suite
+npm test             # jest test suite (711+ tests, 41 suites)
+npx tsc --noEmit     # type check
 ```
 
 The Vite dev server proxies `/api` to `localhost:3001`.
@@ -26,76 +27,134 @@ The Vite dev server proxies `/api` to `localhost:3001`.
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | Express app entry point. Initializes DB, crash recovery, mounts routes, graceful shutdown. |
-| `schema.ts` | Drizzle ORM table definitions — single source of truth for the DB schema. |
-| `db.ts` | Database class wrapping Drizzle + better-sqlite3. All CRUD operations. WAL mode. Auto-migration for schema changes. |
-| `api.ts` | Express routes (~18 endpoints). Consolidated `/api/poll`, CRUD for projects/machines/issues, issue actions (approve/retry/approve-pr/reject-pr), live run output, LLM request logs. |
-| `runner.ts` | Single-agent executor. Creates worktree → runs agent via `streamText` → commits → pushes → creates PR. Saves structured step output incrementally for live viewing. |
-| `git.ts` | Git operations: worktree lifecycle, commit, push, PR creation/merge (GitHub + Gitea), remote URL parsing, authenticated URL building. All async, non-fatal. |
-| `prompts.ts` | System prompt construction for the agent. Documents all available tools and expected workflows. |
-| `tools/filesystem.ts` | 12 agent tools: readFile, writeFile, listDirectory, runCommand, searchFiles, getFileInfo, gitStatus, gitDiff, appendToFile, deleteFile, moveFile, replaceInFile. Includes context budget tracking, loop detection, path sandboxing, read count limiting. |
-| `tools/fetch.ts` | fetchUrl tool — fetches web pages with timeout, size limit, HTML stripping. |
-| `tools/context-budget.ts` | ContextBudget class — tracks token usage and dynamically limits tool output. Default 128k tokens, configurable per machine. |
+| `index.ts` | Express app entry point. Initializes DB, mounts routes, graceful shutdown. |
+| `orchestrator.ts` | Single entry point for all background services. Manages startup/shutdown ordering for Machine Manager, Stats, Analysis, Director, Foreman. |
+| `machine-manager.ts` | Lease-based machine access control with priority queuing, auto-expiry (5min director, 30min foreman). |
+| `llm.ts` | Unified LLM client with resilient fetch, retry logic (5 server + 6 SDK retries), stream inactivity detection (20min), prompt caching hints. |
+| `schema.ts` | Drizzle ORM table definitions (20+ tables) — single source of truth for the DB schema. |
+| `db.ts` | Database class wrapping Drizzle + better-sqlite3. WAL mode. Auto-migration via ALTER TABLE in `migrate()`. |
+| `api.ts` | Express routes (~40+ endpoints). CRUD for projects/machines/issues, director/foreman APIs, analysis, stats, console SSE. |
+| `git.ts` | Git operations: worktree lifecycle, commit, push, PR creation/merge (GitHub + Gitea). Async, non-fatal. |
+| `git-helpers.ts` | Synchronous git utilities: getHeadCommit, isDirty, getDiff, etc. |
+| `stats.ts` | Token speed tracking and performance metrics. |
+| `analysis.ts` | Multi-stage automated codebase analysis with per-lens frequency tracking. |
+| `terminal.ts` | PTY WebSocket for Claude CLI access (xterm.js frontend). |
+| `console-log.ts` | Console log aggregation for SSE streaming to frontend. |
+| `runner.ts` | Single-agent executor for pipeline issues. Creates worktree → agent → commit → push → PR. |
+
+### Director (src/server/director/)
+
+| File | Purpose |
+|------|---------|
+| `scheduler.ts` | Event-driven directive processing loop |
+| `conversation.ts` | Multi-turn LLM chat with user |
+| `decomposer.ts` | Design doc + milestone generation |
+| `planner.ts` | Task batch generation per milestone |
+| `verifier.ts` | Task/milestone completion verification |
+| `review-gates.ts` | Human-in-the-loop escalation based on autonomy level |
+| `memory.ts` / `memory-context.ts` | Context assembly from .swe/ directory |
+| `persistent-memory.ts` | .swe/ file management |
+| `memsearch.ts` | Semantic search via memsearch CLI |
+| `episodic-extractor.ts` | Extract patterns before pruning episodic logs |
+| `task-knowledge-extractor.ts` | Post-task learning — extracts conventions, patterns, gotchas |
+| `style-lock.ts` | Lock approved art style (checkpoint, preset, prompt prefix, reference image) |
+| `style-exploration.ts` | Generate style exploration tasks with 6 varied prompts |
+| `art-task-processor.ts` | Inject ComfyUI tags into art task descriptions |
+| `unattributed-commits.ts` | Detect manual/external commits not linked to foreman tasks |
+
+### Foreman (src/server/foreman/)
+
+| File | Purpose |
+|------|---------|
+| `scheduler.ts` | Event-driven task dispatch with backoff |
+| `executor.ts` | LLM agent runner in git worktree |
+| `task-types.ts` | Task type → machine type routing (inference vs comfyui) |
+| `task-lifecycle.ts` | Task state machine management |
+| `routing.ts` | Model/machine selection logic |
+| `comfyui.ts` | ComfyUI REST client |
+| `comfyui-executor.ts` | ComfyUI task execution handler |
+| `comfyui-workflows.ts` | Programmatic workflow builders |
+| `comfyui-bootstrap.ts` | ComfyUI initialization and model discovery |
+| `comfyui-schema.ts` | ComfyUI schema/type definitions |
+| `circuit-breaker.ts` | Per-machine fault tolerance (closed → open → half-open) |
+| `art-feedback.ts` | LLM-revised prompts on art rejection |
+| `asset-archive.ts` | Preserve generated assets across iterations |
+| `validator.ts` | Acceptance criteria checking |
+| `cleanup.ts` | Stale worktree cleanup on startup |
+
+### Tools (src/server/tools/)
+
+| File | Purpose |
+|------|---------|
+| `filesystem.ts` | Agent filesystem tools: readFile, writeFile, replaceInFile, searchFiles, runCommand, etc. |
+| `web-search.ts` | DuckDuckGo web search |
+| `fetch.ts` | URL fetcher with timeout, size limit, HTML stripping |
+| `context7.ts` | Library documentation lookup via Context7 |
+| `build-check.ts` | Build/test execution tools |
+| `context-budget.ts` | Token budget tracking for tool outputs |
+| `task-query.ts` | Task database queries |
+| `story-context.ts` | Story/issue context extraction |
 
 ### Frontend (src/frontend/)
 
 | File | Purpose |
 |------|---------|
-| `Dashboard.tsx` | Root layout. Manages project/machine/issue selection. Renders Sidebar + main panel (IssueList, IssueDetail, or MachineDetail). |
-| `Sidebar.tsx` | Project list, machine list. New Project and New Machine dialogs. |
-| `IssueList.tsx` | Issue table with status filter tabs. New Issue dialog. |
-| `IssueDetail.tsx` | Issue detail with live agent output. Uses Conversation/Message/MessageResponse AI components. Polls run output every 2s while agent is working. Action buttons for approve, retry, approve-pr, reject-pr. |
-| `MachineDetail.tsx` | Machine settings form (name, base URL, model ID, context limit, enabled toggle). Save and delete. |
-| `api.ts` | Typed fetch client for all API endpoints. 30s timeout via AbortController. |
-| `usePoll.ts` | React hook that polls `/api/poll` every 4 seconds. |
+| `Dashboard.tsx` | Main layout + view routing |
+| `DashboardLanding.tsx` | Landing page |
+| `ProjectOverview.tsx` | Project overview with status summary, active work, recent activity |
+| `Sidebar.tsx` | Navigation, stats, toggles |
+| `DirectorDashboard.tsx` | Directive list + machine selector |
+| `DirectorDetail.tsx` | Directive detail view |
+| `DirectorConversation.tsx` | Chat UI with retry |
+| `DirectorReview.tsx` | Review gate UI for human decisions |
+| `ForemanDashboard.tsx` | Task queue overview |
+| `ForemanTaskDetail.tsx` | Task detail + asset preview |
+| `ForemanConfig.tsx` | Foreman configuration (continuous art, etc.) |
+| `IssueList.tsx` | Issue table with status filter tabs |
+| `IssueDetail.tsx` | Issue detail with live agent output |
+| `AnalysisView.tsx` | Analysis results |
+| `LlmLogs.tsx` | LLM request logs/analytics |
+| `Terminal.tsx` | xterm.js Claude CLI |
+| `Planner.tsx` | Epic/issue planning UI |
+| `ManualCommits.tsx` | Unattributed commit review + knowledge extraction |
+| `PrDiffView.tsx` | PR diff viewer |
 
 ### Database (SQLite, WAL mode)
 
-5 tables defined in `schema.ts`:
-- **machines** — LLM endpoints (base_url, model_id, context_limit, status)
-- **projects** — Git repos (workdir, git_remote, git_server_token, git_default_branch)
-- **issues** — Units of work (title, description, status, git_branch, git_pr_url)
-- **runs** — Agent executions (status, structured JSON output, token counts, timing)
-- **llm_requests** — Per-step LLM call log (input/output text, token counts including cache, timing)
+20+ tables defined in `schema.ts`. Key groups:
 
-### Agent execution flow
-
-1. User clicks "Approve & Run" on an issue
-2. API finds idle machine, creates run record, fires `executeIssue` async
-3. Runner ensures workdir exists (re-clones if missing)
-4. Creates git worktree on a new branch
-5. Calls `streamText` with all filesystem tools + system prompt
-6. Each step: tool calls execute, results saved incrementally to run.output as JSON
-7. On completion: git add, commit (message piped via stdin), push (with auth token), create PR via API
-8. Issue moves to `awaiting_review`; user can approve or reject the PR
+- **Core**: machines, projects, issues, runs, llm_requests
+- **Director**: director_directives, director_milestones, director_reviews, director_conversations, director_messages
+- **Foreman**: foreman_tasks, foreman_runs, foreman_config
+- **Planning**: planner_conversations, planner_messages
+- **Analysis**: analysis_configs, analysis_runs
 
 ### Key patterns
 
-- **Line ending normalization**: All file-reading tools normalize `\r\n` → `\n` for Windows compat. `replaceInFile` normalizes both content and search strings.
-- **Shell safety**: `gitSafe()` uses `spawn` with args array. `gitCommit()` pipes message via stdin (`git commit -F -`). `searchFiles` uses `spawnSync` with args array for rg/grep.
-- **Context budget**: Tracks chars consumed by tool results. Truncates large outputs as budget fills. Files ≤50 lines are never truncated. Configurable per machine via `context_limit`.
-- **Read count reset**: File read counters reset when the file is modified (writeFile, replaceInFile, appendToFile, deleteFile, moveFile).
-- **Crash recovery**: On startup, resets stuck machines to idle, running runs to fail, running/approved issues to failed.
-- **Structured live output**: Runner saves `liveSteps[]` JSON to run.output after each agent step. Frontend polls and renders as Conversation messages.
+- **Two-phase startup**: Orchestrator starts Director first, gates Foreman until Director's first tick completes
+- **Lease-based access**: All machine access via Machine Manager with priority queue and auto-expiry
+- **Circuit breakers**: Per-machine fault tolerance prevents repeated dispatch to failing machines
+- **Event-driven scheduling**: Nudge pattern — no polling timers, schedulers wake on state changes
+- **Line ending normalization**: All file-reading tools normalize `\r\n` → `\n` for Windows compat
+- **Shell safety**: `shell: false` in spawn calls prevents injection. Commit messages piped via stdin.
+- **Context budget**: Tracks chars consumed by tool results. Truncates large outputs as budget fills.
+- **Crash recovery**: Orchestrator clears leases and stale worktrees on startup. Pipeline resets stuck machines/runs/issues.
+- **Structured live output**: Runner saves `liveSteps[]` JSON to run.output. Frontend polls and renders.
+- **Task knowledge extraction**: Post-completion LLM analysis extracts reusable patterns → .swe/semantic/
 
 ## Testing
 
-99 tests across 5 suites:
-- `db.test.ts` — CRUD, crash recovery, schema, column validation
-- `api.test.ts` — All endpoints, validation, state transitions, auto-clone
-- `git.test.ts` — Branch naming, remote parsing, worktree ops, commit with shell metacharacters
-- `runner.test.ts` — State machine transitions on failure (uses 3s timeout against unreachable endpoint)
-- `index.test.ts` — Placeholder
-
-Run: `npx jest --no-cache`
+711+ tests across 41 suites. Run: `npx jest`
 
 ## Conventions
 
 - TypeScript strict mode. All files use `.ts` / `.tsx`.
-- Server types are inferred from Drizzle schema (`$inferSelect`), not hand-written.
-- Frontend types mirror server types in `frontend/api.ts` (not shared — keep in sync manually).
-- Express 5. Async route handlers are natively supported.
-- All git operations are async and non-fatal (return false/null on error, never throw).
-- `shell: true` is used for git spawn calls on Windows (git found via PATH). Args are passed as arrays for safety.
+- AI SDK (`ai` package) for all LLM calls — `streamText`, `generateText`, `tool()`
+- Zod for tool parameter schemas
+- Server types inferred from Drizzle schema (`$inferSelect`), not hand-written.
+- Express routes with explicit error handling.
+- Git worktrees for task isolation.
+- Event-driven scheduling (nudge pattern, no polling timers).
+- `shell: false` in spawn calls — prevents injection and special char issues.
 - Database migrations go in `Db.migrate()` as try/catch ALTER TABLE statements.
-- Tests use `:memory:` SQLite and temp directories. Runner tests use `agentTimeoutMs: 3000` for fast failure.
+- Tests use `:memory:` SQLite and temp directories.

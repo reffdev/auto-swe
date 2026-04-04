@@ -25,6 +25,7 @@ const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/director/:directiveId/conversation', view: 'director-conversation' },
   { path: '/director/:directiveId', view: 'director-detail' },
   { path: '/terminal/:projectId', view: 'terminal' },
+  { path: '/docs', view: 'docs' },
 ]
 
 const router = createBrowserRouter(

@@ -44,6 +44,8 @@ export interface WorkflowOptions {
   tiling?: boolean;
   /** Batch size */
   batch_size?: number;
+  /** UNET weight dtype for FLUX workflows (e.g. "fp8_e4m3fn" to reduce VRAM) */
+  weight_dtype?: string;
 }
 
 type Workflow = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
@@ -208,7 +210,7 @@ export function buildFluxTxt2ImgWorkflow(opts: WorkflowOptions): Workflow {
       class_type: "UNETLoader",
       inputs: {
         unet_name: opts.checkpoint,
-        weight_dtype: "default",
+        weight_dtype: opts.weight_dtype ?? "default",
       },
     },
     // Load Mistral 3 text encoder — ComfyUI auto-detects the architecture
@@ -484,12 +486,14 @@ export function buildWorkflow(opts: WorkflowOptions): Workflow {
   const isFlux = opts.checkpoint.toLowerCase().includes("flux");
 
   if (isFlux) {
+    console.log(`ComfyUI workflow: FLUX pipeline — checkpoint: ${opts.checkpoint}, weight_dtype: ${opts.weight_dtype ?? "default"}, lora: ${opts.lora ?? "none"}, ${opts.width}x${opts.height}, ${opts.steps} steps`);
     if (opts.lora) {
       return buildFluxTxt2ImgWithLoRAWorkflow(opts as WorkflowOptions & { lora: string });
     }
     return buildFluxTxt2ImgWorkflow(opts);
   }
 
+  console.log(`ComfyUI workflow: SDXL pipeline — checkpoint: ${opts.checkpoint}, lora: ${opts.lora ?? "none"}, ${opts.width}x${opts.height}, ${opts.steps} steps`);
   if (opts.lora) {
     return buildTxt2ImgWithLoRAWorkflow(opts as WorkflowOptions & { lora: string });
   }
@@ -772,6 +776,7 @@ export const PRESETS = {
     checkpoint: "flux2-dev.safetensors",
     lora: "Flux2TurboComfyv2.safetensors",
     lora_strength: 1.0,
+    weight_dtype: "fp8_e4m3fn",
     width: 1024,
     height: 1024,
     steps: 8,
@@ -785,6 +790,7 @@ export const PRESETS = {
     checkpoint: "flux2-dev.safetensors",
     lora: "Flux2TurboComfyv2.safetensors",
     lora_strength: 1.0,
+    weight_dtype: "fp8_e4m3fn",
     width: 1216,
     height: 832,
     steps: 8,
@@ -798,6 +804,7 @@ export const PRESETS = {
     checkpoint: "flux2-dev.safetensors",
     lora: "Flux2TurboComfyv2.safetensors",
     lora_strength: 1.0,
+    weight_dtype: "fp8_e4m3fn",
     width: 832,
     height: 1216,
     steps: 8,

@@ -1,5 +1,7 @@
 # Pipeline Stages
 
+> **Note**: The pipeline is the original single-issue execution system. For directive-based work, the [Director](00-how-it-works.md#director-flow) decomposes goals into [Foreman tasks](04-issue-lifecycle.md#foreman-task-lifecycle) instead. The pipeline remains fully functional for standalone issues.
+
 ## Stage Flow
 
 ```mermaid

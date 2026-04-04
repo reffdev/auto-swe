@@ -1,19 +1,19 @@
 # Voice Pipeline
 
-The voice endpoint provides a speech-to-speech interface for an ESP32/M5 StickC device. It's a general-purpose voice assistant, not tied to the issue pipeline.
+The voice endpoint provides a speech-to-speech interface for an ESP32/M5 StickC device (or any HTTP client). It's a general-purpose voice assistant, not tied to the issue pipeline.
 
 ## Sequence
 
 ```mermaid
 sequenceDiagram
-    participant ESP32 as ESP32 / Device
+    participant Device as Device / ESP32
     participant Server as Voice Endpoint
-    participant STT as Whisper (CPU)
-    participant LLM as LLM Machine (GPU)
-    participant TTS as Piper (CPU)
+    participant STT as STT Adapter
+    participant LLM as LLM Adapter
+    participant TTS as TTS Adapter
 
-    ESP32->>Server: POST /api/voice (raw PCM)
-    Server->>STT: PCM → WAV → /inference
+    Device->>Server: POST /api/voice (raw PCM)
+    Server->>STT: PCM → transcription
     STT-->>Server: "Hello, what's the status?"
 
     Server->>LLM: Chat with session history
@@ -21,19 +21,22 @@ sequenceDiagram
 
     loop Each sentence
         LLM-->>Server: "Everything looks good."
-        Server->>TTS: Text → /piper --output_raw
-        TTS-->>Server: WAV audio
-        Server-->>ESP32: Chunked WAV (plays immediately)
+        Server->>TTS: Text → audio
+        TTS-->>Server: PCM/WAV audio
+        Server-->>Device: Chunked audio (plays immediately)
     end
 ```
 
 ## Architecture
 
-| Component | Runs On | Purpose |
-|-----------|---------|---------|
-| Whisper.cpp | CPU (server) | Speech-to-text — systemd service on port 8080 |
-| LLM | GPU (llama.cpp machine) | Text generation — shared with pipeline |
-| Piper | CPU (server, CLI) | Text-to-speech — spawned per sentence |
+The voice pipeline uses a pluggable adapter pattern. Each component (STT, LLM, TTS) is an interface that can be backed by different implementations:
+
+| Component | Adapter | Implementation |
+|-----------|---------|---------------|
+| **STT** | `SttAdapter` | `stt-llamacpp.ts` — Whisper via llama.cpp server |
+| **LLM** | `LlmAdapter` | `llm-llamacpp.ts` — llama.cpp chat completions |
+| **TTS** | `TtsAdapter` | `tts-piper.ts` — Piper CLI (spawned per sentence) |
+| | | `tts-llamacpp.ts` — llama.cpp TTS endpoint |
 
 ## Audio Format
 
@@ -52,9 +55,24 @@ sequenceDiagram
 
 | Variable | Purpose |
 |----------|---------|
-| `STT_URL` | Whisper server URL |
+| `STT_URL` | Whisper/STT server URL |
 | `VOICE_LLM_URL` | LLM server URL |
 | `VOICE_MODEL_ID` | Model ID on the LLM server |
 | `PIPER_PATH` | Path to piper executable |
 | `PIPER_MODEL` | Path to .onnx voice model |
 | `VOICE_SYSTEM_PROMPT` | Custom personality prompt |
+
+## Voice Files
+
+```
+src/server/voice/
+├── index.ts          # Express router, orchestrates STT → LLM → TTS
+├── types.ts          # SttAdapter, LlmAdapter, TtsAdapter interfaces
+├── sessions.ts       # In-memory session management
+├── stt-llamacpp.ts   # Whisper STT via llama.cpp
+├── llm-llamacpp.ts   # LLM via llama.cpp
+├── tts-piper.ts      # Piper TTS (CLI, spawned per sentence)
+├── tts-llamacpp.ts   # llama.cpp TTS endpoint
+├── wav.ts            # WAV header utilities
+└── wav.test.ts       # WAV tests
+```

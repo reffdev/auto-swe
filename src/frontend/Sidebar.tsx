@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { cn } from '@/lib/utils'
-import { Plus, FolderGit2, RefreshCw, Activity, Cpu, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope } from 'lucide-react'
+import { Plus, FolderGit2, RefreshCw, Activity, Cpu, GitPullRequest, Zap, ArrowRight, Hammer, Settings, Target, Palette, Microscope, BookOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -731,6 +731,25 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
 
       {/* Analysis */}
       <AnalysisToggle />
+
+      {/* Docs */}
+      <nav className="px-1 pb-2">
+        {(() => {
+          const isDocs = location.pathname === '/docs'
+          return (
+            <Link
+              to="/docs"
+              className={cn(
+                'w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors flex items-center gap-2',
+                isDocs ? 'bg-accent text-foreground font-medium' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              <BookOpen className="size-3" />
+              Docs
+            </Link>
+          )
+        })()}
+      </nav>
 
       {/* Stats */}
       <div className="mt-auto" />

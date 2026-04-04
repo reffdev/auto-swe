@@ -21,6 +21,7 @@ export const ROUTE_PATHS = [
   '/director/review/:reviewId',
   '/director/commits/:projectId',
   '/terminal/:projectId',
+  '/docs',
 ] as const;
 
 /** Route names for view discrimination */
@@ -43,3 +44,4 @@ export type ViewName =
   | 'director-review'
   | 'manual-commits'
   | 'terminal'
+  | 'docs'

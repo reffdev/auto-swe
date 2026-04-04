@@ -4,32 +4,37 @@
 
 ```mermaid
 sequenceDiagram
-    participant Stage as Pipeline Stage
-    participant Fetch as Custom Fetch
-    participant LLM as llama.cpp
+    participant Stage as Pipeline / Foreman
+    participant LLM as LLM Client (llm.ts)
+    participant Server as LLM Server
 
-    Stage->>Fetch: streamText → fetch()
-    Fetch->>LLM: POST /v1/chat/completions
-    LLM-->>Fetch: 200 OK (headers)
-    Note over Fetch: Wrap body stream with inactivity monitor
+    Stage->>LLM: streamText → resilient fetch
+    LLM->>Server: POST /v1/chat/completions
+    Server-->>LLM: 200 OK (headers)
+    Note over LLM: Wrap body stream with inactivity monitor
 
     loop Streaming tokens
-        LLM-->>Fetch: SSE chunk
-        Fetch-->>Stage: Token
-        Note over Fetch: Reset 5-min timer
+        Server-->>LLM: SSE chunk
+        LLM-->>Stage: Token
+        Note over LLM: Reset inactivity timer
     end
 
     alt LLM hangs
-        Note over Fetch: 5 min no data
-        Fetch->>Fetch: controller.error("timeout")
-        Fetch-->>Stage: Stream error
-        Stage->>Stage: Stage fails → pipeline retry
+        Note over LLM: 20 min no data
+        LLM->>LLM: controller.error("timeout")
+        LLM-->>Stage: Stream error
+        Stage->>Stage: Retry or fail
+    end
+
+    alt Connection failure
+        Note over LLM: Up to 5 server retries
+        LLM->>Server: Retry with backoff
     end
 
     alt Cancel button
-        Stage->>Fetch: abortSignal fires
-        Fetch->>Fetch: cancelReject → Promise.race breaks
-        Stage->>Stage: Stage fails immediately
+        Stage->>LLM: abortSignal fires
+        LLM->>LLM: cancelReject → Promise.race breaks
+        Stage->>Stage: Immediate failure
     end
 ```
 
@@ -37,9 +42,20 @@ sequenceDiagram
 
 | Layer | Timeout | What it protects against |
 |-------|---------|------------------------|
-| **Per-chunk stream monitor** | 5 minutes | LLM connection hangs mid-stream (no data arriving) |
-| **Stage hard timeout** | 15 minutes | Stage runs forever (infinite tool call loops, etc.) |
-| **Cancel button** | Immediate | User wants to stop — `Promise.race` rejection breaks out of hung `for await` |
+| **Connection timeout** | 10 minutes | Initial connection to LLM server fails or hangs |
+| **Stream inactivity monitor** | 20 minutes | LLM connection hangs mid-stream (no data arriving) |
+| **Stage hard timeout** | 15 minutes | Pipeline stage runs forever (infinite tool call loops) |
+| **Cancel button** | Immediate | User wants to stop — `Promise.race` rejection breaks out |
+
+## LLM Client Resilience (llm.ts)
+
+The unified LLM client (`llm.ts`) provides:
+
+- **Resilient fetch** — custom fetch wrapper with API key injection, connection timeout, and retry logic
+- **Server retries** — up to 5 retries on connection failures with backoff
+- **AI SDK retries** — up to 6 retries at the AI SDK level
+- **Stream monitoring** — 20-minute inactivity timeout per chunk
+- **Prompt caching hints** — compatible with Anthropic and OpenRouter cache control
 
 ## How Cancel Works
 
@@ -47,7 +63,39 @@ The cancel button sets an `AbortController.abort()`. This:
 1. Fires the abort signal on `streamText` (best effort — may not respond if stream is hung)
 2. Rejects `cancelPromise` in `Promise.race` — **guaranteed** to break out immediately
 3. Stage catch block marks the run as failed
-4. Pipeline finally block releases the machine and cleans up the worktree
+4. Pipeline/foreman finally block releases the machine and cleans up the worktree
+
+## Circuit Breaker (Foreman)
+
+Per-machine circuit breakers prevent repeated dispatch to failing machines:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed: Normal operation
+
+    Closed --> Open: 3 consecutive failures
+    Open --> HalfOpen: 5 min elapsed
+    HalfOpen --> Closed: Success
+    HalfOpen --> Open: Failure
+```
+
+| State | Behavior |
+|-------|----------|
+| **Closed** | Normal — tasks dispatched freely |
+| **Open** | Blocked — no tasks dispatched to this machine |
+| **Half-Open** | Trial — one task allowed; success → closed, failure → open |
+
+Configuration: `failureThreshold = 3`, `resetTimeoutMs = 5 minutes`.
+
+## Machine Manager & Lease Expiry
+
+All machine access goes through the lease system (`machine-manager.ts`):
+
+- **Director leases**: 5-minute expiry, auto-renewed during active work
+- **Foreman leases**: 30-minute expiry for longer task execution
+- **Priority queuing**: Director gets priority over Foreman for machine acquisition
+- **Startup cleanup**: `clearAllLeases()` on orchestrator start — prevents stale leases from crashed sessions
+- **Director reservation**: Orchestrator prevents Foreman from dispatching to the Director's reserved machine
 
 ## Build & Test Gates
 
@@ -70,7 +118,18 @@ Gates are server-side checks (no LLM calls):
 
 ## Crash Recovery
 
-On server startup, `recoverFromCrash()` resets:
+### Orchestrator Startup
+
+On server startup, `startOrchestrator()`:
+1. `clearAllLeases()` — removes all stale leases from previous session
+2. Starts stats collector, analysis scheduler
+3. Starts Director scheduler (gets first tick)
+4. Starts Foreman scheduler (gated until Director's first tick completes)
+5. `cleanupWorktrees()` — removes stale worktrees from failed/completed foreman tasks
+
+### Pipeline Recovery
+
+`recoverFromCrash()` resets:
 - Machines stuck in `"working"` → `"idle"`
 - Runs stuck in `"running"` → `"fail"`
 - Issues stuck in `"running"` or `"approved"` → `"failed"`

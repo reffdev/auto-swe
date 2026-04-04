@@ -2,42 +2,43 @@
 
 Documentation for the Open-SWE autonomous software engineering system.
 
-> **Start with [CLAUDE.md](../../CLAUDE.md)** for the current system overview. These docs cover the foundational architecture in detail.
+> **Start with [CLAUDE.md](../../CLAUDE.md)** for the current system overview. These docs cover the architecture in detail.
 
 ## Contents
 
-### Core Architecture (original pipeline system)
-0. **[How It Works](00-how-it-works.md)** — The big picture: from idea to PR, how agents are controlled
-1. **[System Overview](01-system-overview.md)** — Frontend, API, pipeline, external services
+### System Architecture
+0. **[How It Works](00-how-it-works.md)** — The big picture: two-level orchestration from directive to PR
+1. **[System Overview](01-system-overview.md)** — Frontend, API, orchestrator, Director, Foreman, pipeline, infrastructure
 2. **[Pipeline Stages](02-pipeline-stages.md)** — Scout → Implement → Build Gate → Test-Write → Test Gate → Review → GitOps
-3. **[Review Lenses](03-review-lenses.md)** — 11 focused review passes with cache-friendly prompt structure
-4. **[Issue Lifecycle](04-issue-lifecycle.md)** — Planning, epics, statuses, decomposition
-5. **[Data Model](05-data-model.md)** — Database tables and relationships
-6. **[Voice Pipeline](06-voice-pipeline.md)** — Speech-to-speech: Whisper STT → LLM → Piper TTS
-7. **[Resilience](07-resilience.md)** — Timeouts, crash recovery, gates, guardrails
-8. **[Agent Harness](08-agent-harness.md)** — Tool provisioning, prompt strategy, isolation
-
-### Systems added since original docs (see CLAUDE.md for details)
-- **Director** — High-level autonomy: directives → milestones → task batches
-- **Foreman** — Event-driven task dispatch with machine type routing
-- **ComfyUI** — Art/music/SFX generation with presets, feedback, and human review
-- **Machine Manager** — Lease-based access control replacing ad-hoc exclusion
-- **Persistent Memory** — `.swe/` directory with episodic, semantic, procedural, conventions
-- **MemSearch** — Semantic search over markdown memories via memsearch CLI
-- **Web Terminal** — Claude CLI via PTY WebSocket (xterm.js frontend)
+3. **[Review Lenses](03-review-lenses.md)** — 11 focused review passes (6 core + 5 stack-specific) with cache-friendly prompts
+4. **[Issue & Directive Lifecycle](04-issue-lifecycle.md)** — Directives, milestones, foreman tasks, issues, review gates
+5. **[Data Model](05-data-model.md)** — All database tables and relationships (20+ tables)
+6. **[Voice Pipeline](06-voice-pipeline.md)** — Speech-to-speech: pluggable STT → LLM → TTS adapters
+7. **[Resilience](07-resilience.md)** — Timeouts, crash recovery, circuit breakers, lease expiry, guardrails
+8. **[Agent Harness](08-agent-harness.md)** — Tool provisioning, prompt strategy, isolation (pipeline + foreman)
 
 ## Quick Start Concepts
 
-**Directive** — A high-level goal ("build a game"). The Director decomposes it into milestones and tasks.
+**Directive** — A high-level goal ("build a game"). The Director decomposes it into milestones and tasks via conversation, then orchestrates execution.
 
-**Foreman Task** — A unit of work dispatched to a machine. Types: code, art, music, sfx, review, content.
+**Milestone** — A sequenced phase within a directive. Each milestone has verification criteria and generates 1–5 foreman tasks.
 
-**Machine** — An LLM or ComfyUI server endpoint. Managed via the Machine Manager lease system.
+**Foreman Task** — A unit of work dispatched to a machine. Types: `code`, `art`, `music`, `sfx`, `style_exploration`, `review`, `content`, `claude`.
 
-**Machine Type** — `inference` (code tasks via Ollama/OpenRouter) or `comfyui` (art/audio via ComfyUI).
+**Machine** — An LLM or ComfyUI server endpoint. Managed via the Machine Manager lease system with priority queuing.
 
-**Review Lens** — A focused review pass. 11 lenses available. Reviews use cache-friendly prompt structure for ~77% token savings across lenses.
+**Machine Type** — `inference` (code/review/content/claude tasks via Ollama/OpenRouter) or `comfyui` (art/music/sfx/style_exploration via ComfyUI).
 
-**Pipeline** — Original single-issue flow: scout → implement → build gate → test → review → PR. Still functional but Director+Foreman is the primary system.
+**Review Lens** — A focused review pass. 11 lenses available (6 core + 5 stack-specific). Reviews use a cache-friendly prompt structure for ~77% token savings across lenses.
 
-**Memory** — `.swe/` directory with conventions (rules), semantic (knowledge), procedural (workflows), and episodic (auto-logged activity). Searched via memsearch.
+**Review Gate** — A human-in-the-loop checkpoint. Gates pause directives for human decisions on task verification, design choices, milestone completion, failure escalation, and style selection. Behavior controlled by autonomy level (conservative/standard/aggressive).
+
+**Pipeline** — Single-issue execution flow: scout → implement → build gate → test → review → PR. Used for standalone issues; Director+Foreman is the primary system for directives.
+
+**Orchestrator** — Single entry point (`orchestrator.ts`) managing startup/shutdown of all background services: Machine Manager, Stats, Analysis, Director, Foreman.
+
+**Memory** — `.swe/` directory with conventions (rules), semantic (knowledge), procedural (workflows), and episodic (auto-logged activity). Searched via memsearch CLI. Task knowledge auto-extracted after completion.
+
+**Circuit Breaker** — Per-machine fault tolerance (closed → open → half-open). Prevents repeated dispatch to failing machines. Threshold: 3 failures, reset after 5 minutes.
+
+**Style Lock** — Art style consistency system. After human approval of a style exploration, the selected style's checkpoint/preset/prompt prefix/reference image are locked for all future art tasks in the directive.

@@ -2,6 +2,12 @@
 
 The harness is the infrastructure that runs LLM agents — managing their tools, context, prompts, and lifecycle. The agents themselves are stateless LLM calls; the harness provides everything around them.
 
+There are two harness implementations:
+1. **Pipeline harness** — runs pipeline stages (scout, implement, test-write, review) via LangGraph
+2. **Foreman executor** — runs foreman tasks (code, review, content, claude) in git worktrees
+
+Both share the same core pattern: build prompt → provide tools → run agent loop → enforce guards.
+
 ## What the Harness Does
 
 ```mermaid
@@ -26,6 +32,7 @@ graph LR
         direction TB
         Timeout["⏱ Timeouts"]
         Cancel["🛑 Cancel"]
+        Circuit["⚡ Circuit Breaker"]
     end
 
     Prompt --> Loop
@@ -34,24 +41,24 @@ graph LR
     Guards -.->|abort| Loop
 ```
 
-The harness wraps each pipeline stage. It builds the prompt, hands the LLM a set of tools, runs the agent loop, logs each step, and enforces timeouts. The LLM itself is stateless — it just receives a prompt and responds with text or tool calls.
+The harness wraps each stage/task. It builds the prompt, hands the LLM a set of tools, runs the agent loop, logs each step, and enforces timeouts. The LLM itself is stateless — it just receives a prompt and responds with text or tool calls.
 
 ## Agent vs Harness Responsibilities
 
 | Concern | Agent (LLM) | Harness (Code) |
 |---------|-------------|----------------|
-| **What to do** | Decides based on prompt + tools | Provides the issue description and file list |
+| **What to do** | Decides based on prompt + tools | Provides the issue/task description and file list |
 | **How to do it** | Generates tool calls and code | Executes tool calls, returns results |
 | **What tools exist** | Sees tool names + descriptions | Creates tool functions, controls which are available per stage |
 | **File access** | Calls readFile/writeFile | Reads from worktree, enforces path boundaries |
 | **Context window** | Manages within its limit | Controls prompt size, provides pre-loaded project files |
 | **When to stop** | Produces result block | Enforces step limits, timeouts, abort signals |
-| **Quality** | Follows coding standards in prompt | Review lenses catch violations |
-| **State between stages** | None — each stage is a fresh context | LangGraph persists state, passes outputs between nodes |
+| **Quality** | Follows coding standards in prompt | Review lenses catch violations (pipeline) / validator checks criteria (foreman) |
+| **State between stages** | None — each stage is a fresh context | LangGraph persists state (pipeline) / DB tracks task state (foreman) |
 
 ## The Agent Loop
 
-Each stage runs one agent loop via `streamText`:
+Each stage/task runs one agent loop via `streamText`:
 
 ```mermaid
 sequenceDiagram
@@ -69,7 +76,7 @@ sequenceDiagram
     end
 
     LLM-->>Harness: Final text output
-    Harness->>Harness: Save output to pipeline state
+    Harness->>Harness: Save output to state / DB
 ```
 
 Key points:
@@ -78,9 +85,9 @@ Key points:
 - The harness controls **which tools** each stage can access — scout gets read-only, implement gets read+write, review gets read+run
 - **`onStepFinish`** fires after each tool call round-trip, allowing the harness to log progress
 
-## Tool Provisioning Per Stage
+## Pipeline Harness: Tool Provisioning Per Stage
 
-The harness creates different tool sets per stage to enforce boundaries:
+The pipeline harness creates different tool sets per stage to enforce boundaries:
 
 | Tool | Scout | Implement | Test-Write | Review |
 |------|:-----:|:---------:|:----------:|:------:|
@@ -104,35 +111,49 @@ The harness creates different tool sets per stage to enforce boundaries:
 | getRelatedStories | ✓ | ✓ | | |
 | findStory | ✓ | ✓ | | |
 
-## Prompt Strategy
+## Foreman Executor
 
-Each stage gets a focused prompt. The harness doesn't use a shared "mega-prompt" — each stage sees only what's relevant:
+The foreman executor (`foreman/executor.ts`) runs tasks in isolated git worktrees with a full tool set:
 
 ```mermaid
 graph TD
-    subgraph ScoutPrompt["Scout Prompt"]
-        SP1["Role: Codebase researcher"]
-        SP2["Task: Find relevant files"]
-        SP3["Output: File manifest via saveCheckpoint"]
-        SP4["Constraint: Read-only, no code writing"]
-    end
+    subgraph ForemanExecution["Foreman Task Execution"]
+        Acquire["Acquire machine lease"]
+        Worktree["Create git worktree\n(or reuse existing branch)"]
+        Prompt["Build prompt from\ntask description +\nacceptance criteria +\nmemory context"]
+        Agent["Run LLM agent\nwith filesystem tools"]
+        Validate["Validate against\nacceptance criteria"]
+        Commit["Commit changes\nto task branch"]
 
-    subgraph ImplPrompt["Implement Prompt"]
-        IP1["Role: Implementer"]
-        IP2["Input: File list + issue description"]
-        IP3["Task: Read files, make changes"]
-        IP4["Standards: Additive only, no rewrites"]
-    end
-
-    subgraph ReviewPrompt["Review Prompt"]
-        RP1["Role: Reviewer with specific lens"]
-        RP2["Input: Git diff + issue + prior outputs"]
-        RP3["Task: Read files, run tests, verdict"]
-        RP4["Output: accept or reject with feedback"]
+        Acquire --> Worktree --> Prompt --> Agent --> Validate --> Commit
     end
 ```
 
-## Data Flow Between Stages
+The foreman executor provides:
+- **Full filesystem access** — read, write, search, run commands in the worktree
+- **Web tools** — web search (DuckDuckGo), URL fetch, library docs lookup (Context7)
+- **Task context** — task description, acceptance criteria, related task outputs, memory from `.swe/`
+- **Post-processing** — git commit, branch management, optional YAML sync
+
+## Prompt Strategy
+
+Each stage/task gets a focused prompt. The harness doesn't use a shared "mega-prompt" — each context sees only what's relevant:
+
+```mermaid
+graph TD
+    subgraph PipelinePrompts["Pipeline Stage Prompts"]
+        SP["Scout: Codebase researcher\nFind relevant files\nOutput: file manifest"]
+        IP["Implement: Implementer\nRead files, make changes\nStandards: additive only"]
+        RP["Review: Reviewer with lens\nGit diff + issue + prior outputs\nOutput: accept/reject"]
+    end
+
+    subgraph ForemanPrompts["Foreman Task Prompts"]
+        CP["Code: Full implementation\nTask desc + acceptance criteria\n+ memory context"]
+        AP["Art: ComfyUI workflow\n(handled by comfyui-executor)"]
+    end
+```
+
+## Data Flow Between Pipeline Stages
 
 Stages don't share context directly — the harness passes data through pipeline state:
 
@@ -165,57 +186,65 @@ Notes:
 
 ```mermaid
 graph TD
-    subgraph Project["Project Workdir\n(shared, reset to origin)"]
+    subgraph Project["Project Workdir\n(shared, main branch)"]
         Main[main branch]
     end
 
-    subgraph WT1["Worktree: Issue A"]
-        Branch1[issue/abc-feature]
-        Files1[Isolated file changes]
+    subgraph Pipeline["Pipeline Worktrees"]
+        WT1["issue/abc-feature"]
+        WT2["issue/def-bugfix"]
     end
 
-    subgraph WT2["Worktree: Issue B"]
-        Branch2[issue/def-bugfix]
-        Files2[Isolated file changes]
+    subgraph Foreman["Foreman Worktrees"]
+        WT3["foreman/implement-health-check"]
+        WT4["foreman/add-login-ui"]
     end
 
     Main -->|"git worktree add"| WT1
     Main -->|"git worktree add"| WT2
+    Main -->|"git worktree add"| WT3
+    Main -->|"git worktree add"| WT4
 
     WT1 -->|"commit + push"| PR1[PR #1]
     WT2 -->|"commit + push"| PR2[PR #2]
+    WT3 -->|"commit to branch"| Branch1[Task branch]
+    WT4 -->|"commit to branch"| Branch2[Task branch]
 ```
 
-Each issue gets its own git worktree — a lightweight checkout of the repo on a separate branch. This means:
-- Multiple issues can run concurrently without conflicts
+Both pipeline issues and foreman tasks get their own git worktrees:
+- Multiple tasks/issues can run concurrently without conflicts
 - Each agent sees a clean copy of the codebase
-- Changes are isolated until the PR is merged
-- Worktrees are cleaned up after the pipeline finishes (success or failure)
+- Changes are isolated until merged
+- **Pipeline worktrees** are cleaned up after the pipeline finishes (success or failure)
+- **Foreman worktrees** are cleaned up on orchestrator startup via `cleanupWorktrees()` — removes worktrees for completed or failed tasks
 
 ## Error Handling
 
 ```mermaid
 graph TD
-    StageRun[Stage Running]
+    StageRun[Stage / Task Running]
 
-    StageRun -->|"Stream timeout\n(5 min no data)"| StreamError[Stream Error]
+    StageRun -->|"Stream timeout\n(20 min no data)"| StreamError[Stream Error]
     StageRun -->|"Hard timeout\n(15 min total)"| TimeoutError[Timeout Error]
     StageRun -->|"Cancel button"| CancelError[Cancel Error]
     StageRun -->|"LLM error"| LLMError[LLM Error]
-    StageRun -->|"Success"| StagePass[Stage Pass]
+    StageRun -->|"Circuit breaker open"| CircuitError[Circuit Breaker]
+    StageRun -->|"Success"| StagePass[Pass]
 
-    StreamError --> StageFail[Stage Fail]
-    TimeoutError --> StageFail
+    StreamError --> Retry{Retry?}
+    TimeoutError --> StageFail[Fail]
     CancelError --> StageFail
-    LLMError --> StageFail
+    LLMError --> Retry
+    CircuitError --> StageFail
 
-    StageFail -->|"Scout empty"| PipelineFail[Pipeline Fail]
-    StageFail -->|"Other stage"| PipelineFail
+    Retry -->|"retries left"| StageRun
+    Retry -->|"exhausted"| StageFail
 
-    StagePass -->|"Build gate fail\n(up to 3x)"| RetryImpl[Back to Implement]
-    StagePass -->|"Test gate fail\n(up to 3x)"| RetryImpl
-    StagePass -->|"Review reject"| RetryImpl
-    StagePass -->|"Review reject\n+ retries exhausted"| NextLens[Next Lens]
-    StagePass -->|"More lenses"| NextReview[Next Review Lens]
-    StagePass -->|"All lenses pass"| GitOps[GitOps]
+    StageFail -->|"Pipeline: scout empty"| PipelineFail[Pipeline Fail]
+    StageFail -->|"Foreman: record failure"| CircuitUpdate[Update Circuit Breaker]
+
+    StagePass -->|"Pipeline: build gate fail (up to 3x)"| RetryImpl[Back to Implement]
+    StagePass -->|"Pipeline: review reject"| RetryImpl
+    StagePass -->|"Foreman: validation fail"| TaskFail[Task Failed]
+    StagePass -->|"All clear"| Done[Complete]
 ```
