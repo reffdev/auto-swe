@@ -97,7 +97,7 @@ interface Stats {
   machines: { active: number; total: number };
   issues: { queued: number; running: number; pr_open: number; failed: number; completed: number; total: number };
   foreman?: { queued: number; running: number; review: number; completed: number; failed: number; total: number };
-  director?: { active: number; reviews: number; busy: boolean; planning: boolean };
+  director?: { active: number; reviews: number; busy: boolean; planning: boolean; reservedMachineId: string | null };
   analysis?: { running: number; enabled: boolean };
   speed: SpeedResult;
   machineSpeed: Record<string, SpeedResult>;
@@ -578,6 +578,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const activeIds = m.active_issue_ids ?? []
           const machineSpd = stats?.machineSpeed?.[m.id]
           const outTps = machineSpd?.completion_tokens_per_sec
+          const isDirectorReserved = stats?.director?.reservedMachineId === m.id
 
           // Cycling arrow: find which active issue/task to link to
           const currentPath = location.pathname
@@ -637,6 +638,11 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                   ) : null}
                   {activeIds.length > 0 ? (
                     <span className="text-[10px] font-mono text-emerald-400 shrink-0">{activeIds.length}/{m.max_concurrent}</span>
+                  ) : isDirectorReserved ? (
+                    <span className="text-[10px] font-mono text-blue-400 shrink-0 flex items-center gap-0.5" title="Director is using this machine">
+                      <Target className="size-2.5" />
+                      {stats?.director?.planning ? 'plan' : 'dir'}
+                    </span>
                   ) : machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
                     <span className="size-2 rounded-full shrink-0 bg-emerald-400 animate-pulse" title="Active (recent LLM traffic)" />
                   ) : (

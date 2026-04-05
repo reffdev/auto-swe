@@ -19,7 +19,7 @@ import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
 import { createModel, generate } from "./llm";
 import { acquireLease, releaseLease } from "./machine-manager";
-import { isDirectorBusy, isDirectorPlanning } from "./director/director-state";
+import { isDirectorBusy, isDirectorPlanning, getDirectorReservedMachine } from "./director/director-state";
 import { notifyCapacityChange } from "./foreman/scheduler";
 import { getActiveAnalysisCount } from "./analysis";
 
@@ -775,6 +775,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         reviews: pendingReviews,
         busy: isDirectorBusy(),
         planning: isDirectorPlanning(),
+        reservedMachineId: getDirectorReservedMachine(),
       },
       analysis: {
         running: analysisRunning,
