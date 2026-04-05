@@ -36,6 +36,8 @@ export async function planNextTasks(
   milestone: DirectorMilestone,
   /** Machine types that are idle and need work. When set, the planner prioritizes generating tasks for these types. */
   idleMachineTypes?: string[],
+  /** Verification issues that triggered corrective planning. The planner must generate fix tasks for these. */
+  verificationIssues?: string[],
 ): Promise<number> {
   const planStartTime = Date.now();
   console.log(`Director planner: starting for milestone "${milestone.title}" (idleMachineTypes: ${idleMachineTypes?.join(", ") ?? "none"})`);
@@ -75,6 +77,7 @@ export async function planNextTasks(
     milestoneVerification: milestone.verification ?? "Not specified",
     workflowSummary,
     idleMachineTypes,
+    verificationIssues,
   });
 
   const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];

@@ -585,7 +585,7 @@ async function completeMilestone(
     db.updateDirectorMilestone(milestone.id, { status: "active" });
     console.log(`Director: milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
     logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
-    await planTasks(db, directive, project, milestone, "corrective");
+    await planTasks(db, directive, project, milestone, "corrective", verification.issues);
   }
 }
 
@@ -593,9 +593,10 @@ async function planTasks(
   db: Db, directive: DirectorDirective, project: Project,
   milestone: import("../db").DirectorMilestone,
   reason: string,
+  verificationIssues?: string[],
 ): Promise<void> {
   try {
-    await planNextTasks(db, directive, project, milestone);
+    await planNextTasks(db, directive, project, milestone, undefined, verificationIssues);
   } catch (err) {
     console.error(`Director: ${reason} planning failed:`, err instanceof Error ? err.message : err);
   }

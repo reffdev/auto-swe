@@ -103,6 +103,7 @@ export function buildPlanningPrompt(opts: {
   milestoneVerification: string;
   workflowSummary?: string | null;
   idleMachineTypes?: string[];
+  verificationIssues?: string[];
 }): { system: string; user: string } {
   const systemParts = [
     "You are a project director generating tasks for autonomous execution.",
@@ -181,6 +182,20 @@ export function buildPlanningPrompt(opts: {
     "Generate the next 1-5 tasks to make progress toward this milestone.",
     "Focus on what's missing or incomplete.",
   ];
+
+  if (opts.verificationIssues?.length) {
+    userParts.push(
+      "",
+      "## CORRECTIVE PLANNING — Milestone Verification Failed",
+      "",
+      "The milestone was verified and the following issues were found. You MUST generate tasks to fix these specific errors.",
+      "Do NOT regenerate tasks that already exist — create NEW fix tasks with DIFFERENT titles.",
+      "Use the read-only tools to investigate the root cause before generating tasks.",
+      "",
+      "**Verification errors:**",
+      ...opts.verificationIssues.map(issue => `- ${issue}`),
+    );
+  }
 
   if (opts.idleMachineTypes?.length) {
     const typeLabels: Record<string, string> = {
