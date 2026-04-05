@@ -76,6 +76,55 @@ description: |
     expect(parseNextTasks("no tasks here")).toEqual([]);
   });
 
+  it("handles 4-space indented descriptions", () => {
+    const input = `
+\`\`\`next_tasks
+task: 1
+title: Indented Task
+type: code
+priority: 1
+target_files: []
+depends_on: []
+acceptance_criteria: []
+needs_human_review: false
+description: |
+    This has 4-space indentation.
+    All lines use 4 spaces.
+    Should be cleanly stripped.
+\`\`\`
+    `;
+    const tasks = parseNextTasks(input);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].description).toBe("This has 4-space indentation.\nAll lines use 4 spaces.\nShould be cleanly stripped.");
+  });
+
+  it("captures last list item without trailing newline", () => {
+    const input = `
+\`\`\`next_tasks
+task: 1
+title: List Edge Case
+type: code
+priority: 1
+target_files:
+  - file1.gd
+  - file2.gd
+depends_on: []
+acceptance_criteria:
+  - "First criterion"
+  - "Second criterion"
+  - "Third criterion"
+needs_human_review: false
+description: |
+  Test.
+\`\`\`
+    `;
+    const tasks = parseNextTasks(input);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].target_files).toEqual(["file1.gd", "file2.gd"]);
+    expect(tasks[0].acceptance_criteria).toHaveLength(3);
+    expect(tasks[0].acceptance_criteria[2]).toBe("Third criterion");
+  });
+
   it("handles inline empty arrays", () => {
     const input = `
 \`\`\`next_tasks
@@ -122,6 +171,24 @@ verification: |
     expect(milestones[0].description).toContain("engine autoloads");
     expect(milestones[0].verification).toContain("7 autoloads");
     expect(milestones[1].title).toBe("Game Data");
+  });
+
+  it("handles 4-space indented descriptions and verification", () => {
+    const input = `
+\`\`\`milestones
+milestone: 1
+title: Core Systems
+description: |
+    Implement all engine autoloads.
+    They should follow Godot best practices.
+verification: |
+    All autoloads exist and pass godot --check-only.
+\`\`\`
+    `;
+    const milestones = parseMilestones(input);
+    expect(milestones).toHaveLength(1);
+    expect(milestones[0].description).toBe("Implement all engine autoloads.\nThey should follow Godot best practices.");
+    expect(milestones[0].verification).toBe("All autoloads exist and pass godot --check-only.");
   });
 
   it("returns empty for no block", () => {
@@ -183,6 +250,51 @@ reasoning: This requires visual inspection.
 
   it("returns null for invalid verdict", () => {
     expect(parseVerdict("no verdict")).toBeNull();
+  });
+
+  it("clamps confidence to 0-1 range", () => {
+    const highInput = `
+\`\`\`verdict
+result: pass
+confidence: 1.5
+reasoning: Too confident
+\`\`\`
+    `;
+    const high = parseVerdict(highInput);
+    expect(high!.confidence).toBe(1);
+
+    const lowInput = `
+\`\`\`verdict
+result: fail
+confidence: -0.3
+reasoning: Negative confidence
+\`\`\`
+    `;
+    const low = parseVerdict(lowInput);
+    expect(low!.confidence).toBe(0);
+  });
+
+  it("defaults confidence to 0.5 when missing", () => {
+    const input = `
+\`\`\`verdict
+result: pass
+reasoning: No confidence field
+\`\`\`
+    `;
+    const verdict = parseVerdict(input);
+    expect(verdict!.confidence).toBe(0.5);
+  });
+
+  it("defaults confidence to 0.5 for non-numeric values", () => {
+    const input = `
+\`\`\`verdict
+result: pass
+confidence: high
+reasoning: Non-numeric
+\`\`\`
+    `;
+    const verdict = parseVerdict(input);
+    expect(verdict!.confidence).toBe(0.5);
   });
 
   it("returns null for invalid result value", () => {

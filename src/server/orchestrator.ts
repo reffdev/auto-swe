@@ -41,14 +41,19 @@ export function startOrchestrator(database: Db): void {
   }).catch(() => {});
 
   // Director starts first — may reserve a machine for style exploration
-  startDirectorScheduler(db);
+  try {
+    startDirectorScheduler(db);
+  } catch (err) {
+    console.error("Orchestrator: Director scheduler failed to start:", err instanceof Error ? err.message : err);
+  }
   startForemanScheduler(db);
 
   // Gate the Foreman's first dispatch until after the Director's first tick
   queueMicrotask(() => {
     queueMicrotask(() => {
+      if (!db) return; // stopOrchestrator was called before this ran
       foremanReady = true;
-      nudgeForeman(db!);
+      nudgeForeman(db);
     });
   });
 }

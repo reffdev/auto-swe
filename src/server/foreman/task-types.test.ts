@@ -1,4 +1,4 @@
-import { extractTag, isComfyUITaskType, COMFYUI_TASK_TYPES, INFERENCE_TASK_TYPES } from "./task-types";
+import { extractTag, isComfyUITaskType, COMFYUI_TASK_TYPES, INFERENCE_TASK_TYPES, NPU_TASK_TYPES, MACHINE_TYPE_TASK_TYPES } from "./task-types";
 
 describe("extractTag", () => {
   it("extracts a simple tag value", () => {
@@ -81,5 +81,22 @@ describe("task type sets", () => {
     for (const t of COMFYUI_TASK_TYPES) {
       expect(INFERENCE_TASK_TYPES.has(t)).toBe(false);
     }
+  });
+
+  it("NPU task types match inference task types", () => {
+    expect(NPU_TASK_TYPES).toBe(INFERENCE_TASK_TYPES);
+    for (const t of NPU_TASK_TYPES) {
+      expect(INFERENCE_TASK_TYPES.has(t)).toBe(true);
+    }
+  });
+
+  it("MACHINE_TYPE_TASK_TYPES includes all three machine types", () => {
+    expect(MACHINE_TYPE_TASK_TYPES).toHaveProperty("inference");
+    expect(MACHINE_TYPE_TASK_TYPES).toHaveProperty("comfyui");
+    expect(MACHINE_TYPE_TASK_TYPES).toHaveProperty("npu");
+  });
+
+  it("MACHINE_TYPE_TASK_TYPES npu maps to same set as inference", () => {
+    expect(MACHINE_TYPE_TASK_TYPES.npu).toBe(MACHINE_TYPE_TASK_TYPES.inference);
   });
 });

@@ -42,7 +42,14 @@ function parseTaskBlock(block: string): ParsedTask | null {
   if (!title) return null;
 
   const descMatch = block.match(/description:\s*\|\s*\n([\s\S]*?)(?=\n\w+:|$)/);
-  const description = descMatch ? descMatch[1].replace(/^ {2}/gm, "").trim() : "";
+  // Strip leading indentation: detect the indent of the first line, then remove that many spaces from all lines
+  let description = "";
+  if (descMatch) {
+    const raw = descMatch[1];
+    const indentMatch = raw.match(/^( +)/);
+    const indent = indentMatch ? indentMatch[1].length : 0;
+    description = indent > 0 ? raw.replace(new RegExp(`^ {1,${indent}}`, "gm"), "").trim() : raw.trim();
+  }
 
   return {
     title,
@@ -80,10 +87,10 @@ export function parseMilestones(content: string): ParsedMilestone[] {
     if (!title) continue;
 
     const descMatch = block.match(/description:\s*\|\s*\n([\s\S]*?)(?=\nverification:|$)/);
-    const description = descMatch ? descMatch[1].replace(/^ {2}/gm, "").trim() : extractField(block, "description") ?? "";
+    const description = descMatch ? stripIndent(descMatch[1]) : extractField(block, "description") ?? "";
 
     const verifMatch = block.match(/verification:\s*\|\s*\n([\s\S]*?)(?=\nmilestone:|$)/);
-    const verification = verifMatch ? verifMatch[1].replace(/^ {2}/gm, "").trim() : extractField(block, "verification") ?? "";
+    const verification = verifMatch ? stripIndent(verifMatch[1]) : extractField(block, "verification") ?? "";
 
     milestones.push({ title, description, verification });
   }
@@ -111,7 +118,8 @@ export function parseVerdict(content: string): ParsedVerdict | null {
   const result = extractField(body, "result") as "pass" | "fail" | "escalate" | null;
   if (!result || !["pass", "fail", "escalate"].includes(result)) return null;
 
-  const confidence = parseFloat(extractField(body, "confidence") ?? "0.5");
+  const rawConfidence = parseFloat(extractField(body, "confidence") ?? "0.5");
+  const confidence = Math.max(0, Math.min(1, isNaN(rawConfidence) ? 0.5 : rawConfidence));
 
   const issuesMatch = body.match(/issues:\s*\n((?:\s*-\s*.+\n)*)/);
   const issues = issuesMatch
@@ -136,6 +144,13 @@ export function parseDesignDoc(content: string): string | null {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+/** Strip leading indentation from a multi-line block (detects indent from first line). */
+function stripIndent(raw: string): string {
+  const indentMatch = raw.match(/^( +)/);
+  const indent = indentMatch ? indentMatch[1].length : 0;
+  return indent > 0 ? raw.replace(new RegExp(`^ {1,${indent}}`, "gm"), "").trim() : raw.trim();
+}
+
 function extractField(block: string, field: string): string | null {
   const regex = new RegExp(`^${field}:\\s*(.+)$`, "m");
   const match = block.match(regex);
@@ -143,7 +158,9 @@ function extractField(block: string, field: string): string | null {
 }
 
 function extractList(block: string, field: string): string[] {
-  const regex = new RegExp(`${field}:\\s*\\n((?:\\s*-\\s*.+\\n)*)`, "m");
+  // Match list items: lines starting with "- " after the field header
+  // Use a lookahead for the next field (word:) or end-of-string to capture the last item even without trailing newline
+  const regex = new RegExp(`${field}:\\s*\\n((?:\\s*-\\s*.+(?:\\n|$))*)`, "m");
   const match = block.match(regex);
   if (!match) {
     // Try inline format: field: []

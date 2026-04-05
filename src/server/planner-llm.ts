@@ -79,9 +79,10 @@ export function selectLightMachine(db: Db): { machine: Machine; modelId: string 
     if (modelId) return { machine, modelId };
   }
 
-  // Fall back to any inference machine
+  // Fall back to inference machines only — never route light tasks to comfyui
   const inferenceMachines = machines.filter((m: Machine) => m.machine_type === "inference");
-  const machine = inferenceMachines[0] ?? machines[0];
+  if (inferenceMachines.length === 0) return null;
+  const machine = inferenceMachines[0];
   const modelId = machine.model_id;
   if (!modelId) return null;
   return { machine, modelId };

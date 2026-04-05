@@ -124,8 +124,9 @@ async function ensureTaskPR(db: Db, task: ForemanTask, project: Project): Promis
 
 /** Create a review gate for a completed art/comfyui task if one doesn't already exist. */
 function ensureArtReviewGate(db: Db, directiveId: string, task: ForemanTask): void {
+  // Check all statuses to prevent duplicate gates after one is processed
   const existing = db.getDirectorReviews(directiveId).filter(
-    r => r.task_id === task.id && r.status === "pending"
+    r => r.task_id === task.id && (r.status === "pending" || r.status === "responded")
   );
   if (existing.length > 0) return;
 
@@ -384,11 +385,20 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
 
   console.log(`Knowledge extraction: processing "${task.title}"...`);
   try {
-    await extractTaskKnowledge(db, task, project, machineInfo);
+    // Timeout extraction to prevent blocking the Director tick
+    const extractionTimeout = AbortSignal.timeout(2 * 60 * 1000); // 2 min max
+    await Promise.race([
+      extractTaskKnowledge(db, task, project, machineInfo),
+      new Promise<never>((_, reject) => {
+        extractionTimeout.addEventListener("abort", () => reject(new Error("Knowledge extraction timed out (2min)")));
+      }),
+    ]);
     db.updateForemanTask(task.id, { knowledge_extracted: 1 });
     console.log(`Knowledge extraction: completed "${task.title}"`);
   } catch (err) {
     console.warn(`Knowledge extraction: failed "${task.title}":`, err instanceof Error ? err.message : err);
+    // Mark as extracted anyway to prevent infinite retry on permanent failures
+    db.updateForemanTask(task.id, { knowledge_extracted: 1 });
   }
 }
 
@@ -549,7 +559,16 @@ async function completeMilestone(
   taskCount: number,
 ): Promise<void> {
   db.updateDirectorMilestone(milestone.id, { status: "verifying" });
-  const verification = await verifyMilestone(db, milestone, directive.id, project);
+
+  let verification: { passed: boolean; issues: string[] };
+  try {
+    verification = await verifyMilestone(db, milestone, directive.id, project);
+  } catch (err) {
+    // Reset to active so the Director can retry — never leave stuck in "verifying"
+    db.updateDirectorMilestone(milestone.id, { status: "active" });
+    console.error(`Director: milestone "${milestone.title}" verification threw — reset to active:`, err instanceof Error ? err.message : err);
+    return;
+  }
 
   if (verification.passed) {
     zeroTaskCounts.delete(milestone.id);
@@ -607,7 +626,11 @@ async function topUpIfIdle(
   milestone: import("../db").DirectorMilestone,
 ): Promise<void> {
   const zeroCount = zeroTaskCounts.get(milestone.id) ?? 0;
-  if (zeroCount >= 2) return; // backed off
+  if (zeroCount >= 3) {
+    // Hard backoff — only reset when a task completes (see completeVerifiedTask)
+    // or when there are failed tasks needing recovery (handled by advanceMilestone)
+    return;
+  }
 
   const idleTypes = getIdleMachineTypes(db, directive.id, milestone.id);
   if (idleTypes.length === 0) return;
@@ -630,6 +653,8 @@ async function topUpIfIdle(
       lastPlanError = { timestamp: now, message: msg };
       console.error(`Director: planning error:`, msg);
     }
+    // Count errors toward backoff to prevent tight error loops
+    zeroTaskCounts.set(milestone.id, zeroCount + 1);
   } finally {
     setDirectorPlanning(false);
   }
@@ -642,11 +667,19 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
   let acted = false;
 
   for (const review of justResponded) {
-    const result = processReviewResponse(review);
+    let result: ReturnType<typeof processReviewResponse>;
+    try {
+      result = processReviewResponse(review);
+    } catch (err) {
+      console.error(`Director: failed to process review ${review.id}:`, err instanceof Error ? err.message : err);
+      db.updateDirectorReview(review.id, { status: "processed" });
+      acted = true;
+      continue;
+    }
     db.updateDirectorReview(review.id, { status: "processed" });
     acted = true;
 
-    switch (result.action) {
+    try { switch (result.action) {
       case "resume": {
         // Human approved — create PR, merge, complete
         if (result.context) addKeyDecision(db, directive, result.context);
@@ -749,6 +782,8 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
         }
         break;
       }
+    } } catch (err) {
+      console.error(`Director: error handling review ${review.id} action "${result.action}":`, err instanceof Error ? err.message : err);
     }
   }
 

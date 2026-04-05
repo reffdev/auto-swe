@@ -218,6 +218,7 @@ function watchStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Arra
         clearTimer();
         if (done) return;
         done = true;
+        void reader.cancel("stream error");
         try { controller.error(err); } catch { /* closed */ }
       }
     },

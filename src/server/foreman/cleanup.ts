@@ -32,11 +32,16 @@ export async function cleanupWorktrees(db: Db): Promise<{ cleaned: number; error
     if (!project) continue;
 
     try {
-      await removeWorktree(project.workdir, task.git_worktree);
-      db.updateForemanTask(task.id, { git_worktree: null });
-      cleaned++;
+      const removed = await removeWorktree(project.workdir, task.git_worktree);
+      if (removed !== false) {
+        db.updateForemanTask(task.id, { git_worktree: null });
+        cleaned++;
+      } else {
+        errors.push(`${task.id}: removeWorktree returned false (directory may still exist)`);
+      }
     } catch (err) {
       errors.push(`${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+      // Don't clear git_worktree in DB — directory may still exist
     }
   }
 

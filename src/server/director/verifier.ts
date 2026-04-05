@@ -195,10 +195,14 @@ export async function verifyMilestone(
     const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
     const text = await generate(model, { system, prompt: user, abortSignal: milestoneTimeout });
     const parsed = parseVerdict(text);
-    if (!parsed) return { passed: true, issues: ["Could not parse milestone verdict"] };
+    if (!parsed) {
+      console.warn(`Milestone verification: could not parse verdict for "${milestone.title}" — failing to be safe`);
+      return { passed: false, issues: ["Could not parse milestone verdict from LLM response"] };
+    }
     return { passed: parsed.result === "pass", issues: parsed.issues };
-  } catch {
-    return { passed: true, issues: ["LLM milestone verification failed — passing by default"] };
+  } catch (err) {
+    console.warn(`Milestone verification: LLM call failed for "${milestone.title}":`, err instanceof Error ? err.message : String(err));
+    return { passed: false, issues: [`LLM milestone verification failed: ${err instanceof Error ? err.message : "unknown error"}`] };
   }
 }
 

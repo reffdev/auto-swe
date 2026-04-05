@@ -109,6 +109,9 @@ export function shouldPauseDirective(db: Db, directive: DirectorDirective): bool
 export function processReviewResponse(
   review: DirectorReview,
 ): { action: "resume" | "retry_task" | "generate_tasks" | "lock_style" | "regenerate_style" | "enhance_style"; context: string } {
+  if (review.status !== "responded") {
+    console.warn(`processReviewResponse called on review ${review.id} with status "${review.status}" — expected "responded"`);
+  }
   const response = review.response ?? "";
 
   switch (review.review_type) {
@@ -151,7 +154,10 @@ export function processReviewResponse(
       }
     }
 
-    default:
+    default: {
+      const _exhaustive: never = review.review_type as never;
+      console.warn(`processReviewResponse: unhandled review type "${review.review_type}" — defaulting to resume`);
       return { action: "resume", context: response };
+    }
   }
 }

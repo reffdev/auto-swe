@@ -113,4 +113,39 @@ describe("processReviewResponse", () => {
     expect(result.action).toBe("retry_task");
     expect(result.context).toContain("brighter colors");
   });
+
+  it("style_selection with enhance action returns enhance_style", () => {
+    const result = processReviewResponse(makeReview({
+      review_type: "style_selection",
+      response: JSON.stringify({ action: "enhance", selected: [1], feedback: "sharper" }),
+    }));
+    expect(result.action).toBe("enhance_style");
+  });
+
+  it("warns when called with non-responded status", () => {
+    const spy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    processReviewResponse(makeReview({ status: "pending", review_type: "milestone_gate" }));
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('status "pending"'));
+    spy.mockRestore();
+  });
+
+  it("handles empty response gracefully", () => {
+    const result = processReviewResponse(makeReview({
+      review_type: "task_verify",
+      response: null,
+    }));
+    // Empty response is not an approval keyword → retry
+    expect(result.action).toBe("retry_task");
+  });
+
+  it("handles unknown review type with warning", () => {
+    const spy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const result = processReviewResponse(makeReview({
+      review_type: "unknown_type" as any,
+      response: "some response",
+    }));
+    expect(result.action).toBe("resume");
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("unhandled review type"));
+    spy.mockRestore();
+  });
 });

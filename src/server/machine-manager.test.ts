@@ -195,6 +195,84 @@ describe("getLeasedMachineIds", () => {
   });
 });
 
+describe("fallbackMachineTypes", () => {
+  it("uses fallback type when primary has no machines", () => {
+    db.updateMachine(machineId, { machine_type: "npu" });
+    // Try inference (no machines) with npu fallback
+    const result = acquireLease(db, "director", "extraction", {
+      machineType: "inference",
+      fallbackMachineTypes: ["npu"],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.machine.machine_type).toBe("npu");
+    releaseLease(result!.lease.id);
+  });
+
+  it("prefers primary type over fallback", () => {
+    const npu = db.createMachine({ base_url: "http://npu/v1", name: "npu", machine_type: "npu" });
+    // machineId is inference (default), should be preferred
+    const result = acquireLease(db, "director", "extraction", {
+      machineType: "inference",
+      fallbackMachineTypes: ["npu"],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.machine.id).toBe(machineId); // inference, not npu
+    releaseLease(result!.lease.id);
+  });
+
+  it("falls through multiple fallback types in order", () => {
+    db.updateMachine(machineId, { machine_type: "comfyui" }); // not inference or npu
+    const npu = db.createMachine({ base_url: "http://npu/v1", name: "npu", machine_type: "npu" });
+    const result = acquireLease(db, "director", "task", {
+      machineType: "inference",
+      fallbackMachineTypes: ["npu", "comfyui"],
+    });
+    expect(result).not.toBeNull();
+    expect(result!.machine.machine_type).toBe("npu"); // first fallback
+    releaseLease(result!.lease.id);
+  });
+
+  it("returns null when no type has capacity", () => {
+    // Fill the only machine
+    const block = acquireLease(db, "foreman", "blocker");
+    const result = acquireLease(db, "director", "task", {
+      machineType: "inference",
+      fallbackMachineTypes: ["npu", "comfyui"],
+    });
+    expect(result).toBeNull();
+    releaseLease(block!.lease.id);
+  });
+
+  it("logs when falling back to a different type", () => {
+    db.updateMachine(machineId, { machine_type: "npu" });
+    const spy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const result = acquireLease(db, "director", "task", {
+      machineType: "inference",
+      fallbackMachineTypes: ["npu"],
+    });
+    expect(result).not.toBeNull();
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("fallback npu"));
+    spy.mockRestore();
+    releaseLease(result!.lease.id);
+  });
+});
+
+describe("npu machine type", () => {
+  it("acquires lease on npu machine", () => {
+    db.updateMachine(machineId, { machine_type: "npu" });
+    const result = acquireLease(db, "director", "extraction", { machineType: "npu" });
+    expect(result).not.toBeNull();
+    expect(result!.machine.machine_type).toBe("npu");
+    releaseLease(result!.lease.id);
+  });
+
+  it("does not return npu machine when requesting inference", () => {
+    db.updateMachine(machineId, { machine_type: "npu" });
+    const result = acquireLease(db, "foreman", "code task", { machineType: "inference" });
+    expect(result).toBeNull();
+  });
+});
+
 describe("lease expiry", () => {
   it("expired leases are cleaned up on next acquire", () => {
     // Acquire with a very short timeout

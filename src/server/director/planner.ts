@@ -81,7 +81,12 @@ export async function planNextTasks(
   });
 
   const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];
-  console.log(`Director planner: [6/8] system=${system.length} chars, user=${user.length} chars, tools=${toolNames.length} (${toolNames.join(", ")})`);
+  const totalPromptChars = system.length + user.length;
+  const estimatedTokens = Math.round(totalPromptChars / 4); // rough estimate
+  console.log(`Director planner: [6/8] system=${system.length} chars, user=${user.length} chars (~${estimatedTokens} tokens), tools=${toolNames.length} (${toolNames.join(", ")})`);
+  if (machine.context_limit && estimatedTokens > machine.context_limit * 0.8) {
+    console.warn(`Director planner: prompt (~${estimatedTokens} tokens) approaching context limit (${machine.context_limit}) — context may be truncated`);
+  }
 
   // Call LLM
   console.log(`Director planner: [6.5/8] constructing tools...`);
@@ -142,7 +147,15 @@ export async function planNextTasks(
   const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
-    console.log(`Director planner: no tasks generated (milestone may be complete). Total time: ${Date.now() - planStartTime}ms`);
+    // Distinguish parse failure from genuine "no tasks needed"
+    const hasTaskBlock = resultText.includes("```next_tasks");
+    if (hasTaskBlock) {
+      console.warn(`Director planner: LLM produced a next_tasks block but parsing yielded 0 tasks — possible format issue. Output sample: ${resultText.slice(0, 300)}`);
+    } else if (resultText.length < 50) {
+      console.warn(`Director planner: LLM returned very short response (${resultText.length} chars) — possible error`);
+    } else {
+      console.log(`Director planner: no tasks generated (milestone may be complete). Total time: ${Date.now() - planStartTime}ms`);
+    }
     return 0;
   }
 
