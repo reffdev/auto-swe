@@ -154,36 +154,35 @@ export async function executeForemanTask(
     });
 
     // Get previous error and output for reflective retry
+    // Use run history (not retry_count) to detect retries — manual retry resets retry_count to 0
     let previousError: string | undefined;
     let previousOutput: string | undefined;
-    if (task.retry_count > 0) {
-      const prevRuns = db.getForemanRunsForTask(task.id);
+    const prevRuns = db.getForemanRunsForTask(task.id);
+    if (prevRuns.length > 0) {
       const lastRun = prevRuns[prevRuns.length - 1];
-      if (lastRun) {
-        previousError = lastRun.error_message ?? undefined;
+      previousError = lastRun.error_message ?? undefined;
 
-        // Also get the task-level error (may have lint/build details)
-        if (!previousError && task.error_message) {
-          previousError = task.error_message;
-        }
+      // Also get the task-level error (may have lint/build details)
+      if (!previousError && task.error_message) {
+        previousError = task.error_message;
+      }
 
-        // Get summary of what the agent did last time
-        if (lastRun.output) {
-          try {
-            const steps = JSON.parse(lastRun.output) as Array<{ toolCalls?: Array<{ tool: string; args: string }>; text?: string }>;
-            const summary = steps
-              .filter(s => s.toolCalls?.length || s.text)
-              .slice(-10) // last 10 steps
-              .map(s => {
-                if (s.toolCalls?.length) return s.toolCalls.map(tc => `[${tc.tool}] ${tc.args.slice(0, 150)}`).join("; ");
-                if (s.text) return s.text.slice(0, 200);
-                return "";
-              })
-              .filter(Boolean)
-              .join("\n");
-            if (summary) previousOutput = summary;
-          } catch { /* ignore parse errors */ }
-        }
+      // Get summary of what the agent did last time
+      if (lastRun.output) {
+        try {
+          const steps = JSON.parse(lastRun.output) as Array<{ toolCalls?: Array<{ tool: string; args: string }>; text?: string }>;
+          const summary = steps
+            .filter(s => s.toolCalls?.length || s.text)
+            .slice(-10) // last 10 steps
+            .map(s => {
+              if (s.toolCalls?.length) return s.toolCalls.map(tc => `[${tc.tool}] ${tc.args.slice(0, 150)}`).join("; ");
+              if (s.text) return s.text.slice(0, 200);
+              return "";
+            })
+            .filter(Boolean)
+            .join("\n");
+          if (summary) previousOutput = summary;
+        } catch { /* ignore parse errors */ }
       }
     }
 

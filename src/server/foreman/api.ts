@@ -142,13 +142,10 @@ export function createForemanRouter(db: Db): Router {
     db.updateForemanTask(task.id, {
       status: "queued",
       retry_count: 0,
-      error_message: null,
+      // Keep error_message, git_branch, git_worktree — executor reuses the branch
+      // and reads the error as context for the retry attempt
       next_retry_at: null,
       machine_id: null,
-      git_branch: null,
-      git_worktree: null,
-      git_pr_url: null,
-      git_pr_number: null,
     });
     nudgeForeman(db);
     res.json(db.getForemanTask(task.id));
