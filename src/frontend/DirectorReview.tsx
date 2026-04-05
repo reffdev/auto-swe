@@ -6,6 +6,20 @@ import { useNavigate } from 'react-router-dom'
 import * as api from './api'
 import type { DirectorReview as DirectorReviewType, ForemanTask, TaskFileInfo } from './api'
 
+/** Strip ComfyUI config JSON and noisy machine-readable tags from task descriptions for human display */
+function cleanDescriptionForDisplay(desc: string): string {
+  return desc
+    // Remove [tag: ...] blocks with JSON content
+    .replace(/\[(?:comfyui_config|params|config):\s*[\s\S]*?\]/gi, '')
+    // Remove standalone JSON objects that look like ComfyUI config
+    .replace(/\{[^{}]*"(?:checkpoint|preset|weight_dtype|variationCount)"[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g, '')
+    // Remove machine-readable duplicate tags (keep the human-readable description above them)
+    .replace(/\[(?:preset|output|style_lock|needs_human_review):[^\]]*\]/g, '')
+    // Clean up excessive newlines left behind
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
   reviewId: string
   onBack: () => void
@@ -205,7 +219,7 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
                 </div>
                 <div className="bg-muted/50 rounded-md p-3 text-xs space-y-2">
                   <p className="font-medium">{task.title}</p>
-                  <p className="text-muted-foreground whitespace-pre-wrap">{task.description}</p>
+                  <p className="text-muted-foreground whitespace-pre-wrap">{cleanDescriptionForDisplay(task.description)}</p>
                   {task.target_files && (() => {
                     try {
                       const files = JSON.parse(task.target_files) as string[]
@@ -234,6 +248,23 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
                   })()}
                 </div>
               </div>
+
+              {/* Asset preview for art tasks */}
+              {task && ['art', 'music', 'sfx'].includes(task.type) && (
+                <div className="bg-muted/50 rounded-md p-3">
+                  <h4 className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">Generated Asset</h4>
+                  {task.type === 'music' || task.type === 'sfx' ? (
+                    <audio controls src={`/api/foreman/tasks/${task.id}/asset?t=${Date.now()}`} className="w-full" />
+                  ) : (
+                    <img
+                      src={`/api/foreman/tasks/${task.id}/asset?t=${Date.now()}`}
+                      alt={task.title}
+                      className="max-w-full max-h-96 rounded border border-border mx-auto block"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                    />
+                  )}
+                </div>
+              )}
 
               {/* PR link */}
               {!!context.git_pr_url && (
@@ -273,7 +304,7 @@ export function DirectorReview({ reviewId, onBack, onNavigateReview }: {
                             {f.exists ? 'exists' : 'missing'}
                           </span>
                         </div>
-                        {f.content && (
+                        {f.content && !(/\.(?:png|jpg|jpeg|gif|webp|svg|wav|mp3|ogg|mp4|ttf|otf|woff|ico|bin|exe|dll|so|o)$/i.test(f.path)) && (
                           <pre className="text-[11px] bg-background rounded p-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap font-mono">{f.content}</pre>
                         )}
                       </div>
