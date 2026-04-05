@@ -148,9 +148,25 @@ export async function planNextTasks(
     return 0;
   }
 
-  // Check for duplicates against existing tasks
+  // Deduplicate titles: if a task with the same title exists, append a numbered suffix
+  // instead of silently dropping it — there are valid reasons to retry with the same name.
   const existingTasks = db.getDirectiveTasks(directive.id, milestone.id);
   const existingTitles = new Set(existingTasks.map(t => t.title.toLowerCase()));
+  const batchTitles = new Set<string>(); // track titles within this batch too
+
+  function deduplicateTitle(title: string): string {
+    let candidate = title;
+    let suffix = 2;
+    while (existingTitles.has(candidate.toLowerCase()) || batchTitles.has(candidate.toLowerCase())) {
+      candidate = `${title} (#${suffix})`;
+      suffix++;
+    }
+    if (candidate !== title) {
+      console.log(`Director planner: renamed "${title}" → "${candidate}" (title already exists)`);
+    }
+    batchTitles.add(candidate.toLowerCase());
+    return candidate;
+  }
 
   // Two-pass creation: first create all tasks (without depends_on), then wire up dependencies.
   // This mirrors the epic story creation pattern — depends_on references task numbers (1-based)
@@ -161,12 +177,7 @@ export async function planNextTasks(
   let created = 0;
   for (let i = 0; i < parsedTasks.length; i++) {
     const parsed = parsedTasks[i];
-
-    // Skip if a task with the same title already exists
-    if (existingTitles.has(parsed.title.toLowerCase())) {
-      console.log(`Director planner: skipping duplicate task "${parsed.title}"`);
-      continue;
-    }
+    const title = deduplicateTitle(parsed.title);
 
     // Tag description with human review flag so the Director scheduler can check it
     const description = parsed.needs_human_review
@@ -175,7 +186,7 @@ export async function planNextTasks(
 
     const task = db.createForemanTask({
       project_id: project.id,
-      title: parsed.title,
+      title,
       description,
       priority: parsed.priority,
       type: parsed.type,
@@ -215,14 +226,55 @@ export async function planNextTasks(
           resolvedDeps.push(byTitle[1]);
         } else {
           const existing = existingTasks.find(t => t.title.toLowerCase() === dep.toLowerCase());
-          if (existing) resolvedDeps.push(existing.id);
+          if (existing) {
+            resolvedDeps.push(existing.id);
+          } else {
+            console.warn(`Director planner: unresolved dependency "${dep}" for task "${parsed.title}" — dependency will be ignored`);
+          }
         }
       }
     }
 
-    if (resolvedDeps.length > 0) {
-      db.updateForemanTask(taskId, { depends_on: JSON.stringify(resolvedDeps) });
-      console.log(`Director planner: "${parsed.title}" depends on ${resolvedDeps.length} task(s)`);
+    // Filter out self-dependencies
+    const filteredDeps = resolvedDeps.filter(depId => depId !== taskId);
+    if (filteredDeps.length !== resolvedDeps.length) {
+      console.warn(`Director planner: "${parsed.title}" had a self-dependency — removed`);
+    }
+
+    if (filteredDeps.length > 0) {
+      db.updateForemanTask(taskId, { depends_on: JSON.stringify(filteredDeps) });
+      console.log(`Director planner: "${parsed.title}" depends on ${filteredDeps.length} task(s)`);
+    }
+  }
+
+  // Detect dependency cycles within this batch
+  const depGraph = new Map<string, string[]>();
+  for (const [num, id] of batchMap) {
+    const task = db.getForemanTask(id);
+    if (task?.depends_on) {
+      try { depGraph.set(id, JSON.parse(task.depends_on)); } catch { /* skip */ }
+    }
+  }
+  const visited = new Set<string>();
+  const inStack = new Set<string>();
+  function hasCycle(nodeId: string): boolean {
+    if (inStack.has(nodeId)) return true;
+    if (visited.has(nodeId)) return false;
+    visited.add(nodeId);
+    inStack.add(nodeId);
+    for (const dep of depGraph.get(nodeId) ?? []) {
+      if (hasCycle(dep)) return true;
+    }
+    inStack.delete(nodeId);
+    return false;
+  }
+  for (const id of batchMap.values()) {
+    if (hasCycle(id)) {
+      console.warn(`Director planner: dependency cycle detected in batch — clearing all depends_on to prevent deadlock`);
+      for (const taskId of batchMap.values()) {
+        db.updateForemanTask(taskId, { depends_on: null });
+      }
+      break;
     }
   }
 

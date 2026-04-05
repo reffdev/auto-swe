@@ -16,7 +16,9 @@ export async function cleanupWorktrees(db: Db): Promise<{ cleaned: number; error
 
   // Find all tasks with worktrees that are in terminal states
   const tasks = db.getForemanTasks();
-  const terminalStates = new Set(["failed", "completed", "awaiting_review"]);
+  // Only clean truly terminal states — awaiting_review tasks may need their worktree
+  // for human review or retry after rejection
+  const terminalStates = new Set(["failed", "completed"]);
 
   for (const task of tasks) {
     if (!task.git_worktree) continue;

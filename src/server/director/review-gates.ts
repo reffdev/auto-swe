@@ -67,6 +67,9 @@ export function shouldEscalate(
     },
   };
 
+  if (!rules[autonomyLevel]) {
+    console.warn(`Director review: unknown autonomy level "${autonomyLevel}" — defaulting to conservative`);
+  }
   return rules[autonomyLevel]?.[trigger] ?? true; // default to conservative
 }
 

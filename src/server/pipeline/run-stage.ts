@@ -249,8 +249,10 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       }
     }
 
-    // Check if compaction is needed
-    if (!expandFilesNeeded && promptTok >= compactionTokenThreshold && compactionCount < MAX_COMPACTIONS) {
+    // Check if compaction is needed — skip if near the step limit (not worth the overhead)
+    const maxSteps = opts.maxSteps ?? 100;
+    const nearEnd = stepCount >= maxSteps - 5;
+    if (!expandFilesNeeded && !nearEnd && promptTok >= compactionTokenThreshold && compactionCount < MAX_COMPACTIONS) {
       console.log(`Pipeline [${stageName}]: prompt tokens (${promptTok}) exceed ${Math.round(COMPACTION_THRESHOLD * 100)}% of context limit (${contextLimit}) — triggering compaction`);
       compactionNeeded = true;
       compactionAbort?.abort();

@@ -38,7 +38,8 @@ export async function verifyTask(
   // Select a machine for verification (ideally different from executor)
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) {
-    return { verdict: "pass", confidence: 0.5, issues: ["No machine available for LLM verification"], reasoning: "Skipped LLM verification" };
+    // No machine right now — return a soft signal so the scheduler retries next tick
+    return { verdict: "escalate", confidence: 0, issues: ["No machine available — will retry"], reasoning: "deferred" };
   }
 
   const { machine, modelId } = machineInfo;
@@ -184,7 +185,8 @@ export async function verifyMilestone(
 
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) {
-    return { passed: true, issues: ["No machine for LLM verification — passing by default"] };
+    // No machine right now — signal deferral so the scheduler retries next tick
+    return { passed: false, issues: ["deferred:no-machine"] };
   }
 
   const tasks = db.getDirectiveTasks(directiveId);

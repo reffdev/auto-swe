@@ -82,8 +82,13 @@ export function completeTaskRun(ctx: TaskRunContext, output?: string): void {
     duration_ms: durationMs,
   });
 
+  // Directive tasks: code → "validating" (Director auto-verifies), art → "awaiting_review" (human)
+  // Non-directive tasks: go straight to "awaiting_review" (no Director to verify them)
+  const isArt = ["art", "music", "sfx", "style_exploration"].includes(ctx.task.type);
+  const hasDirective = !!ctx.task.directive_id;
+  const nextStatus = isArt ? "awaiting_review" : (hasDirective ? "validating" : "awaiting_review");
   ctx.db.updateForemanTask(ctx.task.id, {
-    status: "awaiting_review",
+    status: nextStatus,
     completed_at: new Date().toISOString(),
     duration_ms: durationMs,
   });
@@ -109,7 +114,7 @@ export function failTaskRun(ctx: TaskRunContext, errorMsg: string): void {
 
   const newRetryCount = ctx.task.retry_count + 1;
   if (newRetryCount < ctx.task.max_retries) {
-    const backoffMs = Math.pow(2, newRetryCount) * BACKOFF_BASE_MS;
+    const backoffMs = Math.pow(2, Math.min(newRetryCount, 10)) * BACKOFF_BASE_MS; // cap at ~8.5 hours
     ctx.db.updateForemanTask(ctx.task.id, {
       status: "queued",
       retry_count: newRetryCount,

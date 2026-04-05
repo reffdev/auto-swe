@@ -71,21 +71,19 @@ describe("verifyMilestone", () => {
     expect(result.issues.some(i => i.includes("Godot check failed"))).toBe(true);
   });
 
-  it("does NOT pass milestone on LLM failure — returns failed instead", async () => {
-    // No machines available → LLM can't run → should fail, not pass
+  it("defers milestone verification when no machine available", async () => {
+    // No machines → can't verify → should signal deferral (not pass or hard fail)
     const project = db.getProject(projectId)!;
     const directive = db.createDirectorDirective({ project_id: projectId, directive: "test" });
 
-    // With verification criteria but no machine, it should pass by default
-    // (no machine = can't verify, so it passes with a note)
     const result = await verifyMilestone(db,
       { title: "Test", verification: "All code reviewed" },
       directive.id,
       project,
     );
-    // No machine available — passes by default with note
-    expect(result.passed).toBe(true);
-    expect(result.issues.some(i => i.includes("No machine"))).toBe(true);
+    // Deferred — passed=false with sentinel issue so scheduler retries next tick
+    expect(result.passed).toBe(false);
+    expect(result.issues).toContain("deferred:no-machine");
   });
 
   it("returns issues array even on build success", async () => {

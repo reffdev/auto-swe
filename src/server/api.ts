@@ -216,8 +216,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url } = req.body;
     db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url });
-    // Machine config changed — may have freed capacity
-    notifyCapacityChange(machine.machine_type);
+    // Machine config changed — clear exhaustion for both old and new type
+    notifyCapacityChange();
     res.json(db.getMachine(req.params.id));
   });
 
@@ -734,6 +734,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const foremanTasks = db.getForemanTasks();
     const fQueued = foremanTasks.filter(t => t.status === "queued").length;
     const fRunning = foremanTasks.filter(t => t.status === "running").length;
+    const fValidating = foremanTasks.filter(t => t.status === "validating").length;
     const fReview = foremanTasks.filter(t => t.status === "awaiting_review").length;
     const fCompleted = foremanTasks.filter(t => t.status === "completed").length;
     const fFailed = foremanTasks.filter(t => t.status === "failed").length;
@@ -763,6 +764,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       foreman: {
         queued: fQueued,
         running: fRunning,
+        validating: fValidating,
         review: fReview,
         completed: fCompleted,
         failed: fFailed,

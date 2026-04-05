@@ -965,21 +965,46 @@ export class Db {
       .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at)
       .all();
 
-    return queued.filter(task => {
-      // Check backoff
+    // First pass: fail tasks with broken dependencies (separate from filtering to avoid side effects during iteration)
+    for (const task of queued) {
+      if (!task.depends_on) continue;
+      let deps: string[];
+      try { deps = JSON.parse(task.depends_on); } catch {
+        console.warn(`Foreman: task "${task.title}" (${task.id}) has malformed depends_on — marking failed`);
+        this.updateForemanTask(task.id, { status: "failed", error_message: "Malformed depends_on JSON" });
+        continue;
+      }
+      for (const depId of deps) {
+        const dep = this.getForemanTask(depId);
+        if (!dep) {
+          console.warn(`Foreman: task "${task.title}" (${task.id}) depends on non-existent task ${depId} — marking failed`);
+          this.updateForemanTask(task.id, { status: "failed", error_message: `Broken dependency: task ${depId} does not exist` });
+          break;
+        }
+        if (dep.status === "failed") {
+          console.warn(`Foreman: task "${task.title}" (${task.id}) depends on failed task "${dep.title}" — marking failed`);
+          this.updateForemanTask(task.id, { status: "failed", error_message: `Dependency failed: "${dep.title}"` });
+          break;
+        }
+      }
+    }
+
+    // Second pass: filter to ready tasks (no side effects)
+    // Re-read queued tasks since first pass may have changed statuses
+    const stillQueued = this.drizzle.select().from(schema.foremanTasks)
+      .where(eq(schema.foremanTasks.status, "queued"))
+      .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at)
+      .all();
+
+    return stillQueued.filter(task => {
       if (task.next_retry_at && task.next_retry_at > now) return false;
-      // Check dependencies
       if (!task.depends_on) return true;
       let deps: string[];
       try { deps = JSON.parse(task.depends_on); } catch { return false; }
       if (deps.length === 0) return true;
       return deps.every(depId => {
         const dep = this.getForemanTask(depId);
-        if (!dep) {
-          console.warn(`Foreman: task ${task.id} depends on non-existent task ${depId}`);
-          return false;
-        }
-        return dep.status === "completed";
+        return dep?.status === "completed";
       });
     });
   }
@@ -1280,7 +1305,7 @@ export class Db {
     return this.drizzle.select().from(schema.foremanTasks)
       .where(and(
         eq(schema.foremanTasks.directive_id, directiveId),
-        eq(schema.foremanTasks.status, "awaiting_review"),
+        inArray(schema.foremanTasks.status, ["awaiting_review", "validating"]),
       )).all();
   }
 

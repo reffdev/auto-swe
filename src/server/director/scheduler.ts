@@ -356,8 +356,9 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
  * Creates a single review gate notification if found (deduped).
  */
 function checkForUnattributedCommits(db: Db, directive: DirectorDirective, project: Project): void {
+  // Check for any pending or recently responded gate about unattributed commits
   const existing = db.getDirectorReviews(directive.id).filter(
-    r => r.review_type === "task_verify" && r.status === "pending" && r.question.includes("unattributed commits")
+    r => r.review_type === "task_verify" && (r.status === "pending" || r.status === "responded") && r.question.includes("unattributed commits")
   );
   if (existing.length > 0) return;
 
@@ -476,6 +477,13 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
     console.log(`Director: verifying "${task.title}" ...`);
     const verifyStart = Date.now();
     const result = await verifyTask(db, task, project);
+
+    // Deferred = no machine available right now, retry next tick
+    if (result.reasoning === "deferred") {
+      console.log(`Director: verification of "${task.title}" deferred — no machine available, will retry`);
+      return;
+    }
+
     console.log(`Director: verified "${task.title}" → ${result.verdict} (${result.confidence}, ${Math.round((Date.now() - verifyStart) / 1000)}s)`);
 
     // Persist verification result so the frontend can display it
@@ -556,14 +564,24 @@ async function handleFailedTasks(db: Db, directive: DirectorDirective): Promise<
 
 async function advanceMilestone(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
   if (!db.getForemanConfig()?.enabled) return;
+
+  // Recover milestones stuck in "verifying" (e.g., if verification promise hung or process crashed)
+  const milestones = db.getDirectorMilestones(directive.id);
+  const stuckVerifying = milestones.find(m => m.status === "verifying");
+  if (stuckVerifying) {
+    console.warn(`Director: milestone "${stuckVerifying.title}" stuck in verifying — resetting to active`);
+    db.updateDirectorMilestone(stuckVerifying.id, { status: "active" });
+  }
+
   const activeMilestone = db.getActiveMilestone(directive.id);
   if (!activeMilestone) return;
 
   const tasks = db.getDirectiveTasks(directive.id, activeMilestone.id);
   const allComplete = tasks.length > 0 && tasks.every(t => t.status === "completed");
-  // Art tasks awaiting review don't block — they're reviewed independently
+  // "validating" = auto-verification in progress (code tasks), counts as active work
+  // "awaiting_review" for art tasks = human review, doesn't block code work
   const hasActiveWork = tasks.some(t =>
-    (t.status === "queued" || t.status === "running") ||
+    (t.status === "queued" || t.status === "running" || t.status === "validating") ||
     (t.status === "awaiting_review" && !isComfyUITaskType(t.type))
   );
 
@@ -572,6 +590,8 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
   } else if (!hasActiveWork && tasks.length === 0) {
     await planTasks(db, directive, project, activeMilestone, "initial");
   } else if (!hasActiveWork && tasks.some(t => t.status === "failed")) {
+    // Reset backoff counter — failure recovery should get a fresh planning attempt
+    zeroTaskCounts.delete(activeMilestone.id);
     await planTasks(db, directive, project, activeMilestone, "failure recovery");
   } else if (tasks.some(t => t.status === "queued" || t.status === "running") && !isDirectorPlanning()) {
     await topUpIfIdle(db, directive, project, activeMilestone);
@@ -590,6 +610,14 @@ async function completeMilestone(
   let verification: { passed: boolean; issues: string[] };
   try {
     verification = await verifyMilestone(db, milestone, directive.id, project);
+
+    // Deferred = no machine available, reset to active and retry next tick
+    if (verification.issues.length === 1 && verification.issues[0] === "deferred:no-machine") {
+      db.updateDirectorMilestone(milestone.id, { status: "active" });
+      console.log(`Director: milestone "${milestone.title}" verification deferred — no machine, will retry`);
+      return;
+    }
+
     console.log(`Director: milestone "${milestone.title}" verification → ${verification.passed ? "passed" : "failed"} (${Math.round((Date.now() - msVerifyStart) / 1000)}s)`);
   } catch (err) {
     // Reset to active so the Director can retry — never leave stuck in "verifying"
@@ -653,8 +681,9 @@ async function topUpIfIdle(
   db: Db, directive: DirectorDirective, project: Project,
   milestone: import("../db").DirectorMilestone,
 ): Promise<void> {
+  const ZERO_TASK_BACKOFF_LIMIT = 3;
   const zeroCount = zeroTaskCounts.get(milestone.id) ?? 0;
-  if (zeroCount >= 3) {
+  if (zeroCount >= ZERO_TASK_BACKOFF_LIMIT) {
     // Hard backoff — only reset when a task completes (see completeVerifiedTask)
     // or when there are failed tasks needing recovery (handled by advanceMilestone)
     return;
@@ -669,7 +698,7 @@ async function topUpIfIdle(
     const created = await planNextTasks(db, directive, project, milestone, idleTypes);
     if (created === 0) {
       zeroTaskCounts.set(milestone.id, zeroCount + 1);
-      console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/2 before backing off)`);
+      console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/${ZERO_TASK_BACKOFF_LIMIT} before backing off)`);
     } else if (created > 0) {
       zeroTaskCounts.set(milestone.id, 0);
     }

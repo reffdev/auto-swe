@@ -172,7 +172,14 @@ async function schedulerTick(db: Db): Promise<void> {
     registerActiveTask(task.id, controller);
 
     executeForemanTask({ db }, machine, task, project)
-      .catch(err => console.error(`Foreman task ${task.id} error:`, err))
+      .catch(err => {
+        console.error(`Foreman task ${task.id} error:`, err);
+        // Ensure task doesn't stay stuck in "running" if executor threw before updating status
+        const current = db.getForemanTask(task.id);
+        if (current && current.status === "running") {
+          db.updateForemanTask(task.id, { status: "failed", error_message: `Executor error: ${err instanceof Error ? err.message : String(err)}` });
+        }
+      })
       .finally(() => {
         releaseLease(lease.id);
         unregisterActiveTask(task.id);

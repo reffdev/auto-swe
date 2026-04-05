@@ -74,8 +74,10 @@ describe("initTaskRun", () => {
 });
 
 describe("completeTaskRun", () => {
-  it("marks run as pass and task as awaiting_review", () => {
-    const task = createTestTask();
+  it("marks directive code task as validating (auto-verification)", () => {
+    // Create a directive so the task has a directive_id
+    const directive = db.createDirectorDirective({ project_id: projectId, directive: "test" });
+    const task = createTestTask({ directive_id: directive.id });
     const machine = createTestMachine();
     const run = initTaskRun(db, task, machine, "test-model");
 
@@ -86,8 +88,35 @@ describe("completeTaskRun", () => {
     expect(updatedRun.output).toBe("some output");
 
     const updatedTask = db.getForemanTask(task.id)!;
-    expect(updatedTask.status).toBe("awaiting_review");
+    expect(updatedTask.status).toBe("validating");
     expect(updatedTask.completed_at).toBeTruthy();
+  });
+
+  it("marks non-directive code task as awaiting_review (no Director to verify)", () => {
+    const task = createTestTask(); // no directive_id
+    const machine = createTestMachine();
+    const run = initTaskRun(db, task, machine, "test-model");
+
+    completeTaskRun(run, "some output");
+
+    const updatedTask = db.getForemanTask(task.id)!;
+    expect(updatedTask.status).toBe("awaiting_review");
+  });
+
+  it("marks art task as awaiting_review (human review)", () => {
+    const task = db.createForemanTask({
+      project_id: projectId,
+      title: "Art task",
+      type: "art",
+      status: "queued",
+    });
+    const machine = createTestMachine();
+    const run = initTaskRun(db, task, machine, "test-model");
+
+    completeTaskRun(run, "art output");
+
+    const updatedTask = db.getForemanTask(task.id)!;
+    expect(updatedTask.status).toBe("awaiting_review");
   });
 });
 

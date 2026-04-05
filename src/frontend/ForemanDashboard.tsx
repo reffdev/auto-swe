@@ -60,9 +60,10 @@ export function ForemanDashboard() {
   const activeIds = new Set(data?.activeIds ?? [])
   const config = data?.config
 
+  const sortedTasks = [...tasks].sort((a, b) => b.created_at.localeCompare(a.created_at))
   const filteredTasks = statusFilter === 'all'
-    ? tasks
-    : tasks.filter(t => t.status === statusFilter)
+    ? sortedTasks
+    : sortedTasks.filter(t => t.status === statusFilter)
 
   // Status counts
   const counts: Record<string, number> = {}
@@ -145,7 +146,7 @@ export function ForemanDashboard() {
 
       {/* Status filter tabs */}
       <div className="px-6 py-2 border-b border-border flex items-center gap-1 overflow-x-auto">
-        {['all', 'backlog', 'queued', 'running', 'awaiting_review', 'completed', 'failed'].map(s => (
+        {['all', 'backlog', 'queued', 'running', 'validating', 'awaiting_review', 'completed', 'failed'].map(s => (
           <button
             key={s}
             onClick={() => setStatusFilter(s)}
