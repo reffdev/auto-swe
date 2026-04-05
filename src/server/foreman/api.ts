@@ -199,10 +199,7 @@ export function createForemanRouter(db: Db): Router {
         error_message: `Rejected: ${feedback} (revising prompt...)`,
         next_retry_at: null,
         machine_id: null,
-        git_branch: null,
-        git_worktree: null,
-        git_pr_url: null,
-        git_pr_number: null,
+        // ComfyUI tasks don't use git, but don't clear fields for consistency
       });
       res.json(db.getForemanTask(task.id));
 
@@ -223,10 +220,7 @@ export function createForemanRouter(db: Db): Router {
         error_message: `Rejected: ${feedback}`,
         next_retry_at: null,
         machine_id: null,
-        git_branch: null,
-        git_worktree: null,
-        git_pr_url: null,
-        git_pr_number: null,
+        // Preserve git_branch/worktree/PR — agent resumes on same branch with feedback context
       });
       nudgeForeman(db);
       res.json(db.getForemanTask(task.id));
