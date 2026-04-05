@@ -181,7 +181,10 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
           </div>
 
           {/* Models catalog */}
-          <ModelsCatalog machineId={machine.id} activeModelId={machine.model_id} onActivate={onDataChange} />
+          <ModelsCatalog machineId={machine.id} activeModelId={modelId || null} onSelect={(selectedModelId, selectedContextLimit) => {
+            setModelId(selectedModelId)
+            setContextLimit(selectedContextLimit?.toString() ?? '')
+          }} />
 
           <div className="flex items-center gap-3">
             <button
@@ -248,10 +251,10 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
 
 // ─── Models Catalog ───────────────────────────────────────────────────────
 
-function ModelsCatalog({ machineId, activeModelId, onActivate }: {
+function ModelsCatalog({ machineId, activeModelId, onSelect }: {
   machineId: string
   activeModelId: string | null
-  onActivate: () => void
+  onSelect: (modelId: string, contextLimit: number | null) => void
 }) {
   const [models, setModels] = useState<MachineModel[]>([])
   const [showAdd, setShowAdd] = useState(false)
@@ -280,10 +283,9 @@ function ModelsCatalog({ machineId, activeModelId, onActivate }: {
     refresh()
   }
 
-  const handleActivate = async (modelId: string) => {
-    await api.activateMachineModel(machineId, modelId)
-    refresh()
-    onActivate()
+  const handleSelect = (model: MachineModel) => {
+    // Just update parent form fields — actual save happens via Save Changes button
+    onSelect(model.model_id, model.context_limit)
   }
 
   const startEdit = (m: MachineModel) => {
@@ -346,7 +348,7 @@ function ModelsCatalog({ machineId, activeModelId, onActivate }: {
               "flex items-center gap-2 rounded px-2 py-1.5 text-xs group",
               isActive ? "bg-primary/10 border border-primary/30" : "bg-muted/30 hover:bg-muted/50"
             )}>
-              <button onClick={() => handleActivate(m.id)} className="shrink-0" title="Set as active">
+              <button onClick={() => handleSelect(m)} className="shrink-0" title="Set as active">
                 <div className={cn("size-3 rounded-full border-2", isActive ? "border-primary bg-primary" : "border-muted-foreground/40")} />
               </button>
               <span className="font-medium truncate">{m.label || m.model_id}</span>
