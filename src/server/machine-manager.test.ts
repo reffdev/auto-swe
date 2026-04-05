@@ -273,6 +273,115 @@ describe("npu machine type", () => {
   });
 });
 
+describe("host colocation", () => {
+  it("blocks inference when comfyui is active on same host", () => {
+    // Both on same IP, different ports
+    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
+
+    // Lease comfyui first
+    const comfyLease = acquireLease(db, "foreman", "art task", { machineType: "comfyui" });
+    expect(comfyLease).not.toBeNull();
+
+    // Inference on same host should be blocked
+    const inferLease = acquireLease(db, "foreman", "code task", { machineType: "inference" });
+    expect(inferLease).toBeNull();
+
+    releaseLease(comfyLease!.lease.id);
+
+    // Now inference should work
+    const afterRelease = acquireLease(db, "foreman", "code task", { machineType: "inference" });
+    expect(afterRelease).not.toBeNull();
+    releaseLease(afterRelease!.lease.id);
+  });
+
+  it("blocks comfyui when inference is active on same host", () => {
+    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
+
+    // Lease inference first
+    const inferLease = acquireLease(db, "foreman", "code task", { machineType: "inference" });
+    expect(inferLease).not.toBeNull();
+
+    // ComfyUI should be blocked — never two GPU types active on same host
+    const comfyLease = acquireLease(db, "foreman", "art task", { machineType: "comfyui" });
+    expect(comfyLease).toBeNull();
+
+    releaseLease(inferLease!.lease.id);
+
+    // Now comfyui should work
+    const afterRelease = acquireLease(db, "foreman", "art task", { machineType: "comfyui" });
+    expect(afterRelease).not.toBeNull();
+    releaseLease(afterRelease!.lease.id);
+  });
+
+  it("does NOT block NPU by colocated inference", () => {
+    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
+    const npu = db.createMachine({ base_url: "http://192.168.1.10:52625/v1", machine_type: "npu", name: "npu", model_id: "small" });
+
+    // Lease inference
+    const inferLease = acquireLease(db, "foreman", "code task", { machineType: "inference" });
+    expect(inferLease).not.toBeNull();
+
+    // NPU should NOT be blocked — separate chip
+    const npuLease = acquireLease(db, "director", "extraction", { machineType: "npu" });
+    expect(npuLease).not.toBeNull();
+
+    releaseLease(inferLease!.lease.id);
+    releaseLease(npuLease!.lease.id);
+  });
+
+  it("does NOT block NPU by colocated comfyui", () => {
+    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
+    const npu = db.createMachine({ base_url: "http://192.168.1.10:52625/v1", machine_type: "npu", name: "npu", model_id: "small" });
+
+    const comfyLease = acquireLease(db, "foreman", "art", { machineType: "comfyui" });
+    expect(comfyLease).not.toBeNull();
+
+    const npuLease = acquireLease(db, "director", "extraction", { machineType: "npu" });
+    expect(npuLease).not.toBeNull();
+
+    releaseLease(comfyLease!.lease.id);
+    releaseLease(npuLease!.lease.id);
+  });
+
+  it("does not block machines on different hosts", () => {
+    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://192.168.1.20:8188", machine_type: "comfyui", name: "comfy" });
+
+    const comfyLease = acquireLease(db, "foreman", "art", { machineType: "comfyui" });
+    expect(comfyLease).not.toBeNull();
+
+    // Different host — should not be blocked
+    const inferLease = acquireLease(db, "foreman", "code", { machineType: "inference" });
+    expect(inferLease).not.toBeNull();
+
+    releaseLease(comfyLease!.lease.id);
+    releaseLease(inferLease!.lease.id);
+  });
+
+  it("preferred machine respects colocation blocking", () => {
+    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
+    const other = db.createMachine({ base_url: "http://192.168.1.20:8080/v1", machine_type: "inference", name: "other" });
+
+    // ComfyUI active on .10
+    const comfyLease = acquireLease(db, "foreman", "art", { machineType: "comfyui" });
+    expect(comfyLease).not.toBeNull();
+
+    // Preferred inference on .10 should be blocked, falls back to .20
+    const inferLease = acquireLease(db, "director", "planning", {
+      machineType: "inference",
+      preferredMachineId: machineId,
+    });
+    expect(inferLease).not.toBeNull();
+    expect(inferLease!.machine.id).toBe(other.id); // fell back to other host
+
+    releaseLease(comfyLease!.lease.id);
+    releaseLease(inferLease!.lease.id);
+  });
+});
+
 describe("lease expiry", () => {
   it("expired leases are cleaned up on next acquire", () => {
     // Acquire with a very short timeout

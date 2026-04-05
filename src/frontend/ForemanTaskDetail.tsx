@@ -231,6 +231,36 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
             </section>
           )}
 
+          {/* Verification result */}
+          {task.verification_result && (() => {
+            try {
+              const vr = JSON.parse(task.verification_result) as {
+                verdict: string; confidence: number; issues: string[]; reasoning: string; verified_at: string
+              }
+              const verdictColor = vr.verdict === 'pass' ? 'text-emerald-400' : vr.verdict === 'fail' ? 'text-destructive' : 'text-yellow-400'
+              return (
+                <section>
+                  <h3 className="text-sm font-medium mb-2">Verification</h3>
+                  <div className="rounded-md border border-border p-3 space-y-2 text-xs">
+                    <div className="flex items-center gap-3">
+                      <span className={`font-semibold uppercase ${verdictColor}`}>{vr.verdict}</span>
+                      <span className="text-muted-foreground">confidence: {Math.round(vr.confidence * 100)}%</span>
+                      {vr.verified_at && <span className="text-muted-foreground ml-auto">{new Date(vr.verified_at).toLocaleString()}</span>}
+                    </div>
+                    {vr.reasoning && (
+                      <p className="text-foreground/80 whitespace-pre-wrap">{vr.reasoning}</p>
+                    )}
+                    {vr.issues.length > 0 && vr.issues[0] !== 'none' && (
+                      <ul className="list-disc pl-4 text-foreground/70 space-y-0.5">
+                        {vr.issues.map((issue, i) => <li key={i}>{issue}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                </section>
+              )
+            } catch { return null }
+          })()}
+
           {/* Execution history */}
           {runs.length > 0 && (
             <section>

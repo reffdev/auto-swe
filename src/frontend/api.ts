@@ -467,6 +467,7 @@ export interface ForemanTask {
   completion_tokens: number | null;
   directive_id: string | null;
   milestone_id: string | null;
+  verification_result: string | null;
   comfyui_config: string | null;
   created_at: string;
   yaml_synced_at: string | null;

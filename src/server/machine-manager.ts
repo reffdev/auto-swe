@@ -6,12 +6,63 @@
  * - Mutual exclusion (one consumer per machine slot)
  * - Priority-based queuing (director > foreman by default)
  * - Machine type routing (inference vs comfyui vs npu)
+ * - Host colocation (machines on same IP share resources — one active at a time, comfyui priority)
  * - Lease expiry (prevents stuck leases from crashed consumers)
  * - Observability (who's using what)
  */
 
 import type { Db, Machine } from "./db";
 import { getBreaker } from "./foreman/circuit-breaker";
+
+// ─── Host colocation ───────────────────────────────────────────────────────
+
+/**
+ * GPU-sharing machine types — these compete for GPU resources when on the same host.
+ * NPU is excluded because it runs on a dedicated chip and doesn't share GPU memory.
+ */
+const GPU_SHARING_TYPES = new Set(["inference", "comfyui"]);
+
+/** Extract hostname/IP from a base_url for colocation grouping. */
+function extractHost(baseUrl: string): string | null {
+  try {
+    const url = new URL(baseUrl);
+    return url.hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if a machine is blocked by a colocated machine (same host) that currently
+ * has active leases and shares GPU resources.
+ *
+ * Only applies to GPU-sharing types (inference, comfyui). NPU machines are never
+ * blocked by colocation since they use a separate chip.
+ */
+function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): boolean {
+  // NPU never participates in GPU colocation blocking
+  if (!GPU_SHARING_TYPES.has(machine.machine_type)) return false;
+
+  const host = extractHost(machine.base_url);
+  if (!host) return false;
+
+  // Only check against other GPU-sharing machines on the same host
+  const colocated = allMachines.filter(m =>
+    m.id !== machine.id &&
+    GPU_SHARING_TYPES.has(m.machine_type) &&
+    extractHost(m.base_url) === host
+  );
+  if (colocated.length === 0) return false;
+
+  for (const other of colocated) {
+    const otherLeases = activeLeases.get(other.id) ?? [];
+    if (otherLeases.length > 0) {
+      return true; // any colocated GPU machine is active — block unconditionally
+    }
+  }
+
+  return false;
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -89,11 +140,11 @@ export function acquireLease(
   if (opts?.preferredMachineId) {
     const preferred = machines.find(m => m.id === opts.preferredMachineId);
     if (preferred) {
-      if (hasCapacity(preferred) && getBreaker(preferred.id).canExecute()) {
+      if (hasCapacity(preferred) && getBreaker(preferred.id).canExecute() && !isBlockedByColocatedMachine(preferred, machines)) {
         const lease = createLease(preferred.id, consumer, label, timeoutMs);
         return { lease, machine: preferred };
       }
-      console.log(`Machine manager: preferred machine ${preferred.name || preferred.id} busy (leases: ${getLeaseCount(preferred.id)}/${preferred.max_concurrent}, breaker: ${getBreaker(preferred.id).canExecute() ? 'ok' : 'open'})`);
+      console.log(`Machine manager: preferred machine ${preferred.name || preferred.id} busy (leases: ${getLeaseCount(preferred.id)}/${preferred.max_concurrent}, breaker: ${getBreaker(preferred.id).canExecute() ? 'ok' : 'open'}, colocated: ${isBlockedByColocatedMachine(preferred, machines) ? 'blocked' : 'ok'})`);
     }
   }
 
@@ -105,7 +156,8 @@ export function acquireLease(
       m.enabled &&
       m.machine_type === tryType &&
       hasCapacity(m) &&
-      getBreaker(m.id).canExecute()
+      getBreaker(m.id).canExecute() &&
+      !isBlockedByColocatedMachine(m, machines)
     );
 
     if (candidates.length > 0) {

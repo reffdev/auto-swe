@@ -246,6 +246,7 @@ export class Db {
       "ALTER TABLE foreman_config ADD COLUMN exploration_preset TEXT NOT NULL DEFAULT 'concept'",
       "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
+      "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }

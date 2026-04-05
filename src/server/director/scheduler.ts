@@ -478,6 +478,17 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
     const result = await verifyTask(db, task, project);
     console.log(`Director: verified "${task.title}" → ${result.verdict} (${result.confidence}, ${Math.round((Date.now() - verifyStart) / 1000)}s)`);
 
+    // Persist verification result so the frontend can display it
+    db.updateForemanTask(task.id, {
+      verification_result: JSON.stringify({
+        verdict: result.verdict,
+        confidence: result.confidence,
+        issues: result.issues,
+        reasoning: result.reasoning,
+        verified_at: new Date().toISOString(),
+      }),
+    });
+
     if (result.verdict === "pass") {
       if (task.description.includes("[needs_human_review]") && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
         await escalateForHumanReview(db, directive, task, project,
