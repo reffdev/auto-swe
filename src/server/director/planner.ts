@@ -211,7 +211,10 @@ export async function planNextTasks(
     if (!taskId || parsed.depends_on.length === 0) continue;
 
     const resolvedDeps: string[] = [];
-    for (const dep of parsed.depends_on) {
+    for (const rawDep of parsed.depends_on) {
+      // Clean up common LLM formatting: strip brackets, quotes, whitespace
+      const dep = rawDep.replace(/[\[\]"']/g, "").trim();
+      if (!dep) continue;
       // dep could be a number string ("1", "2") or a title
       const depNum = parseInt(dep, 10);
       if (!isNaN(depNum) && batchMap.has(depNum)) {

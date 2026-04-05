@@ -148,11 +148,7 @@ async function schedulerTick(db: Db): Promise<void> {
       if (exhaustedMachineTypes.has(route.machineType)) continue;
       const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
       if (result) {
-        // Skip if this machine is reserved by the Director
-        if (!canForemanDispatch(result.machine.id)) {
-          releaseLease(result.lease.id);
-          continue;
-        }
+        // acquireLease already excludes Director-reserved machines for "foreman" consumer
         task = candidate;
         leaseResult = result;
         break;

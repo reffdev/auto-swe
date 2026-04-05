@@ -13,6 +13,7 @@
 
 import type { Db, Machine } from "./db";
 import { getBreaker } from "./foreman/circuit-breaker";
+import { getDirectorReservedMachine } from "./director/director-state";
 
 // ─── Host colocation ───────────────────────────────────────────────────────
 
@@ -185,13 +186,17 @@ export function acquireLease(
   // Build ordered list of machine types to try: primary first, then fallbacks
   const typesToTry = [machineType, ...(opts?.fallbackMachineTypes ?? [])];
 
+  // Foreman should never acquire the Director's reserved machine
+  const directorReserved = consumer === "foreman" ? getDirectorReservedMachine() : null;
+
   for (const tryType of typesToTry) {
     const candidates = machines.filter(m =>
       m.enabled &&
       m.machine_type === tryType &&
       hasCapacity(m) &&
       getBreaker(m.id).canExecute() &&
-      !isBlockedByColocatedMachine(m, machines)
+      !isBlockedByColocatedMachine(m, machines) &&
+      m.id !== directorReserved
     );
 
     if (candidates.length > 0) {
