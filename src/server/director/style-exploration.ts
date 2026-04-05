@@ -72,6 +72,7 @@ export async function createStyleExplorationTask(
 
   let stylePrompts: string[];
   try {
+    console.log("Style exploration: LLM generating prompts ...");
     const text = (await generate(model, {
       system: STYLE_PROMPT_SYSTEM,
       prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
@@ -219,6 +220,7 @@ async function generateFreshPrompts(
     ? `\n\nIMPORTANT — These prompts have ALREADY been generated. Do NOT repeat or closely paraphrase any of them:\n${previousPrompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
     : "";
 
+  console.log("Continuous exploration: LLM generating fresh prompts ...");
   const text = (await generate(model, {
     system: STYLE_PROMPT_SYSTEM,
     prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
@@ -339,6 +341,7 @@ export async function createFluxEnhanceTask(
   const machineInfo = selectPlannerMachine(db, project);
   if (machineInfo) {
     try {
+      console.log("Enhance: LLM generating prompt variations ...");
       const model = createModel(machineInfo.machine, machineInfo.modelId);
       const text = (await generate(model, {
         system: ENHANCE_VARIATION_PROMPT,

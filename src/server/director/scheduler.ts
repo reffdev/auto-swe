@@ -281,10 +281,21 @@ async function directorTick(db: Db): Promise<void> {
   processing = true;
 
   try {
-    for (const directive of db.getActiveDirectives()) {
+    const directives = db.getActiveDirectives();
+    if (directives.length === 0) return;
+
+    for (const directive of directives) {
       // Re-read status in case a previous iteration changed it (e.g., unpause → active)
       const current = db.getDirectorDirective(directive.id);
       if (!current) continue;
+
+      const milestone = db.getActiveMilestone(current.id);
+      const tasks = milestone ? db.getDirectiveTasks(current.id, milestone.id) : [];
+      const running = tasks.filter(t => t.status === "running").length;
+      const queued = tasks.filter(t => t.status === "queued").length;
+      const completed = tasks.filter(t => t.status === "completed").length;
+      const awaiting = tasks.filter(t => t.status === "awaiting_review").length;
+      console.log(`Director: tick — "${current.directive.slice(0, 50)}" [${current.status}] milestone: ${milestone?.title ?? "none"} (${completed}done ${running}run ${queued}q ${awaiting}rev)`);
 
       if (current.status === "active") {
         await processActiveDirective(db, current);
@@ -462,7 +473,10 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
 
   const task = codeTask;
   try {
+    console.log(`Director: verifying "${task.title}" ...`);
+    const verifyStart = Date.now();
     const result = await verifyTask(db, task, project);
+    console.log(`Director: verified "${task.title}" → ${result.verdict} (${result.confidence}, ${Math.round((Date.now() - verifyStart) / 1000)}s)`);
 
     if (result.verdict === "pass") {
       if (task.description.includes("[needs_human_review]") && shouldEscalate(directive.autonomy_level, "human_review_flag")) {
@@ -559,10 +573,13 @@ async function completeMilestone(
   taskCount: number,
 ): Promise<void> {
   db.updateDirectorMilestone(milestone.id, { status: "verifying" });
+  console.log(`Director: verifying milestone "${milestone.title}" (${taskCount} tasks) ...`);
+  const msVerifyStart = Date.now();
 
   let verification: { passed: boolean; issues: string[] };
   try {
     verification = await verifyMilestone(db, milestone, directive.id, project);
+    console.log(`Director: milestone "${milestone.title}" verification → ${verification.passed ? "passed" : "failed"} (${Math.round((Date.now() - msVerifyStart) / 1000)}s)`);
   } catch (err) {
     // Reset to active so the Director can retry — never leave stuck in "verifying"
     db.updateDirectorMilestone(milestone.id, { status: "active" });

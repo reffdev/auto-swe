@@ -134,13 +134,14 @@ async function runExtraction(
 
   let extractions: Extraction[];
   try {
+    console.log(`Knowledge extraction: LLM thinking (${machineInfo.machine.name || machineInfo.machine.machine_type}) ...`);
     const text = await generate(model, {
       system: EXTRACTION_PROMPT,
       prompt: context,
     });
     extractions = parseExtractions(text);
   } catch (err) {
-    console.warn("Task knowledge extraction failed:", err instanceof Error ? err.message : String(err));
+    console.warn("Knowledge extraction: LLM failed:", err instanceof Error ? err.message : String(err));
     return;
   }
 

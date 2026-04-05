@@ -40,6 +40,7 @@ export async function extractPatternsFromLogs(
 
   let extractions: Extraction[];
   try {
+    console.log(`Episodic extraction: LLM thinking (${logContents.length} logs, ${combined.length} chars) ...`);
     const text = await generate(model, { system: EXTRACTION_PROMPT, prompt: combined });
     extractions = parseExtractions(text);
   } catch (err) {
