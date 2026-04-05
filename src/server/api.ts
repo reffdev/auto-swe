@@ -235,6 +235,50 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.status(204).end();
   });
 
+  // ─── Machine Models ─────────────────────────────────────────────────────
+
+  router.get("/machines/:id/models", (req, res) => {
+    const machine = db.getMachine(req.params.id);
+    if (!machine) return res.status(404).json({ error: "machine not found" });
+    res.json(db.getMachineModels(req.params.id));
+  });
+
+  router.post("/machines/:id/models", (req, res) => {
+    const machine = db.getMachine(req.params.id);
+    if (!machine) return res.status(404).json({ error: "machine not found" });
+    const { model_id, label, context_limit } = req.body;
+    if (!model_id) return res.status(400).json({ error: "model_id required" });
+    const model = db.createMachineModel({
+      machine_id: req.params.id,
+      model_id,
+      label: label || model_id,
+      context_limit: context_limit ?? null,
+    });
+    res.status(201).json(model);
+  });
+
+  router.patch("/machines/:machineId/models/:modelId", (req, res) => {
+    const model = db.getMachineModel(req.params.modelId);
+    if (!model) return res.status(404).json({ error: "model not found" });
+    const { model_id, label, context_limit } = req.body;
+    db.updateMachineModel(req.params.modelId, { model_id, label, context_limit });
+    res.json(db.getMachineModel(req.params.modelId));
+  });
+
+  router.delete("/machines/:machineId/models/:modelId", (req, res) => {
+    const model = db.getMachineModel(req.params.modelId);
+    if (!model) return res.status(404).json({ error: "model not found" });
+    db.deleteMachineModel(req.params.modelId);
+    res.status(204).end();
+  });
+
+  router.post("/machines/:machineId/models/:modelId/activate", (req, res) => {
+    const model = db.getMachineModel(req.params.modelId);
+    if (!model) return res.status(404).json({ error: "model not found" });
+    db.activateMachineModel(req.params.modelId);
+    res.json(db.getMachine(req.params.machineId));
+  });
+
   // ─── Issues ─────────────────────────────────────────────────────────────
 
   router.post("/issues", (req, res) => {

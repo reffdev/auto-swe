@@ -23,6 +23,17 @@ export const machines = sqliteTable("machines", {
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
+// ─── Machine Models (available models per machine) ──────────────────────────
+
+export const machineModels = sqliteTable("machine_models", {
+  id: text("id").primaryKey(),
+  machine_id: text("machine_id").notNull().references(() => machines.id),
+  model_id: text("model_id").notNull(),          // e.g., "qwen3.5:122b", "Qwen3-Coder-Next"
+  label: text("label").notNull().default(""),     // human-friendly name
+  context_limit: integer("context_limit"),        // token limit for this model
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
 export const projects = sqliteTable("projects", {

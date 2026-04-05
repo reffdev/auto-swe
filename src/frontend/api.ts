@@ -562,6 +562,37 @@ export function queueAllForemanTasks(): Promise<{ queued: number }> {
   return json("/api/foreman/queue-all", { method: "POST" });
 }
 
+// ─── Machine Models ─────────────────────────────────────────────────────────
+
+export interface MachineModel {
+  id: string;
+  machine_id: string;
+  model_id: string;
+  label: string;
+  context_limit: number | null;
+  created_at: string;
+}
+
+export function getMachineModels(machineId: string): Promise<MachineModel[]> {
+  return json(`/api/machines/${machineId}/models`);
+}
+
+export function createMachineModel(machineId: string, data: { model_id: string; label?: string; context_limit?: number | null }): Promise<MachineModel> {
+  return json(`/api/machines/${machineId}/models`, { method: "POST", body: JSON.stringify(data) });
+}
+
+export function updateMachineModel(machineId: string, modelId: string, data: Partial<{ model_id: string; label: string; context_limit: number | null }>): Promise<MachineModel> {
+  return json(`/api/machines/${machineId}/models/${modelId}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+
+export function deleteMachineModel(machineId: string, modelId: string): Promise<void> {
+  return json(`/api/machines/${machineId}/models/${modelId}`, { method: "DELETE" });
+}
+
+export function activateMachineModel(machineId: string, modelId: string): Promise<Machine> {
+  return json(`/api/machines/${machineId}/models/${modelId}/activate`, { method: "POST" });
+}
+
 export interface TaskFileInfo {
   path: string;
   exists: boolean;

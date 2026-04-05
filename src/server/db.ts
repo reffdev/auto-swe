@@ -16,6 +16,7 @@ import * as schema from "./schema";
 // ─── Types (inferred from Drizzle schema) ────────────────────────────────────
 
 export type Machine = typeof schema.machines.$inferSelect;
+export type MachineModel = typeof schema.machineModels.$inferSelect;
 export type Project = typeof schema.projects.$inferSelect;
 export type Issue = typeof schema.issues.$inferSelect;
 export type Run = typeof schema.runs.$inferSelect;
@@ -248,6 +249,14 @@ export class Db {
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
       "ALTER TABLE machines ADD COLUMN release_url TEXT",
+      `CREATE TABLE IF NOT EXISTS machine_models (
+        id TEXT PRIMARY KEY,
+        machine_id TEXT NOT NULL REFERENCES machines(id),
+        model_id TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        context_limit INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -336,6 +345,54 @@ export class Db {
   deleteMachine(id: string): boolean {
     const result = this.drizzle.delete(schema.machines).where(eq(schema.machines.id, id)).run();
     return result.changes > 0;
+  }
+
+  // ─── Machine Models ──────────────────────────────────────────────────────
+
+  getMachineModels(machineId: string): MachineModel[] {
+    return this.drizzle.select().from(schema.machineModels)
+      .where(eq(schema.machineModels.machine_id, machineId))
+      .orderBy(schema.machineModels.created_at)
+      .all();
+  }
+
+  getMachineModel(id: string): MachineModel | null {
+    return this.drizzle.select().from(schema.machineModels)
+      .where(eq(schema.machineModels.id, id))
+      .get() ?? null;
+  }
+
+  createMachineModel(data: { machine_id: string; model_id: string; label?: string; context_limit?: number | null }): MachineModel {
+    const id = randomUUID();
+    this.drizzle.insert(schema.machineModels).values({
+      id,
+      machine_id: data.machine_id,
+      model_id: data.model_id,
+      label: data.label ?? "",
+      context_limit: data.context_limit ?? null,
+    }).run();
+    return this.getMachineModel(id)!;
+  }
+
+  updateMachineModel(id: string, data: Partial<Pick<MachineModel, "model_id" | "label" | "context_limit">>): void {
+    const clean = stripUndefined(data);
+    if (Object.keys(clean).length === 0) return;
+    this.drizzle.update(schema.machineModels).set(clean).where(eq(schema.machineModels.id, id)).run();
+  }
+
+  deleteMachineModel(id: string): boolean {
+    const result = this.drizzle.delete(schema.machineModels).where(eq(schema.machineModels.id, id)).run();
+    return result.changes > 0;
+  }
+
+  /** Set a model as active on its machine — copies model_id and context_limit to the machine. */
+  activateMachineModel(modelId: string): void {
+    const model = this.getMachineModel(modelId);
+    if (!model) return;
+    this.updateMachine(model.machine_id, {
+      model_id: model.model_id,
+      context_limit: model.context_limit,
+    });
   }
 
   /** @deprecated Use getAvailableMachine() instead */

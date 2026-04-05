@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, Trash2, Save } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { ArrowLeft, Trash2, Save, Plus, Check, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import * as api from './api'
-import type { Machine } from './api'
+import type { Machine, MachineModel } from './api'
 
 interface MachineDetailProps {
   machine: Machine
@@ -180,6 +180,9 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
             <p className="text-xs text-muted-foreground mt-1">URL to call to free GPU resources when a colocated machine needs the GPU. For ComfyUI: <code className="text-[10px] bg-muted px-1 rounded">http://host:8188/free</code> — For llama-swap: <code className="text-[10px] bg-muted px-1 rounded">http://host:8080/api/models/unload</code></p>
           </div>
 
+          {/* Models catalog */}
+          <ModelsCatalog machineId={machine.id} activeModelId={machine.model_id} onActivate={onDataChange} />
+
           <div className="flex items-center gap-3">
             <button
               id="machine-enabled"
@@ -239,6 +242,135 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
           <span className="text-xs text-muted-foreground">Cannot delete while working</span>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── Models Catalog ───────────────────────────────────────────────────────
+
+function ModelsCatalog({ machineId, activeModelId, onActivate }: {
+  machineId: string
+  activeModelId: string | null
+  onActivate: () => void
+}) {
+  const [models, setModels] = useState<MachineModel[]>([])
+  const [showAdd, setShowAdd] = useState(false)
+  const [newModelId, setNewModelId] = useState('')
+  const [newLabel, setNewLabel] = useState('')
+  const [newContextLimit, setNewContextLimit] = useState('')
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editModelId, setEditModelId] = useState('')
+  const [editLabel, setEditLabel] = useState('')
+  const [editContextLimit, setEditContextLimit] = useState('')
+
+  const refresh = useCallback(() => {
+    api.getMachineModels(machineId).then(setModels).catch(() => {})
+  }, [machineId])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const handleAdd = async () => {
+    if (!newModelId) return
+    await api.createMachineModel(machineId, {
+      model_id: newModelId,
+      label: newLabel || newModelId,
+      context_limit: newContextLimit ? parseInt(newContextLimit, 10) : null,
+    })
+    setNewModelId(''); setNewLabel(''); setNewContextLimit(''); setShowAdd(false)
+    refresh()
+  }
+
+  const handleActivate = async (modelId: string) => {
+    await api.activateMachineModel(machineId, modelId)
+    refresh()
+    onActivate()
+  }
+
+  const startEdit = (m: MachineModel) => {
+    setEditingId(m.id)
+    setEditModelId(m.model_id)
+    setEditLabel(m.label)
+    setEditContextLimit(m.context_limit?.toString() ?? '')
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editingId) return
+    await api.updateMachineModel(machineId, editingId, {
+      model_id: editModelId,
+      label: editLabel,
+      context_limit: editContextLimit ? parseInt(editContextLimit, 10) : null,
+    })
+    setEditingId(null)
+    refresh()
+  }
+
+  const handleDelete = async (modelId: string) => {
+    if (!confirm('Delete this model?')) return
+    await api.deleteMachineModel(machineId, modelId)
+    refresh()
+  }
+
+  return (
+    <div className="border border-border rounded-lg p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Available Models</label>
+        <Button variant="ghost" size="icon-sm" onClick={() => setShowAdd(!showAdd)}>
+          <Plus className="size-3.5" />
+        </Button>
+      </div>
+
+      {models.length === 0 && !showAdd && (
+        <p className="text-xs text-muted-foreground">No models configured. Add models to quickly switch between them.</p>
+      )}
+
+      {/* Model list */}
+      <div className="space-y-1">
+        {models.map(m => {
+          const isActive = m.model_id === activeModelId
+          const isEditing = editingId === m.id
+
+          if (isEditing) {
+            return (
+              <div key={m.id} className="flex items-center gap-1.5 bg-muted/50 rounded p-1.5">
+                <Input value={editLabel} onChange={e => setEditLabel(e.target.value)} placeholder="Label" className="h-6 text-xs flex-1" />
+                <Input value={editModelId} onChange={e => setEditModelId(e.target.value)} placeholder="Model ID" className="h-6 text-xs flex-1" />
+                <Input value={editContextLimit} onChange={e => setEditContextLimit(e.target.value)} placeholder="CTX" className="h-6 text-xs w-16" type="number" />
+                <Button variant="ghost" size="icon-sm" onClick={handleSaveEdit}><Check className="size-3" /></Button>
+                <Button variant="ghost" size="icon-sm" onClick={() => setEditingId(null)}><X className="size-3" /></Button>
+              </div>
+            )
+          }
+
+          return (
+            <div key={m.id} className={cn(
+              "flex items-center gap-2 rounded px-2 py-1.5 text-xs group",
+              isActive ? "bg-primary/10 border border-primary/30" : "bg-muted/30 hover:bg-muted/50"
+            )}>
+              <button onClick={() => handleActivate(m.id)} className="shrink-0" title="Set as active">
+                <div className={cn("size-3 rounded-full border-2", isActive ? "border-primary bg-primary" : "border-muted-foreground/40")} />
+              </button>
+              <span className="font-medium truncate">{m.label || m.model_id}</span>
+              <span className="text-muted-foreground font-mono truncate">{m.model_id}</span>
+              {m.context_limit && <span className="text-muted-foreground/60 shrink-0">{Math.round(m.context_limit / 1024)}k</span>}
+              <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={() => startEdit(m)} className="p-0.5 hover:text-primary"><Save className="size-2.5" /></button>
+                <button onClick={() => handleDelete(m.id)} className="p-0.5 hover:text-destructive"><Trash2 className="size-2.5" /></button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Add form */}
+      {showAdd && (
+        <div className="flex items-center gap-1.5 bg-muted/50 rounded p-1.5">
+          <Input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Label" className="h-6 text-xs flex-1" />
+          <Input value={newModelId} onChange={e => setNewModelId(e.target.value)} placeholder="Model ID" className="h-6 text-xs flex-1" />
+          <Input value={newContextLimit} onChange={e => setNewContextLimit(e.target.value)} placeholder="CTX" className="h-6 text-xs w-16" type="number" />
+          <Button variant="ghost" size="icon-sm" onClick={handleAdd} disabled={!newModelId}><Check className="size-3" /></Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setShowAdd(false)}><X className="size-3" /></Button>
+        </div>
+      )}
     </div>
   )
 }
