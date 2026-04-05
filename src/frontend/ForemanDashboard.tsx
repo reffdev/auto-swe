@@ -26,6 +26,17 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   failed: <XCircle className="size-3" />,
 }
 
+/** Human-friendly status labels for display */
+const STATUS_LABELS: Record<string, string> = {
+  backlog: 'backlog',
+  queued: 'queued',
+  running: 'running',
+  validating: 'auto review',
+  awaiting_review: 'needs review',
+  completed: 'completed',
+  failed: 'failed',
+}
+
 const PRIORITY_LABELS: Record<number, { label: string; color: string }> = {
   1: { label: 'P1', color: 'text-red-400' },
   2: { label: 'P2', color: 'text-orange-400' },
@@ -155,7 +166,7 @@ export function ForemanDashboard() {
               statusFilter === s ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50',
             )}
           >
-            {s === 'all' ? 'All' : s.replace('_', ' ')}
+            {s === 'all' ? 'All' : (STATUS_LABELS[s] ?? s.replace('_', ' '))}
             {s === 'all' ? ` (${tasks.length})` : counts[s] ? ` (${counts[s]})` : ''}
           </button>
         ))}
@@ -227,7 +238,7 @@ function TaskRow({ task, isActive: _isActive, onNavigate, onRefresh }: {
       <td className="px-2 py-2.5">
         <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium', STATUS_COLORS[task.status] ?? STATUS_COLORS.backlog)}>
           {STATUS_ICONS[task.status]}
-          {task.status.replace('_', ' ')}
+          {STATUS_LABELS[task.status] ?? task.status.replace('_', ' ')}
         </span>
       </td>
       <td className="px-2 py-2.5 text-right">

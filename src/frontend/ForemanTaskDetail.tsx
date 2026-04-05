@@ -67,7 +67,9 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
               <span>Type: <span className="text-foreground font-mono">{task.type}</span></span>
               <span>Model: <span className="text-foreground font-mono">{task.resolved_model ?? task.model}</span></span>
               <span>Priority: <span className="text-foreground">P{task.priority}</span></span>
-              <span>Status: <span className="text-foreground">{task.status.replace('_', ' ')}</span></span>
+              <span>Status: <span className="text-foreground">
+                {task.status === 'validating' ? 'auto review' : task.status === 'awaiting_review' ? 'needs review' : task.status.replace('_', ' ')}
+              </span></span>
               {task.retry_count > 0 && <span>Retries: <span className="text-foreground">{task.retry_count}/{task.max_retries}</span></span>}
               {task.duration_ms && <span>Duration: <span className="text-foreground">{(task.duration_ms / 1000).toFixed(1)}s</span></span>}
             </div>

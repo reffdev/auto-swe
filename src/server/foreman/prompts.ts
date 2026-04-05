@@ -73,7 +73,7 @@ export function buildForemanUserPrompt(opts: {
   }
 
   if (opts.previousError) {
-    const isHumanFeedback = opts.previousError.includes("Human feedback:");
+    const isHumanFeedback = opts.previousError.includes("Human feedback:") || opts.previousError.startsWith("Rejected:");
     parts.push(
       "",
       isHumanFeedback

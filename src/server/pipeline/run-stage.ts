@@ -291,8 +291,8 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
       // Merge abort signals: external cancel + compaction
       const combinedAbort = new AbortController();
-      const onExternalAbort = () => { combinedAbort.abort(); };
-      const onCompactionAbort = () => { if (compactionNeeded || expandFilesNeeded || reasoningLoopDetected) combinedAbort.abort(); };
+      const onExternalAbort = () => { try { combinedAbort.abort(); } catch { /* already aborted */ } };
+      const onCompactionAbort = () => { if (compactionNeeded || expandFilesNeeded || reasoningLoopDetected) { try { combinedAbort.abort(); } catch { /* already aborted */ } } };
       abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
       compactionAbort.signal.addEventListener("abort", onCompactionAbort, { once: true });
 

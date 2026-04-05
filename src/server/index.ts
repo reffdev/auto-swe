@@ -8,6 +8,15 @@
 import { installConsoleCapture } from "./console-log";
 installConsoleCapture(); // must be first — before any console.log calls
 
+// Prevent AbortError from crashing the process — these are expected during task cancellation
+process.on("unhandledRejection", (err) => {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    console.warn("Caught unhandled AbortError (task cancellation) — ignored");
+    return;
+  }
+  console.error("Unhandled rejection:", err);
+});
+
 import express from "express";
 import cors from "cors";
 import { resolve } from "path";
