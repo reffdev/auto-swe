@@ -247,6 +247,7 @@ export class Db {
       "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
+      "ALTER TABLE machines ADD COLUMN release_url TEXT",
     ];
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
@@ -326,7 +327,7 @@ export class Db {
     return this.getMachine(id)!;
   }
 
-  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "machine_type" | "enabled" | "status" | "current_run_id" | "context_limit" | "api_key" | "max_concurrent">>): void {
+  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "machine_type" | "enabled" | "status" | "current_run_id" | "context_limit" | "api_key" | "max_concurrent" | "release_url">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.machines).set(clean).where(eq(schema.machines.id, id)).run();

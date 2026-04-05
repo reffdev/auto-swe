@@ -214,8 +214,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "machine not found" });
       return;
     }
-    const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type } = req.body;
-    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type });
+    const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url } = req.body;
+    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url });
     // Machine config changed — may have freed capacity
     notifyCapacityChange(machine.machine_type);
     res.json(db.getMachine(req.params.id));

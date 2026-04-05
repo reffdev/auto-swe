@@ -64,6 +64,40 @@ function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): 
   return false;
 }
 
+/**
+ * Call release_url on colocated GPU machines to free VRAM before starting work.
+ * Fire-and-forget with a short timeout — don't block dispatch if the call fails.
+ */
+async function releaseColocatedMachines(machine: Machine, allMachines: Machine[]): Promise<void> {
+  if (!GPU_SHARING_TYPES.has(machine.machine_type)) return;
+
+  const host = extractHost(machine.base_url);
+  if (!host) return;
+
+  const colocated = allMachines.filter(m =>
+    m.id !== machine.id &&
+    GPU_SHARING_TYPES.has(m.machine_type) &&
+    extractHost(m.base_url) === host &&
+    m.release_url
+  );
+
+  for (const other of colocated) {
+    try {
+      console.log(`Machine manager: releasing colocated ${other.machine_type} "${other.name || other.id}" via ${other.release_url}`);
+      await fetch(other.release_url!, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: other.machine_type === "comfyui"
+          ? JSON.stringify({ unload_models: true, free_memory: true })
+          : undefined,
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (err) {
+      console.warn(`Machine manager: failed to release ${other.name || other.id}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+}
+
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export type LeaseConsumer = "director" | "foreman" | "pipeline" | "analysis";
@@ -239,6 +273,15 @@ export function getLeasedMachineIds(consumer?: LeaseConsumer): string[] {
  * Run a function with a machine lease. Automatically acquires and releases.
  * Returns null if no machine is available.
  */
+/**
+ * Prepare a machine for use by releasing colocated GPU resources.
+ * Call this after acquireLease and before starting work.
+ */
+export async function prepareColocatedMachine(db: Db, machine: Machine): Promise<void> {
+  const allMachines = db.getMachines();
+  await releaseColocatedMachines(machine, allMachines);
+}
+
 export async function withLease<T>(
   db: Db,
   consumer: LeaseConsumer,
@@ -255,6 +298,7 @@ export async function withLease<T>(
 
   const { lease, machine } = result;
   try {
+    await releaseColocatedMachines(machine, db.getMachines());
     return await fn(machine);
   } finally {
     releaseLease(lease.id);

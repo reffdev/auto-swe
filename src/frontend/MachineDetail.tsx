@@ -21,6 +21,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   const [contextLimit, setContextLimit] = useState(machine.context_limit?.toString() ?? '')
   const [maxConcurrent, setMaxConcurrent] = useState(machine.max_concurrent?.toString() ?? '1')
   const [apiKey, setApiKey] = useState(machine.api_key ?? '')
+  const [releaseUrl, setReleaseUrl] = useState(machine.release_url ?? '')
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,7 +37,8 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     setContextLimit(machine.context_limit?.toString() ?? '')
     setMaxConcurrent(machine.max_concurrent?.toString() ?? '1')
     setApiKey(machine.api_key ?? '')
-  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.machine_type, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key])
+    setReleaseUrl(machine.release_url ?? '')
+  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.machine_type, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key, machine.release_url])
 
   const parsedContextLimit = contextLimit ? parseInt(contextLimit, 10) || null : null
   const parsedMaxConcurrent = parseInt(maxConcurrent, 10) || 1
@@ -48,6 +50,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
     parsedContextLimit !== (machine.context_limit ?? null) ||
     parsedMaxConcurrent !== (machine.max_concurrent ?? 1) ||
     (apiKey || null) !== (machine.api_key ?? null) ||
+    (releaseUrl || null) !== (machine.release_url ?? null) ||
     enabled !== !!machine.enabled
 
   const handleSave = async () => {
@@ -64,6 +67,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
         context_limit: parsedContextLimit,
         max_concurrent: parsedMaxConcurrent,
       }
+      update.release_url = releaseUrl || null
       // Only send api_key if user changed it from the masked value
       if (apiKey !== (machine.api_key ?? '') && apiKey !== '••••••••') {
         update.api_key = apiKey || null
@@ -168,6 +172,12 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
             <label htmlFor="machine-api-key" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">API Key</label>
             <Input id="machine-api-key" value={apiKey} onChange={(e) => { setApiKey(e.target.value); }} placeholder="sk-..." type="password" />
             <p className="text-xs text-muted-foreground mt-1">Bearer token for cloud providers (OpenRouter, LiteLLM, etc.). Leave empty for local servers.</p>
+          </div>
+
+          <div>
+            <label htmlFor="machine-release-url" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Release URL</label>
+            <Input id="machine-release-url" value={releaseUrl} onChange={(e) => { setReleaseUrl(e.target.value); }} placeholder="http://192.168.1.10:8188/free" />
+            <p className="text-xs text-muted-foreground mt-1">URL to call to free GPU resources when a colocated machine needs the GPU. For ComfyUI: <code className="text-[10px] bg-muted px-1 rounded">http://host:8188/free</code> — For llama-swap: <code className="text-[10px] bg-muted px-1 rounded">http://host:8080/api/models/unload</code></p>
           </div>
 
           <div className="flex items-center gap-3">

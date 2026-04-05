@@ -28,6 +28,7 @@ import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
 import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
 import { getMemoryContext } from "../director/memory-context";
+import { prepareColocatedMachine } from "../machine-manager";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
 
@@ -65,6 +66,9 @@ export async function executeForemanTask(
   task: ForemanTask,
   project: Project,
 ): Promise<void> {
+  // Release colocated GPU resources before starting (e.g., unload ComfyUI models for inference)
+  await prepareColocatedMachine(ctx.db, machine);
+
   // Dispatch to ComfyUI executor for generation tasks
   if (machine.machine_type === "comfyui") {
     return executeComfyUITask(ctx, machine, task, project);

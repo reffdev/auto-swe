@@ -19,6 +19,7 @@ export const machines = sqliteTable("machines", {
   max_concurrent: integer("max_concurrent").notNull().default(1),
   context_limit: integer("context_limit"),
   api_key: text("api_key"),
+  release_url: text("release_url"),  // URL to call to free GPU resources before colocated machine starts
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 

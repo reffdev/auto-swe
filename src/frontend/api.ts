@@ -18,6 +18,7 @@ export interface Machine {
   max_concurrent: number;
   context_limit: number | null;
   api_key: string | null;
+  release_url: string | null;
   active_issue_ids: string[];
   created_at: string;
 }
