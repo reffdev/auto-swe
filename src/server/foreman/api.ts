@@ -227,6 +227,22 @@ export function createForemanRouter(db: Db): Router {
     }
   });
 
+  router.post("/tasks/:id/reverify", (req, res) => {
+    const task = db.getForemanTask(req.params.id);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (task.status !== "awaiting_review" && task.status !== "validating") {
+      return res.status(409).json({ error: `Cannot reverify task with status "${task.status}"` });
+    }
+    // Clear previous verification result and set back to validating for Director auto-review
+    db.updateForemanTask(task.id, {
+      status: "validating",
+      verification_result: null,
+    });
+    nudgeDirector(db);
+    console.log(`Foreman: requeued verification for "${task.title}"`);
+    res.json(db.getForemanTask(task.id));
+  });
+
   router.post("/tasks/:id/complete", (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });

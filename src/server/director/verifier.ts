@@ -7,8 +7,11 @@
  */
 
 import { createModel, generate } from "../llm";
-import { spawnSync } from "child_process";
+import { spawnSync, execFile } from "child_process";
 import { readFileSync, existsSync } from "fs";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
 import { runStage } from "../pipeline/run-stage";
@@ -144,9 +147,11 @@ export async function verifyMilestone(
   const projectIssues: string[] = [];
 
   if (project.build_command) {
-    const result = spawnSync(project.build_command, { cwd: project.workdir, shell: true, timeout: 120_000 });
-    if (result.status !== 0) {
-      projectIssues.push(`Build failed: ${(result.stderr?.toString() ?? "").slice(0, 500)}`);
+    try {
+      await execFileAsync("sh", ["-c", project.build_command], { cwd: project.workdir, timeout: 120_000 });
+    } catch (err: unknown) {
+      const stderr = (err as { stderr?: string })?.stderr ?? "";
+      projectIssues.push(`Build failed: ${stderr.slice(0, 500)}`);
     }
   }
 
@@ -154,22 +159,29 @@ export async function verifyMilestone(
   if (existsSync(resolve(project.workdir, "project.godot"))) {
     const gutScript = resolve(project.workdir, "addons/gut/gut_cmdln.gd");
     if (existsSync(gutScript)) {
-      const result = spawnSync("godot", ["--headless", "--script", "res://addons/gut/gut_cmdln.gd", "--path", project.workdir], {
-        cwd: project.workdir, shell: true, timeout: 120_000,
-      });
-      if (result.status !== null && result.status !== 0) {
-        const output = (result.stdout?.toString() ?? "") + (result.stderr?.toString() ?? "");
-        projectIssues.push(`Godot GUT tests failed: ${output.slice(-500)}`);
+      try {
+        await execFileAsync("godot", ["--headless", "--script", "res://addons/gut/gut_cmdln.gd", "--path", project.workdir], {
+          cwd: project.workdir, timeout: 120_000,
+        });
+      } catch (err: unknown) {
+        const stdout = (err as { stdout?: string })?.stdout ?? "";
+        const stderr = (err as { stderr?: string })?.stderr ?? "";
+        projectIssues.push(`Godot GUT tests failed: ${(stdout + stderr).slice(-500)}`);
       }
     } else {
-      // No GUT — try basic script validation via --script with a minimal check
-      const result = spawnSync("godot", ["--headless", "--quit", "--path", project.workdir], {
-        cwd: project.workdir, shell: true, timeout: 60_000,
-      });
-      if (result.error && "code" in result.error && result.error.code === "ETIMEDOUT") {
-        console.warn("Director verifier: godot validation timed out — skipping");
-      } else if (result.status !== null && result.status !== 0) {
-        projectIssues.push(`Godot check failed: ${(result.stderr?.toString() ?? "").slice(0, 500)}`);
+      // No GUT — try basic script validation
+      try {
+        await execFileAsync("godot", ["--headless", "--quit", "--path", project.workdir], {
+          cwd: project.workdir, timeout: 60_000,
+        });
+      } catch (err: unknown) {
+        const killed = (err as { killed?: boolean })?.killed;
+        if (killed) {
+          console.warn("Director verifier: godot validation timed out — skipping");
+        } else {
+          const stderr = (err as { stderr?: string })?.stderr ?? "";
+          projectIssues.push(`Godot check failed: ${stderr.slice(0, 500)}`);
+        }
       }
     }
   }

@@ -554,6 +554,10 @@ export function completeForemanTask(id: string): Promise<ForemanTask> {
   return json(`/api/foreman/tasks/${id}/complete`, { method: "POST" });
 }
 
+export function reverifyForemanTask(id: string): Promise<ForemanTask> {
+  return json(`/api/foreman/tasks/${id}/reverify`, { method: "POST" });
+}
+
 export function queueAllForemanTasks(): Promise<{ queued: number }> {
   return json("/api/foreman/queue-all", { method: "POST" });
 }

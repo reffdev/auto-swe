@@ -385,6 +385,19 @@ export async function pushBranch(
     console.log(`Git: pushed ${branch} @ ${hash} to origin`);
     return true;
   } catch (err) {
+    // Non-fast-forward = branch was reset (e.g., rebase conflict recovery). Force push with lease.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (errMsg.includes("non-fast-forward") || errMsg.includes("rejected")) {
+      try {
+        await gitSafe(["push", "--force-with-lease", "origin", branch], worktreePath);
+        const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
+        console.log(`Git: force-pushed ${branch} @ ${hash} to origin (branch was reset)`);
+        return true;
+      } catch (forceErr) {
+        console.error(`Git: force-push also failed for ${branch}:`, forceErr);
+        return false;
+      }
+    }
     console.error(`Git: push failed for ${branch}:`, err);
     return false;
   }

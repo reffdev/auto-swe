@@ -90,12 +90,20 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
                 <Button size="sm" onClick={() => void api.completeForemanTask(task.id).then(refresh)}>
                   <CheckCircle className="size-3.5 mr-1.5" /> Approve
                 </Button>
+                <Button variant="outline" size="sm" onClick={() => void api.reverifyForemanTask(task.id).then(refresh)}>
+                  <RotateCcw className="size-3.5 mr-1.5" /> Re-verify
+                </Button>
                 {isAssetTask(task) && (
                   <Button variant="outline" size="sm" onClick={() => setShowFeedback(!showFeedback)}>
                     <MessageSquare className="size-3.5 mr-1.5" /> Reject
                   </Button>
                 )}
               </>
+            )}
+            {task.status === 'validating' && (
+              <Button variant="outline" size="sm" onClick={() => void api.reverifyForemanTask(task.id).then(refresh)}>
+                <RotateCcw className="size-3.5 mr-1.5" /> Re-verify
+              </Button>
             )}
             {task.status === 'awaiting_review' && task.type === 'style_exploration' && (
               <span className="text-xs text-muted-foreground">Select a style from the Director review panel</span>

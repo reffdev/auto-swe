@@ -627,7 +627,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     : <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
                   }
                   <span className="truncate flex-1">{m.name || m.model_id || 'Unnamed'}</span>
-                  {activeIds.length > 0 && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
+                  {(activeIds.length > 0 || (m.machine_type === 'npu' && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec))) && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
                     <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0 flex items-center gap-0.5">
                       <Zap className="size-2.5 text-yellow-500/70" />
                       {machineSpd.prompt_tokens_per_sec ? Math.round(machineSpd.prompt_tokens_per_sec) : '—'}
@@ -637,6 +637,8 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                   ) : null}
                   {activeIds.length > 0 ? (
                     <span className="text-[10px] font-mono text-emerald-400 shrink-0">{activeIds.length}/{m.max_concurrent}</span>
+                  ) : machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
+                    <span className="size-2 rounded-full shrink-0 bg-emerald-400 animate-pulse" title="Active (recent LLM traffic)" />
                   ) : (
                     <span className={cn('size-2 rounded-full shrink-0', MACHINE_STATUS[m.status])} />
                   )}
