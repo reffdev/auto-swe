@@ -808,6 +808,33 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     req.on("close", unsub);
   });
 
+  // ─── Journal (system-level logs via journalctl) ──────────────────────────
+
+  router.get("/journal", (req, res) => {
+    const lines = parseInt(req.query.lines as string) || 200;
+    const unit = "swe"; // hardcoded service name
+    try {
+      const result = spawnSync("journalctl", ["-u", unit, "-n", String(Math.min(lines, 1000)), "--no-pager", "-o", "short-iso"], {
+        timeout: 5_000,
+        encoding: "utf-8",
+      });
+      const entries = (result.stdout ?? "").split("\n").filter(Boolean).map(line => {
+        // Parse journalctl short-iso format: "2026-04-05T16:27:42+0000 hostname unit[pid]: message"
+        const match = line.match(/^(\S+)\s+\S+\s+\S+\[\d+\]:\s*(.*)/);
+        if (match) {
+          const message = match[2];
+          const level = message.includes("ERROR") || message.includes("error:") ? "error"
+            : message.includes("WARN") || message.includes("warn") ? "warn" : "log";
+          return { timestamp: match[1], level, message };
+        }
+        return { timestamp: new Date().toISOString(), level: "log" as const, message: line };
+      });
+      res.json(entries);
+    } catch {
+      res.json([]);
+    }
+  });
+
   // ─── Analysis ──────────────────────────────────────────────────────────
 
   router.get("/projects/:id/analysis/configs", (req, res) => {

@@ -351,9 +351,8 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     checkForUnattributedCommits(db, directive, project);
     await processKnowledgeExtraction(db, project);
 
-    if (shouldPauseDirective(db, directive)) {
-      db.updateDirectorDirective(directive.id, { status: "paused" });
-    }
+    // Review gates are informational — the Director continues working on other tasks
+    // while waiting for human responses. No pausing.
     saveProgress(db, directive);
   } finally {
     // Machine release happens in directorTick's finally block
@@ -863,13 +862,12 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  const acted = await processRespondedReviews(db, directive, project);
+  await processRespondedReviews(db, directive, project);
 
-  if (acted || !shouldPauseDirective(db, directive)) {
-    db.updateDirectorDirective(directive.id, { status: "active" });
-    saveProgress(db, directive);
-    console.log("Director: directive resumed");
-  }
+  // Always unpause — directives should never stay paused. Review gates are async/informational.
+  db.updateDirectorDirective(directive.id, { status: "active" });
+  saveProgress(db, directive);
+  console.log("Director: directive resumed (paused directives auto-resume)");
 }
 
 // ─── Idle machine detection ─────────────────────────────────────────────────

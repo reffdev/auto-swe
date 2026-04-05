@@ -100,6 +100,10 @@ export function nudgeForeman(db?: Db): void {
 // ─── Scheduler Tick ──────────────────────────────────────────────────────────
 
 async function schedulerTick(db: Db): Promise<void> {
+  // Clear exhaustion cache at the start of every tick — it only prevents redundant
+  // logging within a single tick, not across ticks
+  exhaustedMachineTypes.clear();
+
   const config = db.getForemanConfig();
   if (!config?.enabled) return;
   if (!config.project_id) return;

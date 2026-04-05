@@ -27,12 +27,16 @@ const LEVEL_STYLES: Record<string, string> = {
 function ConsoleLog() {
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [collapsed, setCollapsed] = useState(false)
+  const [mode, setMode] = useState<'app' | 'journal'>('app')
+  const [journalEntries, setJournalEntries] = useState<LogEntry[]>([])
+  const [journalLoading, setJournalLoading] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const autoScrollRef = useRef(true)
 
+  // App logs via SSE
   useEffect(() => {
+    if (mode !== 'app') return
     const es = new EventSource('/api/console')
-    // Clear entries on each (re)connect so history replay doesn't duplicate
     es.onopen = () => setEntries([])
     es.onmessage = (e) => {
       try {
@@ -44,14 +48,26 @@ function ConsoleLog() {
       } catch { /* ignore */ }
     }
     return () => { es.close(); }
-  }, [])
+  }, [mode])
+
+  // Journal logs via REST
+  useEffect(() => {
+    if (mode !== 'journal') return
+    setJournalLoading(true)
+    fetch('/api/journal?lines=500')
+      .then(r => r.json())
+      .then((data: LogEntry[]) => { setJournalEntries(data); setJournalLoading(false) })
+      .catch(() => { setJournalLoading(false) })
+  }, [mode])
+
+  const displayEntries = mode === 'app' ? entries : journalEntries
 
   // Auto-scroll to bottom
   useEffect(() => {
     if (autoScrollRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [entries])
+  }, [displayEntries])
 
   const handleScroll = () => {
     if (!scrollRef.current) return
@@ -61,27 +77,47 @@ function ConsoleLog() {
 
   return (
     <Card className="overflow-hidden">
-      <button
-        onClick={() => { setCollapsed(!collapsed); }}
-        className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/30 transition-colors"
-      >
-        <div className="flex items-center gap-2">
+      <div className="px-4 py-3 flex items-center justify-between">
+        <button
+          onClick={() => { setCollapsed(!collapsed); }}
+          className="flex items-center gap-2 hover:text-foreground transition-colors"
+        >
           <Terminal className="size-4 text-muted-foreground" />
           <span className="text-sm font-medium">Server Console</span>
-          <span className="text-xs text-muted-foreground">({entries.length})</span>
+          <span className="text-xs text-muted-foreground">({displayEntries.length})</span>
+        </button>
+        <div className="flex items-center gap-2">
+          {!collapsed && (
+            <div className="flex items-center gap-0.5 bg-muted rounded-md p-0.5">
+              <button
+                onClick={() => setMode('app')}
+                className={cn('px-2 py-0.5 rounded text-[10px] font-medium transition-colors',
+                  mode === 'app' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+              >App</button>
+              <button
+                onClick={() => setMode('journal')}
+                className={cn('px-2 py-0.5 rounded text-[10px] font-medium transition-colors',
+                  mode === 'journal' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}
+              >System</button>
+            </div>
+          )}
+          <button onClick={() => { setCollapsed(!collapsed); }} className="text-xs text-muted-foreground hover:text-foreground">
+            {collapsed ? 'Show' : 'Hide'}
+          </button>
         </div>
-        <span className="text-xs text-muted-foreground">{collapsed ? 'Show' : 'Hide'}</span>
-      </button>
+      </div>
       {!collapsed && (
         <div
           ref={scrollRef}
           onScroll={handleScroll}
           className="h-72 overflow-y-auto bg-black/30 border-t border-border font-mono text-[11px] leading-relaxed p-2"
         >
-          {entries.length === 0 && (
-            <span className="text-muted-foreground/50">Waiting for log output...</span>
+          {displayEntries.length === 0 && (
+            <span className="text-muted-foreground/50">
+              {mode === 'journal' && journalLoading ? 'Loading journal...' : 'Waiting for log output...'}
+            </span>
           )}
-          {entries.map((entry, i) => (
+          {displayEntries.map((entry, i) => (
             <div key={i} className={cn("whitespace-pre-wrap break-all", LEVEL_STYLES[entry.level])}>
               <span className="text-muted-foreground/40 mr-2 select-none">
                 {new Date(entry.timestamp).toLocaleTimeString()}
@@ -89,6 +125,12 @@ function ConsoleLog() {
               {entry.message}
             </div>
           ))}
+          {mode === 'journal' && !journalLoading && (
+            <button
+              onClick={() => { setJournalLoading(true); fetch('/api/journal?lines=500').then(r => r.json()).then(setJournalEntries).finally(() => setJournalLoading(false)) }}
+              className="mt-2 text-[10px] text-muted-foreground hover:text-foreground"
+            >Refresh</button>
+          )}
         </div>
       )}
     </Card>

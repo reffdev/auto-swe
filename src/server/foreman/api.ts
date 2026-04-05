@@ -476,22 +476,32 @@ export function createForemanRouter(db: Db): Router {
       return res.status(404).json({ error: "Historical asset not found" });
     }
 
-    // Current output
+    // Current output — check both the main workdir and the task's worktree
     const taskConfig2 = getConfigFn(task);
     const outputPath2 = taskConfig2?.outputPath ?? extractTag(task.description, "output");
     if (!outputPath2) return res.status(404).json({ error: "No output path in task" });
 
-    const assetPath = resolve(project.workdir, outputPath2);
+    // Try worktree first (file may not be merged to main yet), then main workdir
+    const candidates = [
+      task.git_worktree ? resolve(task.git_worktree, outputPath2) : null,
+      resolve(project.workdir, outputPath2),
+    ].filter(Boolean) as string[];
 
-    // Security: ensure the resolved path is within the project workdir
-    const normalizedAsset = assetPath.replace(/\\/g, "/");
+    let assetPath: string | null = null;
     const normalizedWorkdir = resolve(project.workdir).replace(/\\/g, "/");
-    if (!normalizedAsset.startsWith(normalizedWorkdir)) {
-      return res.status(403).json({ error: "Path traversal denied" });
+    for (const candidate of candidates) {
+      const normalized = candidate.replace(/\\/g, "/");
+      // Security: allow paths within project workdir OR within worktree parent
+      const worktreeParent = resolve(project.workdir, "../.orch-worktrees").replace(/\\/g, "/");
+      if (!normalized.startsWith(normalizedWorkdir) && !normalized.startsWith(worktreeParent)) continue;
+      if (existsSync(candidate)) {
+        assetPath = candidate;
+        break;
+      }
     }
 
-    if (!existsSync(assetPath)) {
-      return res.status(404).json({ error: `Asset file not found: ${assetPath}` });
+    if (!assetPath) {
+      return res.status(404).json({ error: `Asset file not found` });
     }
 
     const ext = extname(assetPath).toLowerCase();
