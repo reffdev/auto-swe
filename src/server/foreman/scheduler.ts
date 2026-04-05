@@ -89,11 +89,12 @@ export function nudgeForeman(db?: Db): void {
   if (pendingNudge) return;
   pendingNudge = true;
 
-  // Defer to next microtask so the caller's DB writes commit first
-  queueMicrotask(() => {
+  // Use setTimeout(0) so Foreman always runs AFTER Director's queueMicrotask
+  // This ensures the Director's machine reservation is set before Foreman tries to dispatch
+  setTimeout(() => {
     pendingNudge = false;
     schedulerTick(d).catch(err => console.error("Foreman scheduler error:", err));
-  });
+  }, 0);
 }
 
 // ─── Scheduler Tick ──────────────────────────────────────────────────────────

@@ -58,6 +58,7 @@ export function buildForemanUserPrompt(opts: {
   acceptanceCriteria: string[];
   previousError?: string;
   previousOutput?: string;
+  rebaseResetContext?: string;
 }): string {
   const parts: string[] = [
     `# Task: ${opts.title}`,
@@ -70,6 +71,10 @@ export function buildForemanUserPrompt(opts: {
     opts.acceptanceCriteria.forEach((c, i) => {
       parts.push(`${i + 1}. ${c}`);
     });
+  }
+
+  if (opts.rebaseResetContext) {
+    parts.push("", opts.rebaseResetContext);
   }
 
   if (opts.previousError) {

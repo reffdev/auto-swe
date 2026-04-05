@@ -263,12 +263,13 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
 export function nudgeDirector(db?: Db): void {
   const d = db ?? schedulerDb;
   if (!d) return;
-  if (pendingNudge) { console.log("Director: nudge skipped (already pending)"); return; }
+  if (pendingNudge) return;
   pendingNudge = true;
-  setTimeout(() => {
+  // Use queueMicrotask so Director always runs BEFORE the Foreman's setTimeout(0)
+  queueMicrotask(() => {
     pendingNudge = false;
     directorTick(d).catch(err => console.error("Director scheduler error:", err));
-  }, 0);
+  });
 }
 
 // ─── Director Tick ──────────────────────────────────────────────────────────

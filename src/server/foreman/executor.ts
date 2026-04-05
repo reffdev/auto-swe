@@ -90,9 +90,11 @@ export async function executeForemanTask(
   try {
     // Set up git workspace within project lock
     // On retry, try to reuse the existing worktree to preserve previous work
+    let worktreeRebaseReset = false;
     await withProjectLock(project.id, async () => {
       await ensureWorkdir(project);
-      await setupWorktree(project.workdir, worktreePath, branch);
+      const result = await setupWorktree(project.workdir, worktreePath, branch);
+      if (result.ok && result.rebaseReset) worktreeRebaseReset = true;
     });
 
     db.updateForemanTask(task.id, { git_branch: branch, git_worktree: worktreePath });
@@ -186,12 +188,32 @@ export async function executeForemanTask(
       }
     }
 
+    // If the worktree was reset due to rebase conflicts, inject context about what happened
+    let rebaseResetContext: string | undefined;
+    if (worktreeRebaseReset && prevRuns.length > 0) {
+      rebaseResetContext = [
+        "## IMPORTANT: Branch Was Reset Due to Merge Conflicts",
+        "",
+        "Your previous work on this branch conflicted with changes that were merged to main by other tasks.",
+        "The branch has been reset to the current main. Your previous commits are in the git reflog.",
+        "",
+        "You can recover specific changes from your previous work using:",
+        "  `git reflog` — to find your old commit hashes",
+        "  `git show <hash>` — to view what you previously wrote",
+        "  `git cherry-pick <hash>` — to re-apply a specific commit (may still conflict)",
+        "",
+        "However, it may be simpler to redo the work from scratch since main has changed.",
+        "Check what already exists in the codebase before writing new code.",
+      ].join("\n");
+    }
+
     const userPrompt = buildForemanUserPrompt({
       title: task.title,
       description: task.description,
       acceptanceCriteria,
       previousError,
       previousOutput,
+      rebaseResetContext,
     });
 
     // Create model provider

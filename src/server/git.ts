@@ -168,7 +168,7 @@ export async function setupWorktree(
   mainWorkdir: string,
   worktreePath: string,
   branch: string
-): Promise<{ ok: true; fresh: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; fresh: boolean; rebaseReset?: boolean } | { ok: false; error: string }> {
   try {
     // Verify the main workdir exists before any git operations
     try {
@@ -199,10 +199,10 @@ export async function setupWorktree(
           await git("rev-parse --abbrev-ref HEAD", worktreePath)
         ).trim();
         if (currentBranch === branch) {
+          // Determine the default branch (try multiple methods)
+          let defaultBranch = "main";
           // Worktree exists with the right branch — try to rebase onto latest
           try {
-            // Determine the default branch (try multiple methods)
-            let defaultBranch = "main";
             try {
               defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
             } catch {
@@ -218,12 +218,22 @@ export async function setupWorktree(
             const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
             console.log(`Git: reusing worktree for ${branch} @ ${hash} (rebased onto origin/${defaultBranch})`);
           } catch (rebaseErr) {
-            // Rebase failed — abort it but KEEP the worktree to preserve prior work
+            // Rebase conflict — abort rebase and reset to origin/main so agent works on current code.
+            // Previous commits are preserved in reflog. The agent will redo its work from the current base.
             try { await git("rebase --abort", worktreePath); } catch { /* already aborted */ }
-            const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-            const errMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
-            console.warn(`Git: rebase failed for ${branch} — keeping worktree as-is @ ${hash} (PR may need manual conflict resolution)`);
-            console.warn(`Git: rebase error: ${errMsg.slice(0, 300)}`);
+            let didReset = false;
+            try {
+              await git(`reset --hard origin/${defaultBranch}`, worktreePath);
+              const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
+              console.warn(`Git: rebase conflict for ${branch} — reset to origin/${defaultBranch} @ ${hash} (agent will redo work from current base)`);
+              didReset = true;
+            } catch {
+              const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
+              const errMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
+              console.warn(`Git: rebase failed for ${branch} and reset failed — keeping as-is @ ${hash}`);
+              console.warn(`Git: rebase error: ${errMsg.slice(0, 500)}`);
+            }
+            return { ok: true, fresh: false, rebaseReset: didReset };
           }
           return { ok: true, fresh: false };
         }
