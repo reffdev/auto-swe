@@ -92,10 +92,7 @@ export async function createStyleExplorationTask(
     while (stylePrompts.length < 6) {
       stylePrompts.push(stylePrompts[stylePrompts.length - 1]);
     }
-    console.log(`Style exploration: generated ${stylePrompts.length} style prompts`);
-    for (let i = 0; i < stylePrompts.length; i++) {
-      console.log(`  ${i + 1}. "${stylePrompts[i].slice(0, 80)}..."`);
-    }
+    console.log(`Style exploration: generated ${stylePrompts.length} prompts`);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error(`Style exploration: prompt generation FAILED: ${errMsg}`);
@@ -173,13 +170,8 @@ export async function queueContinuousExploration(
   try {
     const previousPrompts = collectPreviousPrompts(db, task.project_id);
     newPrompts = await generateFreshPrompts(db, project, task.directive_id, previousPrompts);
-    if (newPrompts) {
-      console.log(`Continuous exploration: generated ${newPrompts.length} fresh prompts`);
-    } else {
-      console.log("Continuous exploration: prompt generation returned null, re-queuing with same prompts (new seeds)");
-    }
   } catch (err) {
-    console.warn(`Continuous exploration: prompt generation failed (${err instanceof Error ? err.message : err}), re-queuing with same prompts (new seeds)`);
+    console.warn(`Continuous exploration: prompt generation failed (${err instanceof Error ? err.message : err}), re-queuing with same prompts`);
   }
 
   // Update config
@@ -200,7 +192,7 @@ export async function queueContinuousExploration(
     machine_id: null,
   });
   nudgeForeman(db);
-  console.log("Continuous exploration: re-queued task for next batch");
+  console.log(`Continuous exploration: re-queued task${newPrompts ? ` with ${newPrompts.length} fresh prompts` : " with same prompts (new seeds)"}`);
 }
 
 /**

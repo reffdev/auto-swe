@@ -49,8 +49,7 @@ export async function generateDirectorResponse(opts: {
 }): Promise<void> {
   const { db } = opts;
 
-  console.log(`Director: generating response for conversation ${opts.conversationId} (directive: ${opts.directiveId})`);
-  console.log(`Director: using machine "${opts.machine.name || opts.machine.id}" at ${opts.machine.base_url} with model ${opts.modelId}`);
+  console.log(`Director conversation: generating response for ${opts.conversationId} (directive: ${opts.directiveId}) via "${opts.machine.name || opts.machine.id}" model ${opts.modelId}`);
 
   const model = createModel(opts.machine, opts.modelId);
 
@@ -150,9 +149,9 @@ export async function generateDirectorResponse(opts: {
     setTimeout(() => activeStreams.delete(opts.conversationId), 5000);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Director LLM error for conversation ${opts.conversationId}:`, errMsg);
+    console.error(`Director conversation: LLM error for ${opts.conversationId}:`, errMsg);
     if (err instanceof Error && err.stack) {
-      console.error(`Director LLM stack:`, err.stack);
+      console.error(`Director conversation: LLM stack:`, err.stack);
     }
     const errorText = `Error generating response: ${errMsg.slice(0, 200)}`;
     db.createDirectorMessage({

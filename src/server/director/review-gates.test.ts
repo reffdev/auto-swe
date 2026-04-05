@@ -145,7 +145,7 @@ describe("processReviewResponse", () => {
       response: "some response",
     }));
     expect(result.action).toBe("resume");
-    expect(spy).toHaveBeenCalledWith(expect.stringContaining("unhandled review type"));
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("unhandled type"));
     spy.mockRestore();
   });
 });

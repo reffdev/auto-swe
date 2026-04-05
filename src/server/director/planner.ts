@@ -40,36 +40,26 @@ export async function planNextTasks(
   verificationIssues?: string[],
 ): Promise<number> {
   const planStartTime = Date.now();
-  console.log(`Director planner: starting for milestone "${milestone.title}" (idleMachineTypes: ${idleMachineTypes?.join(", ") ?? "none"})`);
+  const reason = verificationIssues?.length ? "corrective" : idleMachineTypes?.length ? `top-up (idle: ${idleMachineTypes.join(", ")})` : "initial";
+  console.log(`Director planner: "${milestone.title}" — ${reason}`);
 
-  // Select machine for planning (uses large model)
-  console.log(`Director planner: [1/8] selecting machine...`);
+  // Select machine
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) {
-    console.error("Director planner: no machine available for planning");
+    console.error("Director planner: no machine available");
     return 0;
   }
 
   const { machine, modelId } = machineInfo;
-  console.log(`Director planner: [2/8] machine selected: "${machine.name || machine.id}" at ${machine.base_url} model=${modelId}`);
 
-  // Assemble context
-  console.log(`Director planner: [3/8] assembling context...`);
+  // Assemble context + manifest + prompt
   const contextStartTime = Date.now();
   const directiveContext = await assembleDirectorContext(db, directive, project, {
     includeTaskSummaries: true,
     maxRecentTasks: 10,
   });
-  console.log(`Director planner: [3/8] context assembled: ${directiveContext.length} chars (${Date.now() - contextStartTime}ms)`);
-
-  // Check for ComfyUI workflow manifest
-  console.log(`Director planner: [4/8] loading workflow manifest...`);
   const workflowManifest = loadWorkflowManifest(project.workdir);
   const workflowSummary = workflowManifest ? summarizeManifestForPrompt(workflowManifest) : null;
-  console.log(`Director planner: [4/8] manifest: ${workflowManifest ? "loaded" : "none"}`);
-
-  // Build prompt
-  console.log(`Director planner: [5/8] building prompt...`);
 
   const { system, user } = buildPlanningPrompt({
     directiveContext,
@@ -80,22 +70,18 @@ export async function planNextTasks(
     verificationIssues,
   });
 
-  const toolNames = ["webSearch", "fetchUrl", "lookupDocs", ...Object.keys(makeReadOnlyTools(project.workdir)), ...Object.keys(makeMemoryTools(project.workdir))];
   const totalPromptChars = system.length + user.length;
-  const estimatedTokens = Math.round(totalPromptChars / 4); // rough estimate
-  console.log(`Director planner: [6/8] system=${system.length} chars, user=${user.length} chars (~${estimatedTokens} tokens), tools=${toolNames.length} (${toolNames.join(", ")})`);
+  const estimatedTokens = Math.round(totalPromptChars / 4);
+  console.log(`Director planner: context ready — ~${estimatedTokens} tokens, ${Math.round((Date.now() - contextStartTime) / 1000)}s`);
   if (machine.context_limit && estimatedTokens > machine.context_limit * 0.8) {
-    console.warn(`Director planner: prompt (~${estimatedTokens} tokens) approaching context limit (${machine.context_limit}) — context may be truncated`);
+    console.warn(`Director planner: prompt (~${estimatedTokens} tokens) approaching context limit (${machine.context_limit}) — may be truncated`);
   }
 
-  // Call LLM
-  console.log(`Director planner: [6.5/8] constructing tools...`);
+  // Build tools
   let tools;
   try {
     const readOnlyTools = makeReadOnlyTools(project.workdir);
-    console.log(`Director planner: [6.5/8] readOnlyTools: ${Object.keys(readOnlyTools).join(", ")}`);
     const memTools = makeMemoryTools(project.workdir);
-    console.log(`Director planner: [6.5/8] memTools: ${Object.keys(memTools).join(", ")}`);
     const taskTools = makeTaskQueryTools(db, project.id, project.workdir);
     tools = {
       webSearch: webSearchTool,
@@ -105,45 +91,48 @@ export async function planNextTasks(
       ...memTools,
       ...taskTools,
     };
-    console.log(`Director planner: [6.5/8] tools constructed: ${Object.keys(tools).length} total`);
   } catch (toolErr) {
-    console.error(`Director planner: [6.5/8] TOOL CONSTRUCTION FAILED:`, toolErr);
+    console.error("Director planner: tool construction failed:", toolErr);
     throw toolErr;
   }
 
-  console.log(`Director planner: [7/8] calling LLM at ${machine.base_url}...`);
+  // Stream LLM response with progress logging
   const llmStartTime = Date.now();
   const model = createModel(machine, modelId);
+  console.log(`Director planner: calling ${machine.name || modelId} ...`);
 
   let resultText: string;
   try {
-    console.log(`Director planner: [7/8] sending streamText request...`);
     const stream = llmStream({
       model,
       system,
       prompt: user,
       tools,
       maxSteps: 50,
+      onStepFinish: ({ toolCalls }) => {
+        if (toolCalls?.length) {
+          const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
+          const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+          console.log(`Director planner: step — ${toolNames} (${elapsed}s)`);
+        }
+      },
     });
-    console.log(`Director planner: [7/8] streamText created, consuming stream...`);
-    // Consume the stream to get the full text
     let text = "";
     for await (const chunk of stream.textStream) {
       text += chunk;
     }
     resultText = text;
     const steps = await stream.steps;
-    console.log(`Director planner: [7/8] LLM responded in ${Date.now() - llmStartTime}ms — ${resultText.length} chars, ${steps.length} steps`);
+    const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+    console.log(`Director planner: LLM done — ${resultText.length} chars, ${steps.length} steps, ${elapsed}s`);
   } catch (llmErr) {
-    const errMsg = llmErr instanceof Error ? llmErr.message : String(llmErr);
-    console.error(`Director planner: [7/8] LLM FAILED after ${Date.now() - llmStartTime}ms: ${errMsg}`);
+    const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+    console.error(`Director planner: LLM failed after ${elapsed}s:`, llmErr instanceof Error ? llmErr.message : String(llmErr));
     throw llmErr;
   }
 
-  // Parse tasks from LLM output and post-process art tasks
-  console.log(`Director planner: [8/8] parsing tasks from output...`);
+  // Parse tasks
   const rawTasks = parseNextTasks(resultText);
-  console.log(`Director planner: [8/8] parsed ${rawTasks.length} raw task(s): ${rawTasks.map(t => `"${t.title}" (${t.type})`).join(", ") || "none"}`);
   const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
@@ -154,7 +143,7 @@ export async function planNextTasks(
     } else if (resultText.length < 50) {
       console.warn(`Director planner: LLM returned very short response (${resultText.length} chars) — possible error`);
     } else {
-      console.log(`Director planner: no tasks generated (milestone may be complete). Total time: ${Date.now() - planStartTime}ms`);
+      console.log(`Director planner: no tasks generated (milestone may be complete)`);
     }
     return 0;
   }
@@ -195,13 +184,16 @@ export async function planNextTasks(
     created++;
   }
 
+  const totalTime = Math.round((Date.now() - planStartTime) / 1000);
   if (created > 0) {
+    const taskList = parsedTasks.filter(t => !existingTitles.has(t.title.toLowerCase())).map(t => `"${t.title}" (${t.type})`).join(", ");
+    console.log(`Director planner: created ${created} task(s) in ${totalTime}s — ${taskList}`);
     const taskTypes = parsedTasks.map(t => t.type).join(", ");
-    console.log(`Director planner: generated ${created} task(s) for milestone "${milestone.title}". Total time: ${Date.now() - planStartTime}ms`);
     logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
     nudgeForeman(db);
   } else {
-    console.log(`Director planner: 0 new tasks created (all duplicates or empty). Total time: ${Date.now() - planStartTime}ms`);
+    const skipped = rawTasks.length;
+    console.log(`Director planner: 0 new tasks in ${totalTime}s${skipped > 0 ? ` (${skipped} duplicate${skipped > 1 ? "s" : ""} skipped)` : ""}`);
   }
 
   return created;

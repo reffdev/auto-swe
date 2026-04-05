@@ -56,7 +56,7 @@ export async function verifyTask(
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
-  console.log(`Verifier: "${task.title}" — branch: ${task.git_branch}, diff: ${gitDiff.length} chars${supplementalFiles ? ", has supplemental files" : ""}`);
+  console.log(`Director verifier: "${task.title}" — branch: ${task.git_branch}, diff: ${gitDiff.length} chars${supplementalFiles ? ", has supplemental files" : ""}`);
 
   // Build verification context: diff + any target files not in the diff
   const verificationContext = supplementalFiles
@@ -196,12 +196,12 @@ export async function verifyMilestone(
     const text = await generate(model, { system, prompt: user, abortSignal: milestoneTimeout });
     const parsed = parseVerdict(text);
     if (!parsed) {
-      console.warn(`Milestone verification: could not parse verdict for "${milestone.title}" — failing to be safe`);
+      console.warn(`Director verifier: milestone could not parse verdict for "${milestone.title}" — failing to be safe`);
       return { passed: false, issues: ["Could not parse milestone verdict from LLM response"] };
     }
     return { passed: parsed.result === "pass", issues: parsed.issues };
   } catch (err) {
-    console.warn(`Milestone verification: LLM call failed for "${milestone.title}":`, err instanceof Error ? err.message : String(err));
+    console.warn(`Director verifier: milestone LLM call failed for "${milestone.title}":`, err instanceof Error ? err.message : String(err));
     return { passed: false, issues: [`LLM milestone verification failed: ${err instanceof Error ? err.message : "unknown error"}`] };
   }
 }

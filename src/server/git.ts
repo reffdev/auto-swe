@@ -129,8 +129,8 @@ export async function resetToOrigin(project: Project): Promise<void> {
     console.log(`Git: resetting ${workdir} to origin/${defaultBranch}`);
     await git("fetch origin", workdir);
     // Discard any local changes
-    await git("checkout -- .", workdir).catch(() => {});
-    await gitSafe(["clean", "-fd"], workdir).catch(() => {});
+    await git("checkout -- .", workdir).catch(() => { console.warn("Git: checkout discard failed (non-fatal)"); });
+    await gitSafe(["clean", "-fd"], workdir).catch(() => { console.warn("Git: clean failed (non-fatal)"); });
     // Hard reset to match origin
     await gitSafe(["reset", "--hard", `origin/${defaultBranch}`], workdir);
     const hash = (await git("rev-parse --short HEAD", workdir)).trim();
@@ -245,7 +245,7 @@ export async function setupWorktree(
         }
       }
       // Prune any orphaned worktree entries
-      try { await git("worktree prune", mainWorkdir); } catch { /* best-effort */ }
+      try { await git("worktree prune", mainWorkdir); } catch { console.warn("Git: worktree prune failed (non-fatal)"); }
     }
 
     // Check if the branch already has commits (from a prior retry)
@@ -317,7 +317,7 @@ export async function removeWorktree(
     }
   }
   // Prune orphaned worktree entries
-  try { await git("worktree prune", mainWorkdir); } catch { /* best-effort */ }
+  try { await git("worktree prune", mainWorkdir); } catch { console.warn("Git: worktree prune failed (non-fatal)"); }
   return true;
 }
 
@@ -343,7 +343,7 @@ export async function commitAll(
           }
         } catch { /* skip — file might be deleted */ }
       }
-    } catch { /* non-critical */ }
+    } catch { console.warn("Git: large file check failed (non-fatal)"); }
 
     const { stdout: stagedOut } = await execAsync("git diff --cached --stat", {
       cwd: worktreePath,

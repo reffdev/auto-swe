@@ -177,8 +177,9 @@ async function collect(db: Db): Promise<void> {
 /** Start the background stats collector. Call once at server startup. */
 export function startStatsCollector(db: Db): void {
   if (collectInterval) return; // already running
-  collect(db).catch(() => {}); // initial collect
-  collectInterval = setInterval(() => collect(db).catch(() => {}), COLLECT_INTERVAL_MS);
+  console.log("Stats: collector started");
+  collect(db).catch((err) => { console.warn("Stats: collection error:", err instanceof Error ? err.message : String(err)); });
+  collectInterval = setInterval(() => collect(db).catch((err) => { console.warn("Stats: collection error:", err instanceof Error ? err.message : String(err)); }), COLLECT_INTERVAL_MS);
 }
 
 /** Stop the background collector. */

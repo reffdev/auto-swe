@@ -64,7 +64,7 @@ export function loadWorkflowManifest(projectWorkdir: string): WorkflowManifest |
     const raw = readFileSync(manifestPath, "utf-8");
     return JSON.parse(raw) as WorkflowManifest;
   } catch (err) {
-    console.error(`Failed to load workflow manifest at ${manifestPath}:`, err);
+    console.error(`Foreman: failed to load workflow manifest at ${manifestPath}:`, err);
     return null;
   }
 }

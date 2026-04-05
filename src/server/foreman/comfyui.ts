@@ -86,6 +86,7 @@ export async function executeComfyUIWorkflow(
   const startTime = Date.now();
   let lastLogTime = 0;
   let lastQueueLog = 0;
+  let nextQueueLogInterval = 30_000; // start at 30s, then exponential: 60, 120, 240, 480
   let emptyQueueMissingCount = 0; // consecutive checks where queue is empty AND prompt not in history
   let lastQueueEmpty = false;
   const MAX_EMPTY_MISSING_CHECKS = 3; // fail after 3 consecutive empty-queue + missing-prompt checks (~90s)
@@ -96,8 +97,8 @@ export async function executeComfyUIWorkflow(
     await sleep(POLL_INTERVAL_MS);
     const elapsed = Date.now() - startTime;
 
-    // Periodically check queue status for diagnostics
-    if (elapsed - lastQueueLog > 30_000) {
+    // Periodically check queue status for diagnostics (exponential backoff: 30s, 60s, 120s, 240s, 480s)
+    if (elapsed - lastQueueLog > nextQueueLogInterval) {
       try {
         const queueRes = await fetch(`${url}/queue`, { signal: timeoutSignal(FETCH_TIMEOUT_MS, signal) });
         if (queueRes.ok) {
@@ -112,6 +113,7 @@ export async function executeComfyUIWorkflow(
         }
       } catch { /* best effort */ }
       lastQueueLog = elapsed;
+      nextQueueLogInterval = Math.min(nextQueueLogInterval * 2, 480_000);
     }
 
     let historyRes: Response;

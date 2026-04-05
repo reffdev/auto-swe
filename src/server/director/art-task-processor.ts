@@ -95,7 +95,7 @@ function injectPresetTags(task: ParsedTask): ParsedTask {
   if (!presetName) {
     // Default to pixel_sprite for unknown art types, sd15_generic as last resort
     const fallback = task.type === "art" ? "pixel_sprite" : "sd15_generic";
-    console.warn(`No preset for asset type "${assetType}" in task "${task.title}" — falling back to ${fallback}`);
+    console.warn(`Director art: no preset for asset type "${assetType}" in task "${task.title}" — falling back to ${fallback}`);
     const tags = [
       "",
       `[preset: ${fallback}]`,

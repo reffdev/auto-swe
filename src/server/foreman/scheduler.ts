@@ -165,6 +165,7 @@ async function schedulerTick(db: Db): Promise<void> {
 
     // Reserve task BEFORE dispatching to prevent double-dispatch
     db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });
+    console.log(`Foreman: dispatched "${task.title}" (${task.type}) → ${machine.name || machine.id}`);
 
     // Fire and forget
     const controller = new AbortController();
