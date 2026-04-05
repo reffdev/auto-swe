@@ -152,8 +152,16 @@ export async function planNextTasks(
   const existingTasks = db.getDirectiveTasks(directive.id, milestone.id);
   const existingTitles = new Set(existingTasks.map(t => t.title.toLowerCase()));
 
+  // Two-pass creation: first create all tasks (without depends_on), then wire up dependencies.
+  // This mirrors the epic story creation pattern — depends_on references task numbers (1-based)
+  // in the current batch, which need to be resolved to UUIDs after creation.
+
+  // Pass 1: Create tasks, track batch number → UUID mapping
+  const batchMap = new Map<number, string>(); // task number (1-based) → foreman_task UUID
   let created = 0;
-  for (const parsed of parsedTasks) {
+  for (let i = 0; i < parsedTasks.length; i++) {
+    const parsed = parsedTasks[i];
+
     // Skip if a task with the same title already exists
     if (existingTitles.has(parsed.title.toLowerCase())) {
       console.log(`Director planner: skipping duplicate task "${parsed.title}"`);
@@ -165,7 +173,7 @@ export async function planNextTasks(
       ? parsed.description + "\n\n[needs_human_review]"
       : parsed.description;
 
-    db.createForemanTask({
+    const task = db.createForemanTask({
       project_id: project.id,
       title: parsed.title,
       description,
@@ -181,7 +189,41 @@ export async function planNextTasks(
       milestone_id: milestone.id,
     });
 
+    batchMap.set(i + 1, task.id); // 1-based task number → UUID
     created++;
+  }
+
+  // Pass 2: Resolve depends_on references (task numbers → UUIDs)
+  for (let i = 0; i < parsedTasks.length; i++) {
+    const parsed = parsedTasks[i];
+    const taskId = batchMap.get(i + 1);
+    if (!taskId || parsed.depends_on.length === 0) continue;
+
+    const resolvedDeps: string[] = [];
+    for (const dep of parsed.depends_on) {
+      // dep could be a number string ("1", "2") or a title
+      const depNum = parseInt(dep, 10);
+      if (!isNaN(depNum) && batchMap.has(depNum)) {
+        resolvedDeps.push(batchMap.get(depNum)!);
+      } else {
+        // Try matching by title against this batch or existing tasks
+        const byTitle = [...batchMap.entries()].find(([num]) => {
+          const pt = parsedTasks[num - 1];
+          return pt && pt.title.toLowerCase() === dep.toLowerCase();
+        });
+        if (byTitle) {
+          resolvedDeps.push(byTitle[1]);
+        } else {
+          const existing = existingTasks.find(t => t.title.toLowerCase() === dep.toLowerCase());
+          if (existing) resolvedDeps.push(existing.id);
+        }
+      }
+    }
+
+    if (resolvedDeps.length > 0) {
+      db.updateForemanTask(taskId, { depends_on: JSON.stringify(resolvedDeps) });
+      console.log(`Director planner: "${parsed.title}" depends on ${resolvedDeps.length} task(s)`);
+    }
   }
 
   const totalTime = Math.round((Date.now() - planStartTime) / 1000);

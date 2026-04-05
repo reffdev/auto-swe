@@ -166,6 +166,13 @@ export function buildPlanningPrompt(opts: {
     "  [Detailed implementation spec. Be specific — the executing agent",
     "  has no other context beyond this description and the project files.]",
     "```",
+    "",
+    "### Task Dependencies",
+    "",
+    "Use `depends_on` to declare ordering between tasks in the SAME batch.",
+    "Reference tasks by their number in this batch (e.g., `depends_on: [1]` means wait for task 1 to complete and merge first).",
+    "A dependent task will NOT start until all its dependencies are completed — use this when a task needs code from another task to be present on the branch.",
+    "Leave empty (`depends_on: []`) when tasks can run in parallel.",
   );
 
   const system = systemParts.join("\n");
