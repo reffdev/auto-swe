@@ -284,6 +284,17 @@ async function directorTick(db: Db): Promise<void> {
     const directives = db.getActiveDirectives();
     if (directives.length === 0) return;
 
+    // Reserve the Director's machine BEFORE processing any directives.
+    // This prevents the Foreman from grabbing it in a concurrent dispatch.
+    const firstDirective = directives[0];
+    const firstProject = db.getProject(firstDirective.project_id);
+    if (firstProject) {
+      const machineInfo = selectPlannerMachine(db, firstProject);
+      if (machineInfo) {
+        setDirectorReservedMachine(machineInfo.machine.id);
+      }
+    }
+
     for (const directive of directives) {
       // Re-read status in case a previous iteration changed it (e.g., unpause → active)
       const current = db.getDirectorDirective(directive.id);
@@ -304,7 +315,9 @@ async function directorTick(db: Db): Promise<void> {
       }
     }
   } finally {
+    setDirectorReservedMachine(null);
     processing = false;
+    nudgeForeman(db);
   }
 }
 
@@ -314,11 +327,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
   const project = db.getProject(directive.project_id);
   if (!project) return;
 
-  // Reserve the machine the director will use — foreman can use other machines freely
-  const machineInfo = selectPlannerMachine(db, project);
-  if (machineInfo) {
-    setDirectorReservedMachine(machineInfo.machine.id);
-  }
+  // Machine reservation is handled at the directorTick level (before any processing)
 
   try {
     // Ensure style exploration is running (doesn't block code work)
@@ -346,7 +355,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     }
     saveProgress(db, directive);
   } finally {
-    setDirectorReservedMachine(null);
+    // Machine release happens in directorTick's finally block
     nudgeForeman(db);
   }
 }
