@@ -8,6 +8,7 @@
  */
 
 import { createModel, stream as llmStream } from "../llm";
+import { MACHINE_TYPE_TASK_TYPES } from "../foreman/task-types";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
@@ -132,7 +133,23 @@ export async function planNextTasks(
   }
 
   // Parse tasks
-  const rawTasks = parseNextTasks(resultText);
+  let rawTasks = parseNextTasks(resultText);
+
+  // For top-up requests, filter out tasks that don't match the requested machine types.
+  // The planner was asked to generate work for idle machines, not create more work for busy ones.
+  if (idleMachineTypes?.length) {
+    const allowedTypes = new Set<string>();
+    for (const mt of idleMachineTypes) {
+      const taskTypes = MACHINE_TYPE_TASK_TYPES[mt];
+      if (taskTypes) for (const tt of taskTypes) allowedTypes.add(tt);
+    }
+    const before = rawTasks.length;
+    rawTasks = rawTasks.filter(t => allowedTypes.has(t.type));
+    if (rawTasks.length < before) {
+      console.log(`Director planner: filtered ${before - rawTasks.length} task(s) not matching idle machine types (${idleMachineTypes.join(", ")})`);
+    }
+  }
+
   const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
