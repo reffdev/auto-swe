@@ -8,7 +8,7 @@
 
 import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
-import { executeForemanTask, registerActiveTask, unregisterActiveTask } from "./executor";
+import { executeForemanTask, cancelForemanTask, unregisterActiveTask } from "./executor";
 import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
 import { canForemanDispatch } from "../orchestrator";
@@ -168,9 +168,12 @@ async function schedulerTick(db: Db): Promise<void> {
     db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });
     console.log(`Foreman: dispatched "${task.title}" (${task.type}) → ${machine.name || machine.id}`);
 
-    // Fire and forget
-    const controller = new AbortController();
-    registerActiveTask(task.id, controller);
+    // Abort task if lease expires (prevents hung tasks staying "running" forever)
+    const taskId = task.id;
+    lease.onExpiry = () => {
+      console.warn(`Foreman: aborting hung task "${task.title}" — lease expired`);
+      cancelForemanTask(taskId);
+    };
 
     executeForemanTask({ db }, machine, task, project)
       .catch(err => {
@@ -225,7 +228,19 @@ function scheduleRetryWakeup(db: Db): void {
     }
   }
 
-  if (earliest === null) return;
+  if (earliest === null) {
+    // No tasks with next_retry_at, but there ARE queued tasks (we only get here
+    // when dispatched === 0 and tasks exist). These tasks are blocked by machine
+    // availability (colocation, capacity, etc.) — schedule a fallback wake-up
+    // so the scheduler doesn't go permanently dormant.
+    if (queued.length > 0) {
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        nudgeForeman(db);
+      }, 60_000); // retry in 60s
+    }
+    return;
+  }
 
   const delayMs = Math.max(earliest - Date.now(), 100); // at least 100ms
   retryTimer = setTimeout(() => {

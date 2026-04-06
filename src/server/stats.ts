@@ -49,13 +49,19 @@ async function fetchMachineMetrics(baseUrl: string): Promise<{
     const entries = (await res.json()) as MetricsEntry[];
     if (!Array.isArray(entries) || entries.length === 0) return null;
 
-    // Use the most recent entry — represents current machine speed
+    // Use the most recent non-zero entry — represents current machine speed
     const fiveMinAgo = Date.now() - 5 * 60 * 1000;
     const recent = entries.filter(e => new Date(e.timestamp).getTime() > fiveMinAgo);
     if (recent.length === 0) return null;
 
-    const latest = recent[recent.length - 1]; // entries are chronological, last = newest
-    return { promptTps: latest.prompt_per_second ?? 0, completionTps: latest.tokens_per_second ?? 0 };
+    // Find the latest entry with actual data (skip trailing zero entries from idle periods)
+    for (let i = recent.length - 1; i >= 0; i--) {
+      const e = recent[i];
+      if ((e.prompt_per_second ?? 0) > 0 || (e.tokens_per_second ?? 0) > 0) {
+        return { promptTps: e.prompt_per_second ?? 0, completionTps: e.tokens_per_second ?? 0 };
+      }
+    }
+    return null;
   } catch {
     return null;
   }

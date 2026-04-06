@@ -39,6 +39,14 @@ function extractHost(baseUrl: string): string | null {
  *
  * Only applies to GPU-sharing types (inference, comfyui). NPU machines are never
  * blocked by colocation since they use a separate chip.
+ *
+ * Same-type colocation (e.g. two inference machines on the same host) is always
+ * blocked — they'd compete for the same VRAM simultaneously.
+ *
+ * Cross-type colocation (inference ↔ comfyui) is allowed because
+ * releaseColocatedMachines() will free the other machine's VRAM before work
+ * starts. This prevents deadlocks where ComfyUI can never run because inference
+ * always has active leases on the shared host.
  */
 function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): boolean {
   // NPU never participates in GPU colocation blocking
@@ -58,7 +66,11 @@ function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): 
   for (const other of colocated) {
     const otherLeases = activeLeases.get(other.id) ?? [];
     if (otherLeases.length > 0) {
-      return true; // any colocated GPU machine is active — block unconditionally
+      // Same type → block (can't run two inference servers simultaneously)
+      // Cross type → allow (releaseColocatedMachines will free VRAM before use)
+      if (other.machine_type === machine.machine_type) {
+        return true;
+      }
     }
   }
 
@@ -110,6 +122,8 @@ export interface MachineLease {
   label: string;
   acquiredAt: number;
   expiresAt: number;
+  /** Called when the lease expires — use to abort hung tasks. */
+  onExpiry?: () => void;
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -122,11 +136,19 @@ let leaseCounter = 0;
 const lastNoMachineLog = new Map<string, number>();
 const NO_MACHINE_LOG_INTERVAL_MS = 60_000;
 
+/** Periodic expiry check interval — ensures hung tasks are aborted even when no new leases are requested. */
+let expiryInterval: ReturnType<typeof setInterval> | null = null;
+
 /** Clear all leases — call on server startup to prevent stale state. */
 export function clearAllLeases(): void {
   const count = getActiveLeases().length;
   activeLeases.clear();
   if (count > 0) console.log(`Machine manager: cleared ${count} stale lease(s) from previous session`);
+
+  // Start periodic expiry check so hung tasks get aborted even if no new leases are acquired
+  if (!expiryInterval) {
+    expiryInterval = setInterval(cleanExpiredLeases, 60_000);
+  }
 }
 
 const DEFAULT_LEASE_TIMEOUT_MS: Record<LeaseConsumer, number> = {
@@ -211,13 +233,25 @@ export function acquireLease(
     }
   }
 
-  // No machine available in any type
+  // No machine available — only log if something is actually wrong (not just "all busy")
   const now = Date.now();
   const lastLog = lastNoMachineLog.get(machineType) ?? 0;
   if (now - lastLog >= NO_MACHINE_LOG_INTERVAL_MS) {
-    lastNoMachineLog.set(machineType, now);
     const allOfType = machines.filter(m => m.machine_type === machineType);
-    console.log(`Machine manager: no ${machineType} machine available for ${consumer}/${label}. Total: ${allOfType.length}, enabled: ${allOfType.filter(m => m.enabled).length}, with capacity: ${allOfType.filter(m => hasCapacity(m)).length}, breaker ok: ${allOfType.filter(m => getBreaker(m.id).canExecute()).length}`);
+    const enabled = allOfType.filter(m => m.enabled);
+    const withCapacity = enabled.filter(m => hasCapacity(m));
+
+    // Only log if there's an unexpected blocker (breaker, colocation, reservation filtering out machines that have capacity)
+    const allBusy = enabled.length > 0 && withCapacity.length === 0;
+    if (!allBusy) {
+      // Machines have capacity but are blocked by something — worth logging
+      lastNoMachineLog.set(machineType, now);
+      const breakerOk = enabled.filter(m => getBreaker(m.id).canExecute());
+      const notColocated = enabled.filter(m => !isBlockedByColocatedMachine(m, machines));
+      const notReserved = enabled.filter(m => m.id !== directorReserved);
+      console.log(`Machine manager: no ${machineType} machine for ${consumer}/${label} — enabled: ${enabled.length}, capacity: ${withCapacity.length}, breaker: ${breakerOk.length}, colocation: ${notColocated.length}, reserved: ${notReserved.length}`);
+    }
+    // If all machines are just busy (no capacity), stay silent — that's normal operation
   }
   return null;
 }
@@ -342,6 +376,11 @@ function cleanExpiredLeases(): void {
     if (expired.length > 0) {
       for (const l of expired) {
         console.warn(`Machine lease expired: ${l.consumer}/${l.label} on machine ${machineId} (held ${Math.round((now - l.acquiredAt) / 1000)}s)`);
+        if (l.onExpiry) {
+          try { l.onExpiry(); } catch (err) {
+            console.warn(`Machine lease onExpiry error: ${err instanceof Error ? err.message : err}`);
+          }
+        }
       }
       const remaining = leases.filter(l => l.expiresAt > now);
       if (remaining.length === 0) {
