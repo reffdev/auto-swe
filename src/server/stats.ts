@@ -49,15 +49,13 @@ async function fetchMachineMetrics(baseUrl: string): Promise<{
     const entries = (await res.json()) as MetricsEntry[];
     if (!Array.isArray(entries) || entries.length === 0) return null;
 
-    // Filter to entries from the last 5 minutes
+    // Use the most recent entry — represents current machine speed
     const fiveMinAgo = Date.now() - 5 * 60 * 1000;
     const recent = entries.filter(e => new Date(e.timestamp).getTime() > fiveMinAgo);
     if (recent.length === 0) return null;
 
-    const promptTps = recent.reduce((sum, e) => sum + (e.prompt_per_second ?? 0), 0) / recent.length;
-    const completionTps = recent.reduce((sum, e) => sum + (e.tokens_per_second ?? 0), 0) / recent.length;
-
-    return { promptTps, completionTps };
+    const latest = recent[recent.length - 1]; // entries are chronological, last = newest
+    return { promptTps: latest.prompt_per_second ?? 0, completionTps: latest.tokens_per_second ?? 0 };
   } catch {
     return null;
   }
@@ -140,12 +138,10 @@ async function collect(db: Db): Promise<void> {
       const { promptTps, completionTps } = r.value;
       if (promptTps > 0 || completionTps > 0) {
         active.push(r.value);
-        if (machines[i].status === "working") {
-          cachedMachineSpeed.set(machines[i].id, {
-            prompt_tokens_per_sec: Math.round(promptTps * 10) / 10,
-            completion_tokens_per_sec: Math.round(completionTps * 10) / 10,
-          });
-        }
+        cachedMachineSpeed.set(machines[i].id, {
+          prompt_tokens_per_sec: Math.round(promptTps * 10) / 10,
+          completion_tokens_per_sec: Math.round(completionTps * 10) / 10,
+        });
       }
     } else {
       // Fallback: compute speed from DB for machines without /api/metrics
