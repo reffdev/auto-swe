@@ -7,7 +7,7 @@
  * - After a milestone transitions (new milestone tasks)
  */
 
-import { createModel, stream as llmStream } from "../llm";
+import { createModel, stream as llmStream, warmUpModel } from "../llm";
 import { MACHINE_TYPE_TASK_TYPES } from "../foreman/task-types";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
@@ -100,6 +100,9 @@ export async function planNextTasks(
   // Stream LLM response with progress logging
   const llmStartTime = Date.now();
   const model = createModel(machine, modelId);
+  // Ensure the model is loaded before sending requests
+  await warmUpModel(machine, modelId);
+
   console.log(`Director planner: calling ${machine.name || modelId} ...`);
 
   let resultText: string;
@@ -153,14 +156,19 @@ export async function planNextTasks(
   const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
-    // Distinguish parse failure from genuine "no tasks needed"
-    const hasTaskBlock = resultText.includes("```next_tasks");
-    if (hasTaskBlock) {
-      console.warn(`Director planner: LLM produced a next_tasks block but parsing yielded 0 tasks — possible format issue. Output sample: ${resultText.slice(0, 300)}`);
-    } else if (resultText.length < 50) {
-      console.warn(`Director planner: LLM returned very short response (${resultText.length} chars) — possible error`);
+    const rawCount = parseNextTasks(resultText).length;
+    if (rawCount > 0) {
+      // Tasks were parsed but all got filtered (e.g., top-up requested comfyui but LLM only generated code tasks)
+      console.log(`Director planner: ${rawCount} task(s) parsed but all filtered — none matched requested types`);
     } else {
-      console.log(`Director planner: no tasks generated (milestone may be complete)`);
+      const hasTaskBlock = resultText.includes("```next_tasks");
+      if (hasTaskBlock) {
+        console.warn(`Director planner: LLM produced a next_tasks block but parsing yielded 0 tasks — possible format issue. Output sample: ${resultText.slice(0, 300)}`);
+      } else if (resultText.length < 50) {
+        console.warn(`Director planner: LLM returned very short response (${resultText.length} chars) — possible error`);
+      } else {
+        console.log(`Director planner: no tasks generated (milestone may be complete)`);
+      }
     }
     return 0;
   }

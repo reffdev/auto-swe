@@ -10,7 +10,7 @@ import { resolve } from "path";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { runStage } from "../pipeline/run-stage";
 import { withProjectLock } from "../pipeline/index";
-import { createModel } from "../llm";
+import { createModel, warmUpModel } from "../llm";
 import {
   makeWorktreePath,
   ensureWorkdir,
@@ -215,6 +215,9 @@ export async function executeForemanTask(
       previousOutput,
       rebaseResetContext,
     });
+
+    // Ensure the model is loaded before sending requests
+    await warmUpModel(machine, modelId);
 
     // Create model provider
     const model = createModel(machine, modelId);

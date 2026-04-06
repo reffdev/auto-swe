@@ -187,7 +187,9 @@ export async function executeIssue(
           console.error("Runner: failed to log LLM request:", e);
         }
 
-        console.log(`Runner: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepDuration}ms)`);
+        const runnerStepSec = stepDuration / 1000;
+        const runnerStepTime = runnerStepSec >= 10 ? `${Math.round(runnerStepSec)}s` : `${runnerStepSec.toFixed(1)}s`;
+        console.log(`Runner: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${runnerStepTime})`);
         stepStartTime = Date.now();
       }
     );

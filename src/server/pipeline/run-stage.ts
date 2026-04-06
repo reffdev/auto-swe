@@ -217,7 +217,9 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       });
     } catch { /* non-critical */ }
 
-    console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepDuration}ms, prompt=${promptTok})`);
+    const stepSec = stepDuration / 1000;
+    const stepTime = stepSec >= 10 ? `${Math.round(stepSec)}s` : `${stepSec.toFixed(1)}s`;
+    console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepTime}, prompt=${promptTok})`);
 
     // Detect reasoning loops — consecutive steps with text but no tool calls
     if (!toolCalls?.length && step.text && step.text.length > 50) {

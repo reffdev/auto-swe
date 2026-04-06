@@ -25,6 +25,47 @@ const INACTIVITY_TIMEOUT_MS = 20 * 60 * 1000; // 20 min — max silence between 
 const MAX_SERVER_RETRIES = 5;                  // retries on 5xx / connection errors
 const MAX_AI_SDK_RETRIES = 6;                  // retries at the AI SDK level
 
+// ─── Model warm-up ────────────────────────────────────────────────────────
+
+/**
+ * Ensure a model is loaded and ready on the machine before sending LLM requests.
+ * Calls llama-swap's /upstream/:model endpoint which blocks until the model is ready.
+ * For non-llama-swap machines (ComfyUI, NPU, cloud APIs), this is a no-op.
+ */
+export async function warmUpModel(machine: Machine, modelId: string): Promise<void> {
+  // Only warm up inference machines — ComfyUI/NPU don't use llama-swap
+  if (machine.machine_type !== "inference") return;
+
+  // Build the upstream URL from the machine's base_url
+  // base_url is like "http://192.168.2.2/v1" — upstream is at the root: "http://192.168.2.2/upstream/:model"
+  let baseOrigin: string;
+  try {
+    const url = new URL(machine.base_url);
+    baseOrigin = url.origin;
+  } catch {
+    return; // invalid URL, skip warm-up
+  }
+
+  const upstreamUrl = `${baseOrigin}/upstream/${encodeURIComponent(modelId)}`;
+
+  try {
+    console.log(`LLM: warming up "${modelId}" on ${machine.name || machine.id} ...`);
+    const start = Date.now();
+    const res = await fetch(upstreamUrl, {
+      signal: AbortSignal.timeout(5 * 60 * 1000), // 5 min max for model load
+    });
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    if (res.ok) {
+      console.log(`LLM: model "${modelId}" ready on ${machine.name || machine.id} (${elapsed}s)`);
+    } else {
+      console.warn(`LLM: warm-up returned ${res.status} for "${modelId}" on ${machine.name || machine.id} — proceeding anyway`);
+    }
+  } catch (err) {
+    // Non-fatal — the model may still load when the actual request hits
+    console.warn(`LLM: warm-up failed for "${modelId}" on ${machine.name || machine.id}: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 // ─── Provider creation ─────────────────────────────────────────────────────
 
 type Model = ReturnType<ReturnType<typeof createOpenAICompatible>>;

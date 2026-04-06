@@ -243,7 +243,7 @@ export async function runStaticScan(workdir: string): Promise<StaticScanResult> 
 
   const elapsed = Date.now() - start;
   const sizeKb = Math.round(JSON.stringify(result).length / 1024);
-  console.log(`Analysis: static scan complete in ${elapsed}ms (${sizeKb}KB, ${result.summary.totalFiles} files, ${result.summary.totalFunctions} functions)`);
+  console.log(`Analysis: static scan complete in ${(elapsed / 1000).toFixed(1)}s (${sizeKb}KB, ${result.summary.totalFiles} files, ${result.summary.totalFunctions} functions)`);
 
   return result;
 }

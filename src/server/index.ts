@@ -8,10 +8,15 @@
 import { installConsoleCapture } from "./console-log";
 installConsoleCapture(); // must be first — before any console.log calls
 
-// Prevent AbortError from crashing the process — these are expected during task cancellation
+// Prevent transient network/abort errors from crashing the process
 process.on("unhandledRejection", (err) => {
   if (err instanceof DOMException && err.name === "AbortError") {
     console.warn("Caught unhandled AbortError (task cancellation) — ignored");
+    return;
+  }
+  // Socket errors from dropped connections (e.g., nginx reload, network hiccup)
+  if (err instanceof TypeError && (err.message === "terminated" || err.message === "fetch failed")) {
+    console.warn(`Caught unhandled network error: ${err.message} — ignored (connection was dropped)`);
     return;
   }
   console.error("Unhandled rejection:", err);
