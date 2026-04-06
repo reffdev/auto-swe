@@ -190,7 +190,7 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
       } catch (err) {
         if (attempt >= MAX_SERVER_RETRIES) throw err;
         const delay = (attempt + 1) * 10_000;
-        const bodyLen = typeof (init as RequestInit)?.body === "string" ? (init as RequestInit).body!.length : "?";
+        const bodyLen = typeof (init as RequestInit)?.body === "string" ? ((init as RequestInit).body as string).length : "?";
         const cause = err instanceof TypeError && (err as any).cause ? ` cause=${(err as any).cause?.message ?? (err as any).cause}` : "";
         console.log(`LLM: connection failed — ${err instanceof Error ? err.message : err}${cause} — retry ${attempt + 2}/${MAX_SERVER_RETRIES + 1} in ${delay / 1000}s (url=${url}, body=${bodyLen} chars)`);
         await sleep(delay);

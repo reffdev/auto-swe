@@ -90,6 +90,7 @@ export async function executeForemanTask(
   try {
     // Set up git workspace within project lock
     // On retry, try to reuse the existing worktree to preserve previous work
+    console.log(`[executor] ${task.title}: acquiring project lock...`);
     let worktreeRebaseReset = false;
     await withProjectLock(project.id, async () => {
       await ensureWorkdir(project);
@@ -97,6 +98,7 @@ export async function executeForemanTask(
       if (result.ok && result.rebaseReset) worktreeRebaseReset = true;
     });
 
+    console.log(`[executor] ${task.title}: project lock released, building tools/prompts...`);
     db.updateForemanTask(task.id, { git_branch: branch, git_worktree: worktreePath });
 
     // Build tools
@@ -216,12 +218,14 @@ export async function executeForemanTask(
       rebaseResetContext,
     });
 
+    console.log(`[executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars), warming up model...`);
     // Ensure the model is loaded before sending requests
     await warmUpModel(machine, modelId);
 
     // Create model provider
     const model = createModel(machine, modelId);
 
+    console.log(`[executor] ${task.title}: model created, entering runStage...`);
     // Run the LLM agent — pass runId="" to skip runs table updates, use onStepsUpdate for foreman_runs
     const result = await runStage({
       db,

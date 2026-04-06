@@ -333,6 +333,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           }
         }
 
+        console.log(`Pipeline [${stageName}]: calling LLM (system=${systemPrompt.length}, messages=${messages.length}, tools=${Object.keys(tools ?? {}).length})`);
         const result = llmStream({
           model, system: systemPrompt, messages,
           tools, maxSteps: maxSteps ?? 100,
