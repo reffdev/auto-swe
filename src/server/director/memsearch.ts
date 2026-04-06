@@ -261,7 +261,11 @@ import {
   writeMemory,
   readMemory,
   readMemoryCategory,
+  readConventions,
+  readProjectBrief,
+  writeProjectBrief,
   categoryDir,
+  PROJECT_BRIEF_FILENAME,
   type MemoryCategory,
 } from "./persistent-memory";
 
@@ -272,9 +276,9 @@ export function makeMemoryTools(projectWorkdir: string) {
   return {
     searchMemory: tool({
       description:
-        "Search your persistent memory for relevant context. Use this to recall " +
-        "past decisions, conventions, workflows, and previous activity. Returns " +
-        "semantically similar memory chunks ranked by relevance.",
+        "Semantic search across your persistent memory (conventions, semantic memory, " +
+        "procedures, episodic logs). Use this to find relevant past knowledge before " +
+        "planning or making decisions. Returns ranked results by relevance to the query.",
       parameters: z.object({
         query: z.string().describe("What to search for in memory (natural language)"),
         top_k: z.number().optional().describe("Number of results to return (default: 5)"),
@@ -290,15 +294,50 @@ export function makeMemoryTools(projectWorkdir: string) {
       },
     }),
 
+    updateProjectBrief: tool({
+      description:
+        "Maintain the PROJECT BRIEF — the single document that is ALWAYS injected into " +
+        "every agent's context. This is the project's identity card: what it is, what " +
+        "it's built with, the most critical rules and patterns. Keep it under ~3000 " +
+        "characters — it should be scannable in a few seconds. Update it in-place when " +
+        "fundamentals change. Do NOT use this for status updates, learnings, or detailed " +
+        "specs — those go in semantic memory or conventions.\n\n" +
+        "Good content: tech stack, key architectural decisions, critical invariants " +
+        "(e.g. 'all currency math via Big.gd', 'no anti-aliasing on pixel art'), " +
+        "essential file/directory layout.\n\n" +
+        "Bad content: task lists, status, what was done yesterday, debug findings, " +
+        "specifications longer than a few lines.",
+      parameters: z.object({
+        content: z.string().describe("Full markdown content of the project brief (replaces existing)"),
+      }),
+      execute: async ({ content }) => {
+        const previous = readProjectBrief(projectWorkdir);
+        writeProjectBrief(projectWorkdir, content);
+        scheduleReindex(projectWorkdir);
+        const action = previous ? "Updated" : "Created";
+        const warning = content.length > 3000
+          ? ` ⚠️ Brief is ${content.length} chars — consider trimming to under 3000 for context efficiency.`
+          : "";
+        return `${action} PROJECT_BRIEF.md (${content.length} chars).${warning}`;
+      },
+    }),
+
     writeSemanticMemory: tool({
       description:
-        "Save a stable fact, preference, or piece of knowledge to long-term memory. " +
-        "Use this for things that are unlikely to change and should be remembered across " +
-        "sessions: project constraints, user preferences, architectural decisions, " +
-        "discovered patterns. Each file is a topic — update existing files rather than " +
-        "creating duplicates.",
+        "Save facts, learnings, status updates, and discoveries. This is the right place " +
+        "for things you want to remember but that should NOT be in every agent's context.\n\n" +
+        "Use this for:\n" +
+        "- Task completion notes and outcomes\n" +
+        "- Debug findings and root cause analyses\n" +
+        "- Milestone status and progress notes\n" +
+        "- User preferences and feedback patterns\n" +
+        "- Discovered patterns and behaviors\n" +
+        "- Architectural decisions worth recalling\n\n" +
+        "These files are surfaced via semantic search when relevant to the current task. " +
+        "Write freely — the search system handles relevance. Update existing files in " +
+        "place rather than creating new ones for the same topic.",
       parameters: z.object({
-        filename: z.string().describe("Filename (e.g. 'tech-stack.md', 'user-preferences.md'). Must end in .md"),
+        filename: z.string().describe("Descriptive filename (e.g. 'currency-manager-bug-fix.md', 'milestone-2-status.md'). Must end in .md"),
         content: z.string().describe("Markdown content to write"),
       }),
       execute: async ({ filename, content }) => {
@@ -314,16 +353,32 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     writeConvention: tool({
       description:
-        "Save a project convention, style rule, or standard. Use this for rules that " +
-        "all agents and tasks should follow: coding conventions, naming patterns, " +
-        "art style guidelines, commit message formats. These are injected into every " +
-        "planning context with highest priority.",
+        "Save detailed project knowledge: specifications, style guides, and reference " +
+        "material. Each convention is a focused document covering ONE topic in depth.\n\n" +
+        "Conventions are NOT all loaded at once — they are surfaced via semantic search " +
+        "when relevant to a task. Name files specifically so search can find them: " +
+        "`currency-manager-spec.md`, `art-guidelines.md`, `gdscript-naming.md`. " +
+        "Generic names like `notes.md` or `status.md` won't be found.\n\n" +
+        "Use this for KNOWLEDGE that an agent needs when working on a specific area:\n" +
+        "- System/module specifications\n" +
+        "- Style guides (code, art, naming, formatting)\n" +
+        "- File/schema/format definitions\n" +
+        "- Detailed reference material for a specific domain\n\n" +
+        "Do NOT use this for status updates, completion notes, debug findings, or " +
+        "transient state — those belong in semantic memory. If you find yourself writing " +
+        "a 'convention' that describes the past rather than how things should be, it's " +
+        "semantic memory.\n\n" +
+        "There is a separate `updateProjectBrief` tool for the always-injected project " +
+        "identity document. Use that for project-level essentials.",
       parameters: z.object({
-        filename: z.string().describe("Filename (e.g. 'code-style.md', 'art-guidelines.md'). Must end in .md"),
+        filename: z.string().describe("Specific filename (e.g. 'currency-manager-spec.md', 'art-guidelines.md'). Must end in .md"),
         content: z.string().describe("Markdown content to write"),
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
+        if (fname === PROJECT_BRIEF_FILENAME) {
+          return `Use updateProjectBrief to maintain ${PROJECT_BRIEF_FILENAME}, not writeConvention.`;
+        }
         const fs = await import("fs");
         const dirPath = resolve(projectWorkdir, ".swe", "conventions");
         const filePath = resolve(dirPath, fname);
@@ -339,10 +394,12 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     writeProcedure: tool({
       description:
-        "Save a workflow or how-to guide. Use this for repeatable processes: " +
-        "how to add a new game, how to generate pixel art assets, how to set up " +
-        "a new system. Step-by-step instructions that can be followed by future " +
-        "planning sessions.",
+        "Save a step-by-step workflow or how-to guide. Use this for repeatable processes " +
+        "an agent might need to follow: how to add a new game, how to generate pixel art, " +
+        "how to set up a new system. Procedures are surfaced via semantic search when " +
+        "relevant — they are not all loaded at once.\n\n" +
+        "A procedure answers 'how do I do X?'. If the answer is 'follow this rule' or " +
+        "'these are the constraints', that's a convention, not a procedure.",
       parameters: z.object({
         filename: z.string().describe("Filename (e.g. 'adding-a-new-game.md'). Must end in .md"),
         content: z.string().describe("Markdown content with step-by-step instructions"),
@@ -360,12 +417,23 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     listMemories: tool({
       description:
-        "List all files in a memory category. Use this to see what memories exist " +
-        "before writing, to avoid duplicates.",
+        "List all files in a memory category. Use 'convention' to see all project " +
+        "conventions/specs, 'semantic' for facts and findings, 'procedural' for how-to " +
+        "guides, 'episodic' for daily activity logs. Check existing files before writing " +
+        "to avoid duplicates.",
       parameters: z.object({
-        category: z.enum(["semantic", "procedural", "episodic"]).describe("Which memory category to list"),
+        category: z.enum(["convention", "semantic", "procedural", "episodic"]).describe("Which category to list"),
       }),
       execute: async ({ category }) => {
+        if (category === "convention") {
+          const entries = readConventions(projectWorkdir);
+          if (entries.length === 0) {
+            return "No convention files. (PROJECT_BRIEF.md is managed separately via updateProjectBrief.)";
+          }
+          return entries
+            .map(e => `- **${e.filename}** (updated: ${e.updatedAt.toISOString().slice(0, 10)})`)
+            .join("\n");
+        }
         const entries = readMemoryCategory(projectWorkdir, category as MemoryCategory);
         if (entries.length === 0) {
           return `No files in ${category} memory.`;
@@ -378,13 +446,27 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     readMemoryFile: tool({
       description:
-        "Read a specific memory file by category and filename. Use this to check " +
-        "existing content before updating a memory.",
+        "Read a specific memory file by category and filename. Use 'convention' to read " +
+        "convention files (or 'PROJECT_BRIEF' to read the project brief). Use this to " +
+        "check existing content before updating.",
       parameters: z.object({
-        category: z.enum(["semantic", "procedural", "episodic"]).describe("Memory category"),
-        filename: z.string().describe("Filename to read (e.g. 'tech-stack.md')"),
+        category: z.enum(["convention", "semantic", "procedural", "episodic"]).describe("Memory category"),
+        filename: z.string().describe("Filename to read (e.g. 'tech-stack.md', 'PROJECT_BRIEF.md')"),
       }),
       execute: async ({ category, filename }) => {
+        if (category === "convention") {
+          const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
+          if (fname === PROJECT_BRIEF_FILENAME) {
+            const brief = readProjectBrief(projectWorkdir);
+            return brief ?? `${PROJECT_BRIEF_FILENAME} does not exist yet.`;
+          }
+          const fs = await import("fs");
+          const filePath = resolve(projectWorkdir, ".swe", "conventions", fname);
+          if (!fs.existsSync(filePath)) {
+            return `File not found: convention/${fname}`;
+          }
+          return fs.readFileSync(filePath, "utf-8");
+        }
         const content = readMemory(projectWorkdir, category as MemoryCategory, filename);
         if (!content) {
           return `File not found: ${category}/${filename}`;

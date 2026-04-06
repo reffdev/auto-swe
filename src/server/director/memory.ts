@@ -11,8 +11,8 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, Project } from "../db";
 import { gatherProjectContext } from "../pipeline/nodes";
-import { readConventions, readMemoryCategory } from "./persistent-memory";
 import { searchMemories, isMemsearchAvailable } from "./memsearch";
+import { getMemoryContext, formatMemoryContext } from "./memory-context";
 import { getStyleLock } from "./style-lock";
 
 // ─── Progress JSON ──────────────────────────────────────────────────────────
@@ -171,31 +171,28 @@ export async function assembleDirectorContext(
     parts.push("# Art Style\n\n**Not established.** No style reference locked for this project. A style_exploration task should be created before generating production art assets.");
   }
 
-  // 8. Persistent memory
-  // Conventions always included (they're project rules)
-  const conventions = readConventions(project.workdir);
-  if (conventions.length > 0) {
-    const convText = conventions
-      .map(e => `### ${e.filename.replace(".md", "")}\n${e.content}`)
-      .join("\n\n");
-    parts.push("# Conventions\n\n" + convText);
-  }
-
-  // Procedural workflows always included (they're small and high-value)
-  const procedural = readMemoryCategory(project.workdir, "procedural");
-  if (procedural.length > 0) {
-    const procText = procedural
-      .map(e => `### ${e.filename.replace(".md", "")}\n${e.content}`)
-      .join("\n\n");
-    parts.push("# Workflows\n\n" + procText);
-  }
-
-  // Semantic + episodic: search for relevant memories instead of dumping everything
+  // 8. Persistent memory — project brief always, conventions retrieved by relevance
   const searchQuery = buildMemorySearchQuery(directive, activeMilestone);
-  if (searchQuery) {
+  const memoryCtx = await getMemoryContext(project.workdir, {
+    query: searchQuery ?? undefined,
+    budget: 30_000, // Director planning has a larger budget than per-task execution
+    topK: 10,
+  });
+  const memoryText = formatMemoryContext(memoryCtx);
+  if (memoryText) {
+    parts.push(memoryText);
+  }
+
+  // Semantic + episodic memories (separate from conventions): search for relevant ones
+  // Note: convention results are filtered out by getMemoryContext above; this surfaces
+  // semantic/procedural/episodic results from the same query.
+  if (searchQuery && isMemsearchAvailable()) {
     const results = await searchMemories(project.workdir, searchQuery, 10);
-    if (results.length > 0) {
-      const memText = results
+    const nonConvResults = results.filter(r =>
+      !r.source || !r.source.includes("/conventions/")
+    );
+    if (nonConvResults.length > 0) {
+      const memText = nonConvResults
         .map((r, i) => `${i + 1}. ${r.source ? `[${r.source}] ` : ""}${r.content}`)
         .join("\n\n");
       parts.push("# Relevant Memories\n\n" + memText);

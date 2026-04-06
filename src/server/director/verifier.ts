@@ -20,6 +20,7 @@ import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
 import { selectPlannerMachine } from "../planner-llm";
+import { readProjectBrief } from "./persistent-memory";
 
 export interface VerificationResult {
   verdict: "pass" | "fail" | "escalate";
@@ -53,9 +54,14 @@ export async function verifyTask(
   const gitDiff = getTaskBranchDiff(workdir, task, project) ?? "(no diff available)";
   const supplementalFiles = getSupplementalFileContents(workdir, task, gitDiff);
 
-  // Read project conventions
+  // Read project conventions: CLAUDE.md (human-curated repo file) + project brief (LLM-managed)
   const claudeMdPath = resolve(workdir, "CLAUDE.md");
-  const conventions = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, "utf-8") : undefined;
+  const claudeMd = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, "utf-8") : null;
+  const projectBrief = readProjectBrief(project.workdir);
+  const conventionParts: string[] = [];
+  if (claudeMd) conventionParts.push(claudeMd);
+  if (projectBrief) conventionParts.push("## Project Brief\n\n" + projectBrief);
+  const conventions = conventionParts.length > 0 ? conventionParts.join("\n\n---\n\n") : undefined;
 
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];

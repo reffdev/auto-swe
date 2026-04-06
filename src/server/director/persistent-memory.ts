@@ -70,6 +70,11 @@ export function ensureMemoryDirs(projectWorkdir: string): void {
       if (content) writeFileSync(aboutPath, content);
     }
   }
+  // Seed conventions/ root with ABOUT.md so the convention category is documented
+  const convAboutPath = resolve(projectWorkdir, SWE_ROOT, "conventions", "ABOUT.md");
+  if (!existsSync(convAboutPath)) {
+    writeFileSync(convAboutPath, ABOUT_CONTENT.conventions);
+  }
   pruneEpisodicLogs(projectWorkdir);
   ensureGitignore(projectWorkdir);
 }
@@ -208,22 +213,28 @@ are too vague"), extract them into a semantic memory instead of keeping the raw 
 
   semantic: `# Semantic Memory
 
-Stable knowledge base — facts, preferences, and learned information that persists across sessions.
+Facts, learnings, status updates, and discoveries. Use this for anything you want to
+remember but does NOT need to be in every task's context.
 
-## What goes here
-- Project-specific knowledge discovered during work
+This is the right place for:
+- Task completion notes and outcomes
+- Debug findings and root causes
+- Milestone status updates
 - User preferences and feedback patterns
-- Technical constraints and capabilities
-- Relationships between systems
+- Discovered patterns and behaviors
+- Architectural decisions worth recalling
+- Things you learned that didn't make it into the project brief or a convention
+
+These files are NOT injected into agent prompts directly. They are surfaced via
+semantic search when relevant to the current task or planning context. Write freely —
+the search system will find what's relevant when it's needed.
 
 ## Example files
 
-**\`tech-stack.md\`**
+**\`tech-stack-history.md\`**
 \`\`\`markdown
-- Engine: Godot 4.4, GDScript only
-- Target: Steam, Windows/Linux
-- Art style: 64x64 pixel art, limited palette
-- Audio: Stable Audio Open for SFX
+- Originally tried Bevy, switched to Godot for faster iteration
+- Considered Aseprite for art but standardized on FLUX-generated pixel sprites
 \`\`\`
 
 **\`user-preferences.md\`**
@@ -233,28 +244,37 @@ Stable knowledge base — facts, preferences, and learned information that persi
 - Art review: prioritizes style consistency over individual quality
 \`\`\`
 
-**\`architecture-notes.md\`**
+**\`currency-manager-bug-2026-04.md\`**
 \`\`\`markdown
-- CurrencyManager must emit signals, never direct calls
-- All upgrades are .tres resources, not hardcoded
-- Prestige system resets currencies but preserves achievements
+- Big.gd serialization broke when prestige multiplier exceeded 1e308
+- Root cause: float overflow before conversion to Big
+- Fixed by deferring conversion until after threshold check
 \`\`\`
 
-Add files here when you discover stable facts worth remembering.
+**\`milestone-2-completion.md\`**
+\`\`\`markdown
+- Completed CurrencyManager + Data Resources milestone on 2026-04-06
+- All tests passing, PR #25-27 merged
+- Discovered: GUT 9.4 needs explicit -gtest path for test discovery
+\`\`\`
 
 ## Pruning
 
-Semantic memories are not auto-pruned — they represent stable knowledge. Remove or
-update entries manually when they become outdated. If a file grows too large, split
-it into focused topics.
+Semantic memories are not auto-pruned. Remove or update entries manually when they
+become misleading. Outdated facts that contradict current state should be deleted —
+search results that surface stale information are worse than nothing.
 `,
 
   procedural: `# Procedural Memory
 
-Workflows, how-to guides, and repeatable processes. These describe *how* to do things.
+Step-by-step workflows and how-to guides. These describe *how* to do something
+repeatable, in enough detail that an agent could follow the steps without context.
+
+These files are NOT injected into agent prompts. They are surfaced via semantic
+search when relevant to the current task or planning context.
 
 ## What goes here
-- Step-by-step procedures for common tasks
+- Step-by-step procedures for common project operations
 - Workflow templates the Director follows
 - Build/deploy/test recipes
 - Asset pipeline instructions
@@ -280,7 +300,48 @@ Workflows, how-to guides, and repeatable processes. These describe *how* to do t
 5. If rejected: specify exact colors or reference existing sprites
 \`\`\`
 
-Add files here to teach the Director repeatable processes.
+A procedure should answer "how do I do X?". If the answer is "follow this rule" or
+"these are the constraints", that's a convention, not a procedure.
+`,
+
+  conventions: `# Conventions
+
+Detailed project knowledge, specifications, and guidelines. Each file is a focused
+document covering ONE topic in depth.
+
+These files are NOT all loaded at once. They are surfaced via semantic search when
+relevant to a task or planning context. An agent working on the CurrencyManager will
+see \`currency-manager-spec.md\` retrieved automatically; an agent working on art
+generation will see \`art-guidelines.md\` retrieved automatically.
+
+Conventions are for KNOWLEDGE. Status, progress, debug findings, and learnings go in
+**semantic memory** instead.
+
+## What goes here
+- Specifications for systems, modules, features
+- Style guides (code, art, naming, formatting)
+- Format definitions (file structures, schemas, configs)
+- Detailed reference material that agents need when working on a specific area
+
+## What does NOT go here
+- "Status updates" (semantic memory)
+- "Task completed" notes (semantic memory or just let episodic logs handle it)
+- "Debug findings" (semantic memory)
+- "Milestone complete" notes (semantic memory)
+- Anything that's about THE PAST rather than HOW THINGS SHOULD BE
+
+## Naming
+Name files specifically so search can find them. \`currency-manager-spec.md\` is much
+better than \`spec.md\` or \`status-1.md\`. The filename is part of the search signal.
+
+## Project Brief
+
+There is a special file in this directory: **PROJECT_BRIEF.md**. It is the ONE
+convention that is always injected into every agent context. Keep it small (under
+~3000 chars). It captures the essential project identity: tech stack, key
+architectural decisions, critical rules. Update it in-place — don't append.
+
+Use \`updateProjectBrief\` to maintain it. Use \`writeConvention\` for everything else.
 `,
 
   snapshots: `# Snapshots
@@ -368,12 +429,18 @@ export function readMemory(projectWorkdir: string, category: MemoryCategory, fil
 /**
  * Read all convention files (top-level markdown in conventions/).
  */
+/** The single always-injected "project identity" file. Stored alongside conventions. */
+export const PROJECT_BRIEF_FILENAME = "PROJECT_BRIEF.md";
+
 export function readConventions(projectWorkdir: string): MemoryEntry[] {
   const dirPath = resolve(projectWorkdir, SWE_ROOT, "conventions");
   if (!existsSync(dirPath)) return [];
 
   try {
-    const files = readdirSync(dirPath).filter(f => f.endsWith(".md"));
+    // Exclude PROJECT_BRIEF.md (own dedicated read path) and ABOUT.md (category doc)
+    const files = readdirSync(dirPath).filter(f =>
+      f.endsWith(".md") && f !== PROJECT_BRIEF_FILENAME && f !== "ABOUT.md"
+    );
     return files.map(filename => {
       const filePath = resolve(dirPath, filename);
       try {
@@ -387,6 +454,30 @@ export function readConventions(projectWorkdir: string): MemoryEntry[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Read the project brief — a single compact identity document always injected
+ * into every agent context (Director and Foreman). Returns null if not yet created.
+ */
+export function readProjectBrief(projectWorkdir: string): string | null {
+  const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", PROJECT_BRIEF_FILENAME);
+  if (!existsSync(filePath)) return null;
+  try {
+    return readFileSync(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write/replace the project brief. Always overwrites — the brief is meant to be
+ * maintained in-place, not appended to.
+ */
+export function writeProjectBrief(projectWorkdir: string, content: string): void {
+  ensureMemoryDirs(projectWorkdir);
+  const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", PROJECT_BRIEF_FILENAME);
+  writeFileSync(filePath, content);
 }
 
 // ─── Writing ────────────────────────────────────────────────────────────────

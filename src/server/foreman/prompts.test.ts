@@ -23,25 +23,27 @@ describe("buildForemanSystemPrompt", () => {
     expect(prompt).toContain("engine/data/currency_def.gd");
   });
 
-  it("includes code conventions when provided", () => {
+  it("includes memory context when provided", () => {
     const prompt = buildForemanSystemPrompt({
       projectName: "test",
       projectWorkdir: "/tmp",
       taskType: "code",
       targetFiles: [],
-      codeConventions: "Use snake_case for variables",
+      memoryContext: "## Project Brief\n\nUse snake_case for variables",
     });
     expect(prompt).toContain("snake_case");
+    expect(prompt).toContain("Project Brief");
   });
 
-  it("omits conventions section when not provided", () => {
+  it("omits memory section when not provided", () => {
     const prompt = buildForemanSystemPrompt({
       projectName: "test",
       projectWorkdir: "/tmp",
       taskType: "code",
       targetFiles: [],
     });
-    expect(prompt).not.toContain("Code conventions:");
+    expect(prompt).not.toContain("Project Brief");
+    expect(prompt).not.toContain("Available Conventions");
   });
 });
 

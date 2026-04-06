@@ -7,7 +7,11 @@ export function buildForemanSystemPrompt(opts: {
   projectWorkdir: string;
   taskType: string;
   targetFiles: string[];
-  codeConventions?: string;
+  /**
+   * Pre-formatted memory context: project brief + relevant conventions + index
+   * of available conventions. Already markdown-formatted by formatMemoryContext().
+   */
+  memoryContext?: string;
   designDoc?: string;
   milestoneContext?: string;
   directiveText?: string;
@@ -45,8 +49,8 @@ export function buildForemanSystemPrompt(opts: {
     parts.push("", "Target files to create/modify:", ...opts.targetFiles.map(f => `  - ${f}`));
   }
 
-  if (opts.codeConventions) {
-    parts.push("", "## Code Conventions", "", opts.codeConventions);
+  if (opts.memoryContext) {
+    parts.push("", opts.memoryContext);
   }
 
   return parts.join("\n");

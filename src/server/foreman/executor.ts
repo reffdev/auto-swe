@@ -27,7 +27,7 @@ import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
 import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
-import { getMemoryContext } from "../director/memory-context";
+import { getMemoryContext, formatMemoryContext } from "../director/memory-context";
 import { prepareColocatedMachine } from "../machine-manager";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
@@ -118,8 +118,18 @@ export async function executeForemanTask(
     const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
     // Build prompts — include directive/milestone context so the implementer
-    // understands the broader project architecture and conventions
-    const { conventionText } = getMemoryContext(project.workdir);
+    // understands the broader project architecture and conventions.
+    //
+    // Memory context: always inject the project brief, plus conventions retrieved
+    // by relevance via memsearch. The query combines task title/description/files so
+    // search surfaces conventions relevant to THIS task instead of dumping everything.
+    const memoryQuery = [
+      task.title,
+      task.description,
+      ...targetFiles,
+    ].filter(Boolean).join(" ");
+    const memoryContext = await getMemoryContext(project.workdir, { query: memoryQuery });
+    const memoryText = formatMemoryContext(memoryContext);
 
     let designDoc: string | undefined;
     let milestoneContext: string | undefined;
@@ -151,7 +161,7 @@ export async function executeForemanTask(
       projectWorkdir: worktreePath,
       taskType: task.type,
       targetFiles,
-      codeConventions: conventionText || undefined,
+      memoryContext: memoryText || undefined,
       designDoc,
       milestoneContext,
       directiveText,
@@ -218,7 +228,7 @@ export async function executeForemanTask(
       rebaseResetContext,
     });
 
-    console.log(`[executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars), warming up model...`);
+    console.log(`[executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars) — directive=${directiveText?.length ?? 0}, designDoc=${designDoc?.length ?? 0}, milestone=${milestoneContext?.length ?? 0}, brief=${memoryContext.brief?.length ?? 0}, retrievedConventions=${memoryContext.retrievedConventions.length}, searchUsed=${memoryContext.searchUsed} — warming up model...`);
     // Ensure the model is loaded before sending requests
     await warmUpModel(machine, modelId);
 
