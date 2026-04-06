@@ -40,13 +40,9 @@ function extractHost(baseUrl: string): string | null {
  * Only applies to GPU-sharing types (inference, comfyui). NPU machines are never
  * blocked by colocation since they use a separate chip.
  *
- * Same-type colocation (e.g. two inference machines on the same host) is always
- * blocked — they'd compete for the same VRAM simultaneously.
- *
- * Cross-type colocation (inference ↔ comfyui) is allowed because
- * releaseColocatedMachines() will free the other machine's VRAM before work
- * starts. This prevents deadlocks where ComfyUI can never run because inference
- * always has active leases on the shared host.
+ * Blocks when any colocated GPU machine has active leases — they share VRAM
+ * and can't run simultaneously. The scheduler handles fairness via a yield
+ * mechanism so both types get turns on the shared host.
  */
 function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): boolean {
   // NPU never participates in GPU colocation blocking
@@ -66,11 +62,7 @@ function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): 
   for (const other of colocated) {
     const otherLeases = activeLeases.get(other.id) ?? [];
     if (otherLeases.length > 0) {
-      // Same type → block (can't run two inference servers simultaneously)
-      // Cross type → allow (releaseColocatedMachines will free VRAM before use)
-      if (other.machine_type === machine.machine_type) {
-        return true;
-      }
+      return true;
     }
   }
 
@@ -309,9 +301,22 @@ export function getLeasedMachineIds(consumer?: LeaseConsumer): string[] {
 }
 
 /**
- * Run a function with a machine lease. Automatically acquires and releases.
- * Returns null if no machine is available.
+ * Get the GPU-sharing machine types colocated with a given machine (same host, different type).
+ * Used by the scheduler to implement round-robin yield on shared GPU hosts.
  */
+export function getColocatedGpuTypes(machine: Machine, allMachines: Machine[]): string[] {
+  if (!GPU_SHARING_TYPES.has(machine.machine_type)) return [];
+  const host = extractHost(machine.base_url);
+  if (!host) return [];
+  const types = new Set<string>();
+  for (const m of allMachines) {
+    if (m.id !== machine.id && GPU_SHARING_TYPES.has(m.machine_type) && extractHost(m.base_url) === host) {
+      types.add(m.machine_type);
+    }
+  }
+  return [...types];
+}
+
 /**
  * Prepare a machine for use by releasing colocated GPU resources.
  * Call this after acquireLease and before starting work.

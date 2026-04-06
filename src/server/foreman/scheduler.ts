@@ -9,7 +9,7 @@
 import type { Db } from "../db";
 import { resolveModel, sortByModelAffinity } from "./routing";
 import { executeForemanTask, cancelForemanTask, unregisterActiveTask } from "./executor";
-import { acquireLease, releaseLease, type MachineLease } from "../machine-manager";
+import { acquireLease, releaseLease, getColocatedGpuTypes, type MachineLease } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
 import { canForemanDispatch } from "../orchestrator";
 import { isStyleLocked } from "../director/style-lock";
@@ -32,6 +32,14 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
  * machine config changed).
  */
 const exhaustedMachineTypes = new Set<string>();
+
+/**
+ * Colocated GPU yield: when a task completes on a colocated host and there are
+ * queued tasks of the other GPU type, the completing type yields for one tick.
+ * This ensures round-robin between inference ↔ comfyui on shared GPU hosts
+ * instead of one type starving the other.
+ */
+const colocatedYield = new Set<string>();
 
 /** Check if code tasks should be blocked pending art style lock. */
 function styleGateActive(db: Db, project: import("../db").Project): boolean {
@@ -70,6 +78,7 @@ export function startForemanScheduler(db: Db): void {
 export function stopForemanScheduler(): void {
   schedulerDb = null;
   exhaustedMachineTypes.clear();
+  colocatedYield.clear();
   if (retryTimer) {
     clearTimeout(retryTimer);
     retryTimer = null;
@@ -150,6 +159,8 @@ async function schedulerTick(db: Db): Promise<void> {
       const route = resolveModel(candidate);
       // Skip machine types we already know are at capacity this tick
       if (exhaustedMachineTypes.has(route.machineType)) continue;
+      // Colocated yield: skip types that should yield to their colocated partner
+      if (colocatedYield.has(route.machineType)) continue;
       const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
       if (result) {
         // acquireLease already excludes Director-reserved machines for "foreman" consumer
@@ -159,6 +170,23 @@ async function schedulerTick(db: Db): Promise<void> {
       }
       // Mark this machine type as exhausted so we don't retry (and log) for every remaining task
       exhaustedMachineTypes.add(route.machineType);
+    }
+
+    // If nothing dispatched due to yield, clear yield and retry without it
+    // (the colocated type may not have any ready tasks after all)
+    if (!task && !leaseResult && colocatedYield.size > 0) {
+      colocatedYield.clear();
+      for (const candidate of sorted) {
+        const route = resolveModel(candidate);
+        if (exhaustedMachineTypes.has(route.machineType)) continue;
+        const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
+        if (result) {
+          task = candidate;
+          leaseResult = result;
+          break;
+        }
+        exhaustedMachineTypes.add(route.machineType);
+      }
     }
     if (!task || !leaseResult) break; // no dispatchable task+machine pair
 
@@ -190,13 +218,30 @@ async function schedulerTick(db: Db): Promise<void> {
         const resolved = task.resolved_model;
         if (resolved) lastOllamaModel = resolved;
 
-        // Capacity freed — clear exhaustion for this machine type and nudge
+        // Capacity freed — clear exhaustion for this machine type
         exhaustedMachineTypes.delete(machine.machine_type);
+
+        // Colocated yield: if there are queued tasks for the colocated GPU type,
+        // yield this type for one tick so the other type gets a turn
+        const colocatedTypes = getColocatedGpuTypes(machine, db.getMachines());
+        if (colocatedTypes.length > 0) {
+          const ready = db.getForemanTasksReadyToRun();
+          for (const ct of colocatedTypes) {
+            if (ready.some(t => resolveModel(t).machineType === ct)) {
+              colocatedYield.add(machine.machine_type);
+              break;
+            }
+          }
+        }
+
         nudgeForeman(db);
       });
 
     dispatched++;
   }
+
+  // Clear yield after dispatch loop — it's been consumed (or wasn't applicable)
+  colocatedYield.clear();
 
   if (dispatched === 0) {
     // Nothing dispatched — schedule a wake-up for the nearest retry backoff
