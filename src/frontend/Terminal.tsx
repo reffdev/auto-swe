@@ -14,7 +14,8 @@ interface TermSession {
   ws: WebSocket | null
   term: XTerm
   fit: FitAddon
-  buffer: string  // accumulated output for replay on reattach
+  /** True once the server's session buffer has been written to xterm. */
+  bufferReplayed: boolean
   onDataDisposable: { dispose(): void } | null  // prevent duplicate listeners
 }
 
@@ -40,7 +41,7 @@ function getOrCreateSession(projectId: string): TermSession {
   const fit = new FitAddon()
   term.loadAddon(fit)
 
-  const session: TermSession = { projectId, ws: null, term, fit, buffer: '', onDataDisposable: null }
+  const session: TermSession = { projectId, ws: null, term, fit, bufferReplayed: false, onDataDisposable: null }
   sessions.set(projectId, session)
   return session
 }
@@ -48,6 +49,10 @@ function getOrCreateSession(projectId: string): TermSession {
 function destroySession(projectId: string): void {
   const session = sessions.get(projectId)
   if (!session) return
+  // Tell the server to kill the persistent PTY before tearing down the local session.
+  if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+    try { session.ws.send(JSON.stringify({ type: 'kill' })) } catch {}
+  }
   if (session.ws) { session.ws.close(); session.ws = null }
   session.term.dispose()
   sessions.delete(projectId)
@@ -112,9 +117,19 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
       try {
         const msg = JSON.parse(event.data)
         switch (msg.type) {
+          case 'buffer':
+            // Server-side session buffer replay. Only apply once per local session
+            // (after page reload or new tab); skip on reconnect within the same SPA
+            // session because xterm already has the content.
+            if (!session.bufferReplayed) {
+              session.term.reset()
+              if (msg.data) session.term.write(msg.data)
+              session.bufferReplayed = true
+            }
+            break
           case 'output':
             session.term.write(msg.data)
-            session.buffer += msg.data
+            session.bufferReplayed = true
             break
           case 'exit':
             session.term.write(`\r\n\x1b[90m[Process exited with code ${msg.code}]\x1b[0m\r\n`)
@@ -131,7 +146,7 @@ export function TerminalView({ projectId, onBack }: { projectId: string; onBack:
         }
       } catch {
         session.term.write(event.data)
-        session.buffer += event.data
+        session.bufferReplayed = true
       }
     }
 
