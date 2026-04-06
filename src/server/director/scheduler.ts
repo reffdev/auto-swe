@@ -758,8 +758,10 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
         if (result.context) addKeyDecision(db, directive, result.context);
         if (review.task_id) {
           const task = db.getForemanTask(review.task_id);
-          if (task && !isComfyUITaskType(task.type)) {
-            await createAndMergePR(db, task, project, `Approved by human reviewer`);
+          if (task) {
+            if (!isComfyUITaskType(task.type)) {
+              await createAndMergePR(db, task, project, `Approved by human reviewer`);
+            }
             await completeVerifiedTask(db, task, project, 1.0);
           }
         }
