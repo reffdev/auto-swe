@@ -13,7 +13,7 @@
 import { resolve } from "path";
 
 import type { Db, DirectorDirective, ForemanTask, Project } from "../db";
-import { removeWorktree, mergePullRequest, createPullRequest } from "../git";
+import { removeWorktree, mergePullRequest, createPullRequest, rebaseAndPush } from "../git";
 import { verifyTask, verifyMilestone } from "./verifier";
 import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
@@ -82,9 +82,16 @@ async function createAndMergePR(db: Db, task: ForemanTask, project: Project, mer
       }
     }
 
-    // Merge the PR
+    // Merge the PR — if it fails (e.g., merge conflict from other PRs), rebase and retry
     if (prNumber) {
-      const merged = await mergePullRequest(project, prNumber, mergeMessage);
+      let merged = await mergePullRequest(project, prNumber, mergeMessage);
+      if (!merged && task.git_worktree && task.git_branch) {
+        console.log(`Director: merge failed for PR #${prNumber}, attempting rebase for "${task.title}"`);
+        const rebased = await rebaseAndPush(project.workdir, task.git_worktree, task.git_branch);
+        if (rebased) {
+          merged = await mergePullRequest(project, prNumber, mergeMessage);
+        }
+      }
       if (merged) {
         console.log(`Director: merged PR #${prNumber} for "${task.title}"`);
       } else {

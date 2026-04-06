@@ -375,6 +375,44 @@ export async function commitAll(
   }
 }
 
+/**
+ * Rebase a worktree branch onto the latest origin default branch and force-push.
+ * Returns true if successful, false if conflicts or errors.
+ */
+export async function rebaseAndPush(
+  mainWorkdir: string,
+  worktreePath: string,
+  branch: string,
+): Promise<boolean> {
+  try {
+    await git("fetch origin", mainWorkdir);
+
+    // Detect default branch
+    let defaultBranch = "main";
+    try {
+      defaultBranch = (await git("rev-parse --abbrev-ref origin/HEAD", mainWorkdir)).trim().replace("origin/", "");
+    } catch {
+      try {
+        const remoteInfo = await git("remote show origin", mainWorkdir);
+        const headMatch = remoteInfo.match(/HEAD branch:\s*(\S+)/);
+        if (headMatch) defaultBranch = headMatch[1];
+      } catch { /* use "main" default */ }
+    }
+
+    await git(`rebase origin/${defaultBranch}`, worktreePath);
+    const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
+    console.log(`Git: rebased ${branch} onto origin/${defaultBranch} @ ${hash}`);
+
+    await pushBranch(worktreePath, branch);
+    return true;
+  } catch (err) {
+    // Abort any in-progress rebase
+    try { await git("rebase --abort", worktreePath); } catch { /* already aborted */ }
+    console.warn(`Git: rebase failed for ${branch}:`, err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
 export async function pushBranch(
   worktreePath: string,
   branch: string
