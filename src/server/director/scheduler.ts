@@ -464,6 +464,14 @@ async function escalateForHumanReview(
       task_id: task.id, git_branch: updated.git_branch, git_pr_url: updated.git_pr_url, git_pr_number: updated.git_pr_number,
     },
   });
+
+  // Transition the task out of "validating" so the UI reflects that auto-review is
+  // done and human attention is now required. Without this, the task shows as
+  // "auto review" in the dashboard while a pending review gate exists for it.
+  if (task.status !== "awaiting_review") {
+    db.updateForemanTask(task.id, { status: "awaiting_review" });
+  }
+
   console.log(`Director: escalated task "${task.title}" for human review${prUrl ? ` (PR: ${prUrl})` : ""}`);
 }
 
@@ -551,6 +559,10 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
           task_id: task.id, git_branch: updated.git_branch, git_pr_url: updated.git_pr_url, git_pr_number: updated.git_pr_number,
         },
       });
+      // Move out of "validating" so the UI reflects that human review is required
+      if (task.status !== "awaiting_review") {
+        db.updateForemanTask(task.id, { status: "awaiting_review" });
+      }
       console.log(`Director: escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
     }
   }
