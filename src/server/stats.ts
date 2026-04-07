@@ -163,11 +163,14 @@ async function collect(db: Db): Promise<void> {
   }
 
   if (active.length > 0) {
-    const avgPrompt = active.reduce((s, m) => s + m.promptTps, 0) / active.length;
-    const avgCompletion = active.reduce((s, m) => s + m.completionTps, 0) / active.length;
+    // Sum, not average — this is total parallel throughput across active machines.
+    // Averaging would dilute the number when only some machines are doing work
+    // (an idle machine reporting stale 0s would halve the displayed rate).
+    const totalPrompt = active.reduce((s, m) => s + m.promptTps, 0);
+    const totalCompletion = active.reduce((s, m) => s + m.completionTps, 0);
     cachedSpeed = {
-      prompt_tokens_per_sec: isFinite(avgPrompt) ? Math.round(avgPrompt * 10) / 10 : null,
-      completion_tokens_per_sec: isFinite(avgCompletion) ? Math.round(avgCompletion * 10) / 10 : null,
+      prompt_tokens_per_sec: isFinite(totalPrompt) ? Math.round(totalPrompt * 10) / 10 : null,
+      completion_tokens_per_sec: isFinite(totalCompletion) ? Math.round(totalCompletion * 10) / 10 : null,
     };
   } else {
     cachedSpeed = getSpeedFromDb(db);
