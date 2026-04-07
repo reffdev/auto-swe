@@ -231,7 +231,11 @@ function ModelRow({
     setDescription(model.description ?? '')
   }, [model.id, model.name, model.family, model.default_context_limit, model.description])
 
-  const enabledBindings = bindings.filter(b => b.enabled === 1)
+  // Truthy check matches the binding row's display in MachineDetail. Strict
+  // `=== 1` was previously used here and would mistakenly show "0 active
+  // bindings" if the API ever returned `true` instead of `1`, even though the
+  // binding visibly existed on the machine page.
+  const enabledBindings = bindings.filter(b => !!b.enabled)
   const archived = model.archived_at != null
 
   const dirty =

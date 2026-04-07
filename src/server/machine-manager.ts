@@ -71,7 +71,20 @@ function isBlockedByColocatedMachine(machine: Machine, allMachines: Machine[]): 
 
 /**
  * Call release_url on colocated GPU machines to free VRAM before starting work.
- * Fire-and-forget with a short timeout — don't block dispatch if the call fails.
+ *
+ * For ComfyUI specifically, the /free endpoint only sets a flag on the
+ * prompt queue — the actual unload happens inside PromptQueue.task_done()
+ * after the current prompt finishes. If the queue is idle when we call,
+ * the flag sits there until the next prompt. To verify the free actually
+ * happened, we poll /system_stats before and after, and log the VRAM
+ * delta. If VRAM didn't drop we surface a clear warning so the user can
+ * see exactly why warm-up is later 502'ing.
+ *
+ * For non-ComfyUI release endpoints (e.g. llama-swap's /api/models/unload)
+ * we capture the response status + body so a non-200 doesn't go silent.
+ *
+ * The whole thing is bounded by a per-machine timeout — we don't want a
+ * misbehaving release endpoint to block dispatch indefinitely.
  */
 async function releaseColocatedMachines(machine: Machine, allMachines: Machine[]): Promise<void> {
   if (!GPU_SHARING_TYPES.has(machine.machine_type)) return;
@@ -87,18 +100,160 @@ async function releaseColocatedMachines(machine: Machine, allMachines: Machine[]
   );
 
   for (const other of colocated) {
-    try {
-      console.log(`[machine-manager] releasing colocated ${other.machine_type} "${other.name || other.id}" via ${other.release_url}`);
-      await fetch(other.release_url!, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: other.machine_type === "comfyui"
-          ? JSON.stringify({ unload_models: true, free_memory: true })
-          : undefined,
-        signal: AbortSignal.timeout(10_000),
-      });
-    } catch (err) {
-      console.warn(`[machine-manager] failed to release ${other.name || other.id}: ${err instanceof Error ? err.message : err}`);
+    await releaseOneColocatedMachine(other);
+  }
+}
+
+interface ComfyVramSnapshot {
+  torchVramFree: number | null;
+  torchVramTotal: number | null;
+  vramFree: number | null;
+  vramTotal: number | null;
+}
+
+/** GET /system_stats and extract the torch VRAM numbers. Returns nulls on any failure. */
+async function fetchComfyVramStats(machine: Machine): Promise<ComfyVramSnapshot | null> {
+  let baseOrigin: string;
+  try {
+    baseOrigin = new URL(machine.base_url).origin;
+  } catch {
+    return null;
+  }
+
+  try {
+    const res = await fetch(`${baseOrigin}/system_stats`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { devices?: Array<{
+      torch_vram_free?: number;
+      torch_vram_total?: number;
+      vram_free?: number;
+      vram_total?: number;
+    }> };
+    // Sum across all GPUs (multi-GPU rigs); for single-GPU it's just the one entry.
+    let torchFree = 0, torchTotal = 0, vramFree = 0, vramTotal = 0;
+    let hadAny = false;
+    for (const dev of data.devices ?? []) {
+      if (typeof dev.torch_vram_free === "number") { torchFree += dev.torch_vram_free; hadAny = true; }
+      if (typeof dev.torch_vram_total === "number") torchTotal += dev.torch_vram_total;
+      if (typeof dev.vram_free === "number") vramFree += dev.vram_free;
+      if (typeof dev.vram_total === "number") vramTotal += dev.vram_total;
+    }
+    if (!hadAny) return null;
+    return {
+      torchVramFree: torchFree,
+      torchVramTotal: torchTotal || null,
+      vramFree: vramFree || null,
+      vramTotal: vramTotal || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Format a byte count as a human-readable GiB string. */
+function formatGiB(bytes: number | null): string {
+  if (bytes === null) return "?";
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)}GiB`;
+}
+
+/**
+ * Release one specific colocated machine and (for ComfyUI) verify the
+ * release actually freed VRAM. Logs are verbose enough that the user can
+ * tell exactly what happened.
+ */
+async function releaseOneColocatedMachine(other: Machine): Promise<void> {
+  const label = other.name || other.id;
+  const releaseUrl = other.release_url!;
+  const start = Date.now();
+
+  // Snapshot VRAM before for ComfyUI so we can compute the delta.
+  let beforeStats: ComfyVramSnapshot | null = null;
+  if (other.machine_type === "comfyui") {
+    beforeStats = await fetchComfyVramStats(other);
+    if (beforeStats) {
+      console.log(`[machine-manager] release "${label}": pre-release torch VRAM free ${formatGiB(beforeStats.torchVramFree)} / ${formatGiB(beforeStats.torchVramTotal)}`);
+    } else {
+      console.log(`[machine-manager] release "${label}": pre-release VRAM stats unavailable (will skip post-release verification)`);
+    }
+  }
+
+  // Issue the release POST. Capture status, response body (capped), and timing.
+  console.log(`[machine-manager] release "${label}" → POST ${releaseUrl}`);
+  let res: Response | null = null;
+  let networkErr: unknown = null;
+  try {
+    res = await fetch(releaseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: other.machine_type === "comfyui"
+        ? JSON.stringify({ unload_models: true, free_memory: true })
+        : undefined,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    networkErr = err;
+  }
+  const elapsed = Date.now() - start;
+
+  if (networkErr) {
+    console.warn(`[machine-manager] release "${label}" FAILED after ${elapsed}ms: ${networkErr instanceof Error ? networkErr.message : networkErr}`);
+    return;
+  }
+
+  if (!res) {
+    console.warn(`[machine-manager] release "${label}" FAILED after ${elapsed}ms: no response`);
+    return;
+  }
+
+  // Read response body (capped — some endpoints return large JSON).
+  let bodyPreview = "";
+  try {
+    const text = await res.text();
+    bodyPreview = text.length > 300 ? text.slice(0, 300) + "..." : text;
+  } catch { /* body unreadable */ }
+
+  if (res.ok) {
+    console.log(`[machine-manager] release "${label}" → ${res.status} (${elapsed}ms)${bodyPreview ? ` body: ${bodyPreview.replace(/\s+/g, " ")}` : ""}`);
+  } else {
+    console.warn(`[machine-manager] release "${label}" → HTTP ${res.status} (${elapsed}ms)${bodyPreview ? ` body: ${bodyPreview.replace(/\s+/g, " ")}` : ""}`);
+  }
+
+  // Post-release verification for ComfyUI.
+  //
+  // ComfyUI's /free only sets a flag on the prompt queue. If the queue is
+  // idle when we call, the flag may not actually trigger an unload. We poll
+  // /system_stats up to ~3 seconds after the release and log whether torch
+  // VRAM actually dropped. If it didn't, the user sees a clear warning.
+  const baselineFree = beforeStats?.torchVramFree ?? null;
+  if (other.machine_type === "comfyui" && baselineFree !== null) {
+    const VERIFY_POLL_ATTEMPTS = 6;
+    const VERIFY_POLL_INTERVAL_MS = 500;
+    const SIGNIFICANT_FREE_BYTES = 500 * 1024 * 1024; // 500 MiB delta = "actually freed something"
+
+    let afterStats: ComfyVramSnapshot | null = null;
+    let freed = false;
+    for (let i = 0; i < VERIFY_POLL_ATTEMPTS; i++) {
+      await new Promise(r => setTimeout(r, VERIFY_POLL_INTERVAL_MS));
+      afterStats = await fetchComfyVramStats(other);
+      if (!afterStats || afterStats.torchVramFree === null) continue;
+      const delta = afterStats.torchVramFree - baselineFree;
+      if (delta >= SIGNIFICANT_FREE_BYTES) {
+        freed = true;
+        console.log(`[machine-manager] release "${label}" verified: torch VRAM free went ${formatGiB(baselineFree)} → ${formatGiB(afterStats.torchVramFree)} (+${formatGiB(delta)}) after ${(i + 1) * VERIFY_POLL_INTERVAL_MS}ms`);
+        break;
+      }
+    }
+
+    if (!freed) {
+      const finalFree = afterStats?.torchVramFree ?? baselineFree;
+      console.warn(
+        `[machine-manager] release "${label}" returned ${res.status} but torch VRAM did NOT drop ` +
+        `(before: ${formatGiB(baselineFree)}, after: ${formatGiB(finalFree)} of ${formatGiB(beforeStats?.torchVramTotal ?? null)}). ` +
+        `ComfyUI's /free only sets a queue flag — if the queue was idle when called, the unload may not have happened. ` +
+        `Subsequent llama-swap warm-up will likely 502 until VRAM is actually freed (or the model fits alongside).`,
+      );
     }
   }
 }

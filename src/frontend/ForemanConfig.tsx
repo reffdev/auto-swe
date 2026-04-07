@@ -62,11 +62,14 @@ export function ForemanConfig() {
 
   // Compute the set of logical models that are actually dispatchable: must
   // have at least one enabled binding on an enabled inference machine.
+  // Truthy checks (instead of strict `=== 1`) so the picker stays consistent
+  // with how MachineDetail displays bindings — a model that's visibly bound
+  // on the machine page must also be selectable here.
   const inferenceModels = useMemo(() => {
-    const inferenceMachineIds = new Set(machines.filter(m => m.enabled === 1 && m.machine_type === 'inference').map(m => m.id))
+    const inferenceMachineIds = new Set(machines.filter(m => !!m.enabled && m.machine_type === 'inference').map(m => m.id))
     const liveModelIds = new Set<string>()
     for (const b of bindings) {
-      if (b.enabled === 1 && inferenceMachineIds.has(b.machine_id)) liveModelIds.add(b.model_id)
+      if (!!b.enabled && inferenceMachineIds.has(b.machine_id)) liveModelIds.add(b.model_id)
     }
     return models.filter(m => !m.archived_at && liveModelIds.has(m.id))
   }, [machines, bindings, models])
@@ -74,8 +77,8 @@ export function ForemanConfig() {
   // Machines that host the currently-selected Director model — used to populate the preferred-machine dropdown
   const directorHostMachines = useMemo(() => {
     if (!directorModelId) return [] as Machine[]
-    const machineIds = new Set(bindings.filter(b => b.enabled === 1 && b.model_id === directorModelId).map(b => b.machine_id))
-    return machines.filter(m => m.enabled === 1 && m.machine_type === 'inference' && machineIds.has(m.id))
+    const machineIds = new Set(bindings.filter(b => !!b.enabled && b.model_id === directorModelId).map(b => b.machine_id))
+    return machines.filter(m => !!m.enabled && m.machine_type === 'inference' && machineIds.has(m.id))
   }, [bindings, machines, directorModelId])
 
   const handleSave = async () => {
