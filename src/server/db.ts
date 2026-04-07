@@ -155,6 +155,7 @@ export class Db {
         next_retry_at TEXT,
         started_at TEXT, completed_at TEXT, duration_ms INTEGER,
         prompt_tokens INTEGER, completion_tokens INTEGER,
+        executor_notes TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         yaml_synced_at TEXT
       );
@@ -278,6 +279,7 @@ export class Db {
       "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
+      "ALTER TABLE foreman_tasks ADD COLUMN executor_notes TEXT",
       "ALTER TABLE machines ADD COLUMN release_url TEXT",
       // Legacy machine_models shape (text model_id, no provider_id, no enabled).
       // The logical-models refactor migration below upgrades this to its final shape.
@@ -640,6 +642,7 @@ export class Db {
           directive_id TEXT,
           milestone_id TEXT,
           verification_result TEXT,
+          executor_notes TEXT,
           knowledge_extracted INTEGER NOT NULL DEFAULT 0,
           comfyui_config TEXT,
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -652,9 +655,9 @@ export class Db {
           target_files, depends_on, acceptance_criteria, status, machine_id, resolved_model,
           retry_count, max_retries, error_message, git_branch, git_worktree, git_pr_url, git_pr_number,
           next_retry_at, started_at, completed_at, duration_ms, prompt_tokens, completion_tokens,
-          directive_id, milestone_id, verification_result, knowledge_extracted, comfyui_config,
+          directive_id, milestone_id, verification_result, executor_notes, knowledge_extracted, comfyui_config,
           created_at, yaml_synced_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       let orphanTasks = 0;
       for (const t of oldTasks) {
@@ -673,7 +676,7 @@ export class Db {
           t.target_files, t.depends_on, t.acceptance_criteria, t.status, t.machine_id, t.resolved_model,
           t.retry_count, t.max_retries, t.error_message, t.git_branch, t.git_worktree, t.git_pr_url, t.git_pr_number,
           t.next_retry_at, t.started_at, t.completed_at, t.duration_ms, t.prompt_tokens, t.completion_tokens,
-          t.directive_id, t.milestone_id, t.verification_result, t.knowledge_extracted, t.comfyui_config,
+          t.directive_id, t.milestone_id, t.verification_result, t.executor_notes ?? null, t.knowledge_extracted, t.comfyui_config,
           t.created_at, t.yaml_synced_at,
         );
       }

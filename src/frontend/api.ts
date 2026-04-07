@@ -495,6 +495,8 @@ export interface ForemanTask {
   directive_id: string | null;
   milestone_id: string | null;
   verification_result: string | null;
+  /** Executor-side observations surfaced for the verifier. Set when SubmitGuard escalates. */
+  executor_notes: string | null;
   comfyui_config: string | null;
   created_at: string;
   yaml_synced_at: string | null;

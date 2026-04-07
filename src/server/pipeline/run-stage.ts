@@ -62,6 +62,26 @@ export interface RunStageOpts {
    * and additionalMessages contain per-call instructions (not cached).
    */
   additionalMessages?: string[];
+  /**
+   * Optional callback fired for every tool call observed in onStep. Used by
+   * the foreman SubmitGuard to track which tools the agent uses (e.g.
+   * counting writes between submitResult attempts).
+   */
+  onToolCall?: (toolName: string) => void;
+}
+
+/**
+ * Thrown by runStage when the LLM stream ends with finishReason="tool-calls".
+ * This means the model wanted to call MORE tools but `maxSteps` was reached
+ * before it could — the agent never reached a natural stopping point and the
+ * partial output should NOT be treated as a successful completion. The
+ * executor catches this and triggers a fresh-context retry.
+ */
+export class StageStepLimitError extends Error {
+  constructor(public readonly stageName: string, public readonly stepCount: number) {
+    super(`${stageName}: agent exhausted ${stepCount} steps without finishing (finishReason=tool-calls). Will retry with fresh context.`);
+    this.name = "StageStepLimitError";
+  }
 }
 
 const MAX_COMPACTIONS = 3;
@@ -181,6 +201,17 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         tool: tc.toolName ?? "unknown",
         args: JSON.stringify(tc.args),
       }));
+      // Notify the SubmitGuard (or any other observer) of every tool call
+      // so it can track writes-between-submits, etc.
+      if (opts.onToolCall) {
+        for (const tc of toolCalls) {
+          if (tc.toolName) {
+            try { opts.onToolCall(tc.toolName); } catch (cbErr) {
+              console.warn(`runStage onToolCall error: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`);
+            }
+          }
+        }
+      }
     }
     const toolResults = step.toolResults as Array<{ toolName?: string; result?: unknown }> | undefined;
     if (toolResults?.length) {
@@ -349,6 +380,16 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         // Detect abnormal stream termination
         if (finishReason === "error" || finishReason === "unknown") {
           throw new Error(`LLM stream ended abnormally (finishReason: ${finishReason})`);
+        }
+
+        // finishReason === "tool-calls" means the model wanted to call MORE
+        // tools but maxSteps was hit. The agent never finished — its output
+        // is partial and should not be treated as a successful completion.
+        // Surface as a typed error so the executor can do a fresh-context retry.
+        // Skip this check if compaction or expansion was triggered mid-stream
+        // (those legitimately abort the stream and restart).
+        if (finishReason === "tool-calls" && !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected) {
+          throw new StageStepLimitError(stageName, steps.length);
         }
 
         return text || "(no output)";

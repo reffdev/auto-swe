@@ -267,6 +267,14 @@ export function buildVerificationPrompt(opts: {
   acceptanceCriteria: string[];
   gitDiff: string;
   projectConventions?: string;
+  /**
+   * Free-form notes from the executor about this run. Currently used by the
+   * SubmitGuard escalation path: when the agent's submit loop got stuck
+   * (repeat-same-failure or no-writes-between-submits), the executor commits
+   * the partial work and forwards the gate failure history here so the
+   * verifier can decide whether the gates were wrong or the work was wrong.
+   */
+  executorNotes?: string;
 }): { system: string; user: string } {
   const system = [
     "You are an independent code reviewer evaluating work produced by an automated coding agent.",
@@ -306,7 +314,7 @@ export function buildVerificationPrompt(opts: {
 
   const criteriaList = opts.acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join("\n");
 
-  const user = [
+  const userParts: string[] = [
     `# Task: ${opts.taskTitle}`,
     "",
     "## Description",
@@ -319,9 +327,37 @@ export function buildVerificationPrompt(opts: {
     "```diff",
     opts.gitDiff,
     "```",
+  ];
+
+  if (opts.executorNotes && opts.executorNotes.includes("[ESCALATED_TO_VERIFIER]")) {
+    userParts.push(
+      "",
+      "## ⚠ Executor flagged this run for review",
+      "",
+      "The Foreman executor's SubmitGuard detected that the agent got stuck during this run.",
+      "The agent's partial work was committed anyway so you can evaluate it. Two outcomes are common:",
+      "",
+      "1. **The gate command itself was broken** (wrong path, missing dep, can't run inside the worktree).",
+      "   In this case the AGENT'S CODE may actually be correct — verdict should be `pass` and you should",
+      "   note in `reasoning` that the project's gate command needs fixing.",
+      "2. **The agent genuinely couldn't fix the failures** and the work is broken. Verdict should be",
+      "   `fail` or `escalate` with specific issues listed.",
+      "",
+      "Use your tools to independently verify the work. Trust your own judgment over the executor's suspicion.",
+      "",
+      "### Executor notes",
+      "```",
+      opts.executorNotes,
+      "```",
+    );
+  }
+
+  userParts.push(
     "",
     "Review the diff above, then use your tools to independently verify the acceptance criteria are satisfied.",
-  ].join("\n");
+  );
+
+  const user = userParts.join("\n");
 
   if (opts.projectConventions) {
     return { system: system + "\n\n## Project Conventions\n" + opts.projectConventions, user };

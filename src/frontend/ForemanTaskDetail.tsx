@@ -134,6 +134,24 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
         )}
       </div>
 
+      {/* Executor escalation banner — set by SubmitGuard when the agent's submit
+          loop got stuck. Surfaced prominently so the user knows why the task
+          ended up in the verifier's queue. */}
+      {task.executor_notes && task.executor_notes.includes('[ESCALATED_TO_VERIFIER]') && (
+        <div className="mx-6 mt-3 mb-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+          <div className="flex items-start gap-2">
+            <span className="text-amber-400 text-sm font-semibold shrink-0">⚠ Escalated to verifier</span>
+            <span className="text-xs text-amber-300/80">
+              The Foreman executor's SubmitGuard flagged this run because the agent got stuck during submission.
+              The verifier will decide whether to accept the partial work as-is or escalate to human review.
+            </span>
+          </div>
+          <pre className="mt-2 text-[11px] leading-snug text-amber-200/90 font-mono whitespace-pre-wrap break-words bg-black/20 rounded p-2 max-h-64 overflow-auto">
+            {task.executor_notes}
+          </pre>
+        </div>
+      )}
+
       {/* Feedback bar for rejecting art tasks */}
       {showFeedback && task.status === 'awaiting_review' && (
         <div className="px-6 py-3 border-b border-border bg-muted/30">

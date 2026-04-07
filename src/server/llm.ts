@@ -195,7 +195,9 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
 
     // Debug: write the request body to disk so we can replay it via curl
     // when something hangs. Set LLM_DEBUG_DUMP_DIR to enable.
-    const dumpDir = process.env.LLM_DEBUG_DUMP_DIR;
+    // Set LLM_DEBUG_DUMP_DISABLE=1 to force-disable even if LLM_DEBUG_DUMP_DIR is set
+    // (useful when the env var is being injected by something you can't easily change).
+    const dumpDir = process.env.LLM_DEBUG_DUMP_DISABLE ? null : process.env.LLM_DEBUG_DUMP_DIR;
     if (dumpDir && typeof (init as RequestInit)?.body === "string") {
       try {
         const fs = await import("fs");

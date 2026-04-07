@@ -79,6 +79,7 @@ export async function verifyTask(
     acceptanceCriteria: criteria,
     gitDiff: verificationContext,
     projectConventions: conventions,
+    executorNotes: task.executor_notes ?? undefined,
   });
 
   const execution = { machine, providerModelId: modelId };

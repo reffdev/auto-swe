@@ -8,10 +8,11 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import type { Db, Machine, Project, ForemanTask } from "../db";
-import { runStage } from "../pipeline/run-stage";
+import { runStage, StageStepLimitError } from "../pipeline/run-stage";
 import { withProjectLock } from "../pipeline/index";
 import { instantiateLlm, warmUpLlm } from "../llm";
 import { resolveInferenceExecution, getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
+import { createSubmitGuard } from "./submit-guard";
 import {
   makeWorktreePath,
   ensureWorkdir,
@@ -136,12 +137,17 @@ export async function executeForemanTask(
       testCommand: project.test_command,
       lintCommand: project.lint_command,
     });
-    // Gated submit: runs build/test/lint when agent calls submitResult.
-    // If any fail, errors return to the agent to fix in-conversation.
+    // SubmitGuard: tracks the agent's submitResult attempts and fires
+    // escalation when it detects (a) repeat-same-failure or (b) no writes
+    // between submit attempts. The executor inspects guard.state.gaveUp
+    // after runStage returns and routes to the verifier instead of marking
+    // the run as a normal pass.
+    const submitGuard = createSubmitGuard();
     const { submitResult } = makeGatedSubmitTool(worktreePath, {
       buildCommand: project.build_command,
       testCommand: project.test_command,
       lintCommand: project.lint_command,
+      guard: submitGuard,
     });
     const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
@@ -283,9 +289,56 @@ export async function executeForemanTask(
       onStepsUpdate: (stepsJson: string) => {
         try { db.updateForemanRun(run.foremanRun.id, { output: stepsJson }); } catch { /* non-critical */ }
       },
+      onToolCall: (toolName: string) => submitGuard.recordToolCall(toolName),
     });
 
     const durationMs = Date.now() - run.startTime;
+
+    // ─── SubmitGuard escalation path ─────────────────────────────────────
+    // The agent's submit loop got stuck (same gate failure N times, or no
+    // writes between submits). Don't mark this as a normal pass — commit
+    // whatever the agent produced and route to the verifier with a clear
+    // executor_notes blob so the verifier can either approve as-is or
+    // escalate to human review.
+    if (submitGuard.state.gaveUp) {
+      const notes = submitGuard.renderExecutorNotes();
+      console.warn(`[executor] ${task.title}: SubmitGuard escalation — ${submitGuard.state.gaveUpReason}`);
+      run.breaker.recordSuccess(); // not a circuit-breaker failure — the executor itself ran fine
+
+      db.updateForemanRun(run.foremanRun.id, {
+        status: "pass", // run completed; the verifier will decide if the WORK is acceptable
+        output: result ? JSON.stringify([{ step: 1, text: result, tokens: { prompt: 0, completion: 0 }, durationMs }]) : undefined,
+        completed_at: new Date().toISOString(),
+        duration_ms: durationMs,
+      });
+
+      // Persist the escalation context where the verifier (and the UI) can read it
+      db.updateForemanTask(task.id, { executor_notes: notes });
+
+      // Commit + push the agent's partial work so the verifier has something to look at
+      try {
+        await withProjectLock(project.id, async () => {
+          await commitAll(worktreePath, `[Foreman #${task.yaml_id || task.id.slice(0, 8)}] ${task.title} (ESCALATED)\n\nFlagged for verifier review by SubmitGuard.\n\n${notes}`);
+          if (project.git_remote) {
+            await pushBranch(worktreePath, branch);
+          }
+        });
+      } catch (commitErr) {
+        console.warn(`[executor] ${task.title}: commit during escalation failed: ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`);
+      }
+
+      // completeTaskRun routes directive tasks → "validating" (verifier)
+      // and non-directive tasks → "awaiting_review" (human). Both are
+      // appropriate end-states for the escalation.
+      completeTaskRun(run);
+
+      if (!task.directive_id) {
+        try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
+      }
+      return;
+    }
+
+    // ─── Normal happy path ───────────────────────────────────────────────
     run.breaker.recordSuccess();
 
     // Update run with success — director verifier handles acceptance criteria via LLM review
@@ -313,7 +366,24 @@ export async function executeForemanTask(
     }
 
   } catch (err) {
-    failTaskRun(run, err instanceof Error ? err.message : String(err));
+    // ─── Step-limit-exhaustion path: fresh-context retry ─────────────────
+    // The agent hit maxSteps mid-tool-call cycle. The partial worktree
+    // changes are unreliable — discard them so the next retry starts from
+    // a clean slate. failTaskRun handles the retry/backoff bookkeeping.
+    if (err instanceof StageStepLimitError) {
+      console.warn(`[executor] ${task.title}: ${err.message}`);
+      try {
+        await withProjectLock(project.id, async () => {
+          await removeWorktree(project.workdir, worktreePath);
+        });
+        console.log(`[executor] ${task.title}: discarded worktree for fresh-context retry`);
+      } catch (rmErr) {
+        console.warn(`[executor] ${task.title}: failed to discard worktree during fresh-context retry: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`);
+      }
+      failTaskRun(run, err.message);
+    } else {
+      failTaskRun(run, err instanceof Error ? err.message : String(err));
+    }
   } finally {
     cleanupTaskRun(task.id);
   }
