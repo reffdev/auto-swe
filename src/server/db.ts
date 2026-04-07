@@ -1448,6 +1448,26 @@ export class Db {
   }
 
   deleteForemanTask(id: string): boolean {
+    // Prune this task from any other task's depends_on list BEFORE deleting,
+    // so dependent tasks don't get marked failed later when the scheduler sees
+    // a dangling reference. Manual deletion means "this prereq is no longer
+    // relevant" — not "abort everything downstream".
+    const dependents = this.sqlite.prepare(
+      "SELECT id, title, depends_on FROM foreman_tasks WHERE depends_on IS NOT NULL AND depends_on LIKE ?"
+    ).all(`%${id}%`) as Array<{ id: string; title: string; depends_on: string }>;
+    for (const dep of dependents) {
+      let parsed: string[];
+      try { parsed = JSON.parse(dep.depends_on); } catch { continue; }
+      if (!Array.isArray(parsed) || !parsed.includes(id)) continue;
+      const pruned = parsed.filter(d => d !== id);
+      const newDepsJson = pruned.length > 0 ? JSON.stringify(pruned) : null;
+      this.drizzle.update(schema.foremanTasks)
+        .set({ depends_on: newDepsJson })
+        .where(eq(schema.foremanTasks.id, dep.id))
+        .run();
+      console.log(`Foreman: pruned deleted task ${id} from dependent "${dep.title}" (${dep.id}) — ${pruned.length} dep(s) remaining`);
+    }
+
     this.sqlite.prepare("DELETE FROM foreman_runs WHERE task_id = ?").run(id);
     this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(`foreman:${id}`);
     const result = this.drizzle.delete(schema.foremanTasks).where(eq(schema.foremanTasks.id, id)).run();
@@ -1462,7 +1482,19 @@ export class Db {
       .orderBy(schema.foremanTasks.priority, schema.foremanTasks.created_at)
       .all();
 
-    // First pass: fail tasks with broken dependencies (separate from filtering to avoid side effects during iteration)
+    // First pass: prune missing deps and fail tasks with actually-broken deps
+    // (separate from filtering to avoid side effects during iteration).
+    //
+    // Policy:
+    //   - Missing dep (task was deleted since this was planned) → PRUNE it from
+    //     the depends_on list. Deletion signals "this prereq is no longer
+    //     relevant"; it's never a reason to abort downstream work. If every
+    //     dep was a missing one, the task becomes immediately runnable.
+    //     (deleteForemanTask also prunes proactively; this is the defensive
+    //     second-line layer for any path that bypasses it.)
+    //   - Dep exists but is failed → FAIL the dependent. A real failure up
+    //     the chain is a correctness issue the planner needs to reconsider.
+    //   - Malformed JSON → FAIL (data corruption, surface it).
     for (const task of queued) {
       if (!task.depends_on) continue;
       let deps: string[];
@@ -1471,18 +1503,30 @@ export class Db {
         this.updateForemanTask(task.id, { status: "failed", error_message: "Malformed depends_on JSON" });
         continue;
       }
+
+      const survivingDeps: string[] = [];
+      const prunedDepIds: string[] = [];
+      let hardFailed = false;
       for (const depId of deps) {
         const dep = this.getForemanTask(depId);
         if (!dep) {
-          console.warn(`Foreman: task "${task.title}" (${task.id}) depends on non-existent task ${depId} — marking failed`);
-          this.updateForemanTask(task.id, { status: "failed", error_message: `Broken dependency: task ${depId} does not exist` });
-          break;
+          prunedDepIds.push(depId);
+          continue;
         }
         if (dep.status === "failed") {
           console.warn(`Foreman: task "${task.title}" (${task.id}) depends on failed task "${dep.title}" — marking failed`);
           this.updateForemanTask(task.id, { status: "failed", error_message: `Dependency failed: "${dep.title}"` });
+          hardFailed = true;
           break;
         }
+        survivingDeps.push(depId);
+      }
+
+      if (hardFailed) continue;
+      if (prunedDepIds.length > 0) {
+        const newDepsJson = survivingDeps.length > 0 ? JSON.stringify(survivingDeps) : null;
+        this.updateForemanTask(task.id, { depends_on: newDepsJson });
+        console.log(`Foreman: pruned ${prunedDepIds.length} missing dep(s) from "${task.title}" (${task.id}) — ${survivingDeps.length} remaining`);
       }
     }
 

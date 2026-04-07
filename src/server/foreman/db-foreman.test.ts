@@ -270,12 +270,59 @@ describe("getForemanTasksReadyToRun", () => {
     expect(ready).toHaveLength(1);
   });
 
-  it("handles non-existent dependency IDs gracefully", () => {
+  it("prunes missing dependencies and allows the task to run", () => {
+    // Policy: deletion signals "this prereq is no longer relevant" — the
+    // dependent should run, not fail. The scheduler prunes the missing dep
+    // from depends_on and proceeds. See db.ts:getForemanTasksReadyToRun.
     const task = db.createForemanTask({ project_id: projectId, title: "Bad Dep", status: "queued" });
     db.updateForemanTask(task.id, { depends_on: JSON.stringify(["nonexistent-id"]) });
 
     const ready = db.getForemanTasksReadyToRun();
-    expect(ready).toHaveLength(0); // blocked by missing dep
+    expect(ready).toHaveLength(1);
+    expect(ready[0].id).toBe(task.id);
+
+    // After pruning, depends_on should be null (no survivors)
+    const after = db.getForemanTask(task.id);
+    expect(after?.depends_on).toBeNull();
+  });
+
+  it("prunes missing deps but keeps surviving deps", () => {
+    const good = db.createForemanTask({ project_id: projectId, title: "Good Dep", status: "queued" });
+    const task = db.createForemanTask({ project_id: projectId, title: "Partial Deps", status: "queued" });
+    db.updateForemanTask(task.id, { depends_on: JSON.stringify(["nonexistent-id", good.id]) });
+
+    const ready = db.getForemanTasksReadyToRun();
+    // "Partial Deps" is not ready because `good` is still queued, but the
+    // missing dep should have been pruned.
+    const partial = db.getForemanTask(task.id);
+    expect(partial?.depends_on).toBe(JSON.stringify([good.id]));
+    // And it should not be in the ready list (because good hasn't completed)
+    expect(ready.some(t => t.id === task.id)).toBe(false);
+    // `good` itself should be ready
+    expect(ready.some(t => t.id === good.id)).toBe(true);
+  });
+
+  it("fails the dependent when the dep exists but is failed", () => {
+    const bad = db.createForemanTask({ project_id: projectId, title: "Bad Upstream", status: "queued" });
+    db.updateForemanTask(bad.id, { status: "failed" });
+    const task = db.createForemanTask({ project_id: projectId, title: "Dependent", status: "queued" });
+    db.updateForemanTask(task.id, { depends_on: JSON.stringify([bad.id]) });
+
+    db.getForemanTasksReadyToRun();
+    const after = db.getForemanTask(task.id);
+    expect(after?.status).toBe("failed");
+    expect(after?.error_message).toContain("Bad Upstream");
+  });
+
+  it("deleteForemanTask prunes the task from dependents' depends_on lists", () => {
+    const target = db.createForemanTask({ project_id: projectId, title: "To Delete" });
+    const dependent = db.createForemanTask({ project_id: projectId, title: "Dependent" });
+    db.updateForemanTask(dependent.id, { depends_on: JSON.stringify([target.id]) });
+
+    db.deleteForemanTask(target.id);
+
+    const after = db.getForemanTask(dependent.id);
+    expect(after?.depends_on).toBeNull();
   });
 });
 
