@@ -302,6 +302,51 @@ export function hasCapacity(machine: Machine): boolean {
 }
 
 /**
+ * Read-only eligibility check: would a call to acquireLease with these opts
+ * have any chance of succeeding right now? Used by the Foreman scheduler to
+ * pre-filter tasks before dispatching, so it doesn't burn a tick dispatching
+ * a task whose executor will immediately have to re-queue.
+ *
+ * Mirrors the logic in acquireLease exactly, minus the side effect of
+ * actually taking a lease: capacity, breaker, colocation, and (for Foreman)
+ * the Director's machine reservation.
+ *
+ * If opts.preferredMachineId is set, checks only that machine. Otherwise
+ * checks whether ANY enabled machine of `machineType` (or its fallbacks)
+ * is eligible.
+ */
+export function canAcquireLease(
+  db: Db,
+  consumer: LeaseConsumer,
+  opts?: {
+    machineType?: string;
+    fallbackMachineTypes?: string[];
+    preferredMachineId?: string;
+  },
+): boolean {
+  cleanExpiredLeases();
+  const machines = db.getMachines();
+  const directorReserved = consumer === "foreman" ? getDirectorReservedMachine() : null;
+
+  const isEligible = (m: Machine): boolean =>
+    hasCapacity(m) &&
+    getBreaker(m.id).canExecute() &&
+    !isBlockedByColocatedMachine(m, machines) &&
+    m.id !== directorReserved;
+
+  if (opts?.preferredMachineId) {
+    const preferred = machines.find(m => m.id === opts.preferredMachineId);
+    return !!preferred && isEligible(preferred);
+  }
+
+  const machineType = opts?.machineType ?? "inference";
+  const typesToTry = [machineType, ...(opts?.fallbackMachineTypes ?? [])];
+  return typesToTry.some(tryType =>
+    machines.some(m => m.enabled && m.machine_type === tryType && isEligible(m)),
+  );
+}
+
+/**
  * Get all active leases (for observability / debugging).
  */
 export function getActiveLeases(): MachineLease[] {

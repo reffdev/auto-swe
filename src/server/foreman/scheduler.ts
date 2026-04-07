@@ -13,8 +13,7 @@ import { isComfyUITaskType } from "./task-types";
 import { canForemanDispatch } from "../orchestrator";
 import { isStyleLocked } from "../director/style-lock";
 import { resolveInferenceCandidates, ModelNotFoundError, NoMachineHostsModelError } from "../models";
-import { hasCapacity } from "../machine-manager";
-import { getDirectorReservedMachine } from "../director/director-state";
+import { canAcquireLease } from "../machine-manager";
 import { existsSync } from "fs";
 import { resolve as resolvePath } from "path";
 import { getWorkflowDir } from "./workflow-manifest";
@@ -45,28 +44,39 @@ const exhaustedMachineTypes = new Set<string>();
 const colocatedYield = new Set<string>();
 
 /**
- * Pre-check whether the executor would be able to acquire a session for an
- * inference task RIGHT NOW. Returns true iff the task's resolved logical model
- * has at least one hosting machine that:
- *   - has capacity
- *   - is not currently reserved by the Director
+ * Pre-check whether the executor would be able to acquire a session for this
+ * task RIGHT NOW. Returns true iff at least one machine the task could land
+ * on is eligible under the same rules acquireLease would apply (capacity,
+ * breaker, colocation, Director reservation).
  *
- * This avoids the dispatch → executor → withLlmSession-returns-null →
- * re-queue → re-nudge tight loop. The executor still has its own deferred
- * fallback (with backoff) for the genuine race window between this check and
- * the actual lease acquisition.
+ * This avoids the dispatch → executor → acquire-fails → re-queue → re-nudge
+ * tight loop. The executor still has its own deferred fallback (with
+ * backoff) for the genuine race window between this check and the actual
+ * lease acquisition.
  *
- * Returns true on any unexpected error so we err on the side of dispatching
- * (the executor will surface the real error). Returns false if the task has
- * no resolvable model — the executor will fail it with a clear message.
+ *   - For inference tasks: resolves the task's logical model into candidate
+ *     machines and asks canAcquireLease for each in turn.
+ *   - For ComfyUI tasks: asks canAcquireLease whether any enabled comfyui
+ *     machine is eligible.
+ *
+ * Returns true on any unexpected resolver error so we err on the side of
+ * dispatching (the executor will surface the real error on the task row).
+ * Returns false for inference tasks with no resolvable model — the executor
+ * will fail those with a clear message, and we don't want to spin on them.
  */
-function hasDispatchableInferenceCandidate(db: Db, task: ForemanTask): boolean {
+function canDispatchTask(db: Db, task: ForemanTask): boolean {
+  if (isComfyUITaskType(task.type)) {
+    return canAcquireLease(db, "foreman", { machineType: "comfyui" });
+  }
+
+  // Inference path
   const modelId = resolveForemanCodeModelId(db, task);
   if (!modelId) return false;
-  const reserved = getDirectorReservedMachine();
   try {
     const { candidates } = resolveInferenceCandidates(db, modelId);
-    return candidates.some(c => c.machine.id !== reserved && hasCapacity(c.machine));
+    return candidates.some(c =>
+      canAcquireLease(db, "foreman", { preferredMachineId: c.machine.id }),
+    );
   } catch (err) {
     if (err instanceof ModelNotFoundError || err instanceof NoMachineHostsModelError) {
       // Let the executor surface the real error so it ends up on the task row.
@@ -171,11 +181,11 @@ async function schedulerTick(db: Db): Promise<void> {
     if (running.length > 0) return;
   }
 
-  // Tick-local set of logical model ids that have no dispatchable candidate
-  // right now (all hosting machines are at capacity or reserved by the
-  // Director). Cleared on every tick start; the next tick re-checks each
-  // model fresh. Avoids re-resolving candidates for every task in the loop.
+  // Tick-local caches so each distinct (model | machine type) is only
+  // eligibility-checked once per tick, not once per task in the loop.
+  // Both are scoped to a single tick — the next tick re-checks fresh.
   const exhaustedInferenceModels = new Set<string>();
+  let comfyuiExhaustedThisTick = false;
 
   // Dispatch loop — fill all available machine slots
   let dispatched = 0;
@@ -208,15 +218,21 @@ async function schedulerTick(db: Db): Promise<void> {
         if (exhaustedMachineTypes.has(route.machineType)) continue;
         if (!allowYielded && colocatedYield.has(route.machineType)) continue;
 
-        // Inference tasks: pre-check that some hosting machine for the
-        // resolved logical model has capacity AND isn't Director-reserved.
-        // Without this, we'd dispatch, the executor would fail to acquire a
-        // session, re-queue, re-nudge, and we'd spin until something else
-        // changed.
-        if (route.machineType === "inference") {
+        // Pre-check that SOMETHING the task could run on is actually eligible
+        // right now. Without this, the dispatch → executor → can't-acquire →
+        // re-queue → re-nudge loop spins on whatever task heads the queue
+        // until capacity elsewhere frees up.
+        if (route.machineType === "comfyui") {
+          if (comfyuiExhaustedThisTick) continue;
+          if (!canDispatchTask(db, candidate)) {
+            comfyuiExhaustedThisTick = true;
+            continue;
+          }
+        } else {
+          // inference
           const modelId = resolveForemanCodeModelId(db, candidate);
           if (modelId && exhaustedInferenceModels.has(modelId)) continue;
-          if (!hasDispatchableInferenceCandidate(db, candidate)) {
+          if (!canDispatchTask(db, candidate)) {
             if (modelId) exhaustedInferenceModels.add(modelId);
             continue;
           }

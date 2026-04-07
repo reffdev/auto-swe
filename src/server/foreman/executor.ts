@@ -100,7 +100,13 @@ async function executeComfyUIDispatch(
   const { db } = ctx;
   const lease = await acquireLease(db, "foreman", task.title, { machineType: "comfyui" });
   if (!lease) {
-    db.updateForemanTask(task.id, { status: "queued", machine_id: null });
+    // Same backoff as the inference deferred path — the scheduler already
+    // pre-checks comfyui availability, but keep this as a safety net so the
+    // dispatch loop can't spin if a race ever lands us here.
+    const backoffMs = 5_000;
+    const nextRetryAt = new Date(Date.now() + backoffMs).toISOString();
+    db.updateForemanTask(task.id, { status: "queued", machine_id: null, next_retry_at: nextRetryAt });
+    console.log(`[foreman:executor] ${task.title}: no comfyui machine available, re-queued in ${backoffMs / 1000}s`);
     return;
   }
   try {
