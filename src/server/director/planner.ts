@@ -174,36 +174,80 @@ export async function planNextTasks(
     return 0;
   }
 
-  // Deduplicate titles: if a task with the same title exists, append a numbered suffix
-  // instead of silently dropping it — there are valid reasons to retry with the same name.
-  const existingTasks = db.getDirectiveTasks(directive.id, milestone.id);
-  const existingTitles = new Set(existingTasks.map(t => t.title.toLowerCase()));
+  // Duplicate handling — two distinct cases:
+  //
+  //   1. Duplicate of a task that is COMPLETED, AWAITING_REVIEW, or VALIDATING
+  //      (i.e. the work is done or done-pending-review). DROP entirely. It is
+  //      never correct to redo accepted work behind the user's back. If the
+  //      user actually wants it redone, they can explicitly reject/retry it.
+  //
+  //   2. Duplicate of a task in a redo-able state (BACKLOG, QUEUED, RUNNING,
+  //      FAILED). Append a numbered suffix and create it as a new attempt —
+  //      the user may legitimately want a retry with a fresh context.
+  //
+  // We scan ALL tasks for this directive (not just the current milestone),
+  // because the planner was regenerating art from earlier milestones.
+  const DONE_STATUSES = new Set(["completed", "awaiting_review", "validating"]);
+  const allDirectiveTasks = db.getDirectiveTasks(directive.id);
+  const titleStatus = new Map<string, string>(); // lowercased title → most-recent status
+  for (const t of allDirectiveTasks) {
+    titleStatus.set(t.title.toLowerCase(), t.status);
+  }
   const batchTitles = new Set<string>(); // track titles within this batch too
 
-  function deduplicateTitle(title: string): string {
+  type DedupeDecision =
+    | { action: "drop"; reason: string }
+    | { action: "use"; title: string };
+
+  function decideDedupe(title: string): DedupeDecision {
+    const key = title.toLowerCase();
+    const existingStatus = titleStatus.get(key);
+
+    if (existingStatus && DONE_STATUSES.has(existingStatus)) {
+      return {
+        action: "drop",
+        reason: `task with title "${title}" already exists in status "${existingStatus}" — refusing to duplicate accepted/pending-review work`,
+      };
+    }
+
+    // In a redo-able state OR new title — find a unique candidate by suffix
     let candidate = title;
     let suffix = 2;
-    while (existingTitles.has(candidate.toLowerCase()) || batchTitles.has(candidate.toLowerCase())) {
+    while (titleStatus.has(candidate.toLowerCase()) || batchTitles.has(candidate.toLowerCase())) {
       candidate = `${title} (#${suffix})`;
       suffix++;
     }
     if (candidate !== title) {
-      console.log(`Director planner: renamed "${title}" → "${candidate}" (title already exists)`);
+      console.log(`Director planner: renamed "${title}" → "${candidate}" (title already exists in status "${existingStatus}" — retry allowed)`);
     }
     batchTitles.add(candidate.toLowerCase());
-    return candidate;
+    return { action: "use", title: candidate };
   }
 
   // Two-pass creation: first create all tasks (without depends_on), then wire up dependencies.
   // This mirrors the epic story creation pattern — depends_on references task numbers (1-based)
   // in the current batch, which need to be resolved to UUIDs after creation.
 
-  // Pass 1: Create tasks, track batch number → UUID mapping
-  const batchMap = new Map<number, string>(); // task number (1-based) → foreman_task UUID
+  // Pass 1: Create tasks, track batch number → UUID mapping.
+  // Dropped duplicates are recorded as null in batchMap so Pass 2 can resolve
+  // depends_on references correctly (a surviving task that depended on a
+  // dropped duplicate needs to have that reference filtered out).
+  const batchMap = new Map<number, string | null>(); // task number (1-based) → UUID or null if dropped
   let created = 0;
+  let droppedDuplicates = 0;
   for (let i = 0; i < parsedTasks.length; i++) {
     const parsed = parsedTasks[i];
-    const title = deduplicateTitle(parsed.title);
+    const decision = decideDedupe(parsed.title);
+
+    if (decision.action === "drop") {
+      console.warn(`Director planner: dropping duplicate task — ${decision.reason}`);
+      logEpisodic(project.workdir, `Planner generated a duplicate of already-done work: ${decision.reason}`, "");
+      batchMap.set(i + 1, null);
+      droppedDuplicates++;
+      continue;
+    }
+
+    const title = decision.title;
 
     // Tag description with human review flag so the Director scheduler can check it
     const description = parsed.needs_human_review
@@ -230,6 +274,10 @@ export async function planNextTasks(
     created++;
   }
 
+  if (droppedDuplicates > 0) {
+    console.warn(`Director planner: dropped ${droppedDuplicates} duplicate task(s) that targeted already-accepted work`);
+  }
+
   // Pass 2: Resolve depends_on references (task numbers → UUIDs)
   for (let i = 0; i < parsedTasks.length; i++) {
     const parsed = parsedTasks[i];
@@ -243,18 +291,25 @@ export async function planNextTasks(
       if (!dep) continue;
       // dep could be a number string ("1", "2") or a title
       const depNum = parseInt(dep, 10);
-      if (!isNaN(depNum) && batchMap.has(depNum)) {
-        resolvedDeps.push(batchMap.get(depNum)!);
+      const numTarget = !isNaN(depNum) ? batchMap.get(depNum) : undefined;
+      if (numTarget !== undefined) {
+        if (numTarget !== null) {
+          resolvedDeps.push(numTarget);
+        } else {
+          console.warn(`Director planner: task "${parsed.title}" depends on dropped duplicate #${depNum} — dependency removed`);
+        }
       } else {
-        // Try matching by title against this batch or existing tasks
+        // Try matching by title against this batch first, then existing directive tasks
         const byTitle = [...batchMap.entries()].find(([num]) => {
           const pt = parsedTasks[num - 1];
           return pt && pt.title.toLowerCase() === dep.toLowerCase();
         });
-        if (byTitle) {
+        if (byTitle && byTitle[1] !== null) {
           resolvedDeps.push(byTitle[1]);
+        } else if (byTitle && byTitle[1] === null) {
+          console.warn(`Director planner: task "${parsed.title}" depends on dropped duplicate "${dep}" — dependency removed`);
         } else {
-          const existing = existingTasks.find(t => t.title.toLowerCase() === dep.toLowerCase());
+          const existing = allDirectiveTasks.find(t => t.title.toLowerCase() === dep.toLowerCase());
           if (existing) {
             resolvedDeps.push(existing.id);
           } else {
@@ -278,7 +333,8 @@ export async function planNextTasks(
 
   // Detect dependency cycles within this batch
   const depGraph = new Map<string, string[]>();
-  for (const [num, id] of batchMap) {
+  for (const [, id] of batchMap) {
+    if (id === null) continue; // dropped duplicates have no UUID
     const task = db.getForemanTask(id);
     if (task?.depends_on) {
       try { depGraph.set(id, JSON.parse(task.depends_on)); } catch { /* skip */ }
@@ -298,10 +354,11 @@ export async function planNextTasks(
     return false;
   }
   for (const id of batchMap.values()) {
+    if (id === null) continue;
     if (hasCycle(id)) {
       console.warn(`Director planner: dependency cycle detected in batch — clearing all depends_on to prevent deadlock`);
       for (const taskId of batchMap.values()) {
-        db.updateForemanTask(taskId, { depends_on: null });
+        if (taskId !== null) db.updateForemanTask(taskId, { depends_on: null });
       }
       break;
     }
@@ -309,8 +366,19 @@ export async function planNextTasks(
 
   const totalTime = Math.round((Date.now() - planStartTime) / 1000);
   if (created > 0) {
-    const taskList = parsedTasks.filter(t => !existingTitles.has(t.title.toLowerCase())).map(t => `"${t.title}" (${t.type})`).join(", ");
-    console.log(`Director planner: created ${created} task(s) in ${totalTime}s — ${taskList}`);
+    // Only list the tasks that were actually created (non-null batchMap entries).
+    const createdIds = new Set<string>();
+    for (const id of batchMap.values()) {
+      if (id !== null) createdIds.add(id);
+    }
+    const createdTitles: string[] = [];
+    for (const [num, id] of batchMap) {
+      if (id !== null) {
+        const pt = parsedTasks[num - 1];
+        if (pt) createdTitles.push(`"${pt.title}" (${pt.type})`);
+      }
+    }
+    console.log(`Director planner: created ${created} task(s) in ${totalTime}s — ${createdTitles.join(", ")}`);
     const taskTypes = parsedTasks.map(t => t.type).join(", ");
     logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
     nudgeForeman(db);

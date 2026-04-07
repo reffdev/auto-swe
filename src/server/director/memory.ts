@@ -141,7 +141,22 @@ export async function assembleDirectorContext(
     parts.push(`# Current Milestone\n\nTitle: ${activeMilestone.title}\nDescription: ${activeMilestone.description}\nVerification: ${activeMilestone.verification ?? "Not specified"}`);
   }
 
-  // 6. Recent task summaries
+  // 6. Task summaries for the planner
+  //
+  // Two lists, both curated to prevent the planner from generating duplicates:
+  //
+  //   a) "Recent Task Results" — the most recent N completed/failed tasks
+  //      with error messages for failures, so the planner understands what
+  //      went wrong and can plan corrective work. Capped at maxRecentTasks.
+  //
+  //   b) "All Task Titles (do NOT re-plan these)" — the FULL list of every
+  //      task title in this directive regardless of status, so the planner
+  //      cannot produce a duplicate just because the task is older than the
+  //      recent-results window. Deduped by lowercased title.
+  //
+  // The old code only capped (a) at 10 and only showed NON-completed tasks in
+  // (b) — so completed tasks older than the 10 most recent dropped off the
+  // context entirely, and the LLM planner would regenerate them as if new.
   if (opts?.includeTaskSummaries !== false) {
     const tasks = db.getDirectiveTasks(directive.id);
     const recentCompleted = tasks
@@ -156,10 +171,25 @@ export async function assembleDirectorContext(
       parts.push("# Recent Task Results\n\n" + summaries.join("\n"));
     }
 
-    // Show all non-completed tasks so the planner doesn't create duplicates
-    const active = tasks.filter(t => t.status !== "completed");
-    if (active.length > 0) {
-      parts.push("# Current Tasks (do NOT duplicate these)\n\n" + active.map(t => `- [${t.status}] ${t.title} (${t.type})`).join("\n"));
+    // Full title manifest — every task for this directive, deduped by title.
+    // Prevents the planner from regenerating completed work that dropped off
+    // the "Recent Task Results" window.
+    if (tasks.length > 0) {
+      const seen = new Set<string>();
+      const manifest: string[] = [];
+      for (const t of tasks) {
+        const key = t.title.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        manifest.push(`- [${t.status}] ${t.title} (${t.type})`);
+      }
+      parts.push(
+        "# All Task Titles In This Directive (do NOT re-plan any of these)\n\n" +
+        "Every task below — including completed and accepted ones — already exists. " +
+        "Do not generate a task with the same title or the same concept as any of these. " +
+        "If you believe one of these needs to be redone, stop and escalate instead.\n\n" +
+        manifest.join("\n")
+      );
     }
   }
 
