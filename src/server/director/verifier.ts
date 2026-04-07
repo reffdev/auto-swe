@@ -14,7 +14,7 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
-import { runStage } from "../pipeline/run-stage";
+import { runStage, StageWallTimeoutError, StageStepLimitError } from "../pipeline/run-stage";
 import { makeVerifyTools } from "../tools/filesystem";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
@@ -87,10 +87,12 @@ export async function verifyTask(
   const model = instantiateLlm(execution);
   const tools = makeVerifyTools(workdir);
 
-  try {
-    const verifyAbort = new AbortController();
-    const verifyTimeout = setTimeout(() => verifyAbort.abort(), 5 * 60 * 1000);
+  // Wall-clock budget for the verifier. The OLD code had a manual setTimeout
+  // here; that's now redundant with runStage's wallTimeoutMs which has proper
+  // cleanup and produces a typed StageWallTimeoutError on expiry.
+  const VERIFIER_WALL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min — verifier does real investigation
 
+  try {
     const text = await runStage({
       db,
       runId: "",  // no pipeline run — verifier is standalone
@@ -102,12 +104,10 @@ export async function verifyTask(
       userPrompt: user,
       tools,
       maxSteps: 30,
-      abortSignal: verifyAbort.signal,
       contextLimit: machine.context_limit ?? undefined,
       worktreePath: workdir,
+      wallTimeoutMs: VERIFIER_WALL_TIMEOUT_MS,
     });
-
-    clearTimeout(verifyTimeout);
 
     const parsed = parseVerdict(text);
 
@@ -115,7 +115,7 @@ export async function verifyTask(
       return {
         verdict: "escalate",
         confidence: 0.3,
-        issues: ["Could not parse verification verdict from LLM response"],
+        issues: ["Could not parse verification verdict from LLM response — agent did not produce the expected ```verdict``` block"],
         reasoning: text.slice(0, 500),
       };
     }
@@ -134,11 +134,48 @@ export async function verifyTask(
 
     return mapped;
   } catch (err) {
+    // Honest, distinct verdicts depending on WHY verification failed.
+
+    // Wall-clock budget exhausted — the verifier was actively investigating
+    // but didn't reach a verdict in time. Surface that clearly so the user
+    // doesn't think the verifier evaluated and chose to escalate.
+    if (err instanceof StageWallTimeoutError) {
+      const minutes = Math.round(VERIFIER_WALL_TIMEOUT_MS / 60_000);
+      console.warn(`Director verifier: "${task.title}" exceeded ${minutes}-min wall-clock budget`);
+      return {
+        verdict: "escalate",
+        confidence: 0,
+        issues: [
+          `Verifier exceeded its ${minutes}-minute wall-clock budget without producing a verdict.`,
+          `The agent was still investigating when time ran out — this is NOT a real failure of the work itself.`,
+          `Possible causes: project setup is unusual (e.g. test runner CLI not where the verifier expected), upstream LLM is slow, or the verifier got stuck on a research dead-end.`,
+        ],
+        reasoning: "Verifier ran out of time while investigating. Manual review required to evaluate the actual work.",
+      };
+    }
+
+    // Step-limit exhaustion — agent looped on tool calls or burned its
+    // completion budget on text. Same class of "verifier didn't actually
+    // decide" failure.
+    if (err instanceof StageStepLimitError) {
+      console.warn(`Director verifier: "${task.title}" hit step limit — ${err.message}`);
+      return {
+        verdict: "escalate",
+        confidence: 0,
+        issues: [
+          `Verifier hit its step/output limit (${err.finishReason}) before reaching a verdict.`,
+          `The agent ran out of room before it could finish evaluating the work.`,
+        ],
+        reasoning: "Verifier did not complete its evaluation. Manual review required.",
+      };
+    }
+
+    // Anything else (LLM connection failure, parser exception, etc.)
     return {
       verdict: "escalate",
       confidence: 0.3,
-      issues: [`LLM verification error: ${err instanceof Error ? err.message : String(err)}`],
-      reasoning: "LLM verification failed — escalating for human review",
+      issues: [`Verifier error: ${err instanceof Error ? err.message : String(err)}`],
+      reasoning: "Verifier crashed before reaching a verdict. Manual review required.",
     };
   }
 }

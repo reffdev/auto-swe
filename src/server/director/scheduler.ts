@@ -535,10 +535,15 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
       console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
       logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
     } else {
-      if (shouldEscalate(directive.autonomy_level, "low_confidence")) {
-        await escalateForHumanReview(db, directive, task, project,
-          `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`,
-          result);
+      // confidence === 0 is a hard signal that the verifier did NOT actually
+      // evaluate the work (wall-clock timeout, step limit, parser failure with
+      // no usable output). Never auto-merge in that case, regardless of
+      // autonomy level — there's nothing to be confident about.
+      if (result.confidence === 0 || shouldEscalate(directive.autonomy_level, "low_confidence")) {
+        const reason = result.confidence === 0
+          ? `Please review task "${task.title}". The verifier did not complete its evaluation — see issues for details.`
+          : `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`;
+        await escalateForHumanReview(db, directive, task, project, reason, result);
       } else {
         await createAndMergePR(db, task, project, `Auto-accepted (low confidence: ${result.confidence}, high autonomy)`);
         await completeVerifiedTask(db, task, project, result.confidence);
