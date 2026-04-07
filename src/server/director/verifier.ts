@@ -9,16 +9,13 @@
 import { generate } from "../llm";
 import { withLlmSession } from "../llm-dispatch";
 import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
-import { execFile } from "child_process";
 import { readFile as fsReadFile, stat as fsStat } from "fs/promises";
-import { runShellCommand } from "../util/async-process";
+import { runShellCommand, runProcess } from "../util/async-process";
+import { buildSandboxProfile } from "../util/sandbox";
 
 async function pathExists(p: string): Promise<boolean> {
   try { await fsStat(p); return true; } catch { return false; }
 }
-import { promisify } from "util";
-
-const execFileAsync = promisify(execFile);
 import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
 import { runStage, StageWallTimeoutError, StageStepLimitError } from "../pipeline/run-stage";
@@ -94,7 +91,11 @@ export async function verifyTask(
     executorNotes: task.executor_notes ?? undefined,
   });
 
-  const tools = makeVerifyTools(workdir);
+  const verifySandbox = await buildSandboxProfile(db, project, workdir, {
+    readOnlyWorktree: true,
+    allowNetwork: false,
+  });
+  const tools = makeVerifyTools(workdir, undefined, verifySandbox);
 
   let result: VerificationResult | null;
   try {
@@ -214,14 +215,26 @@ export async function verifyMilestone(
   directiveId: string,
   project: Project,
 ): Promise<{ passed: boolean; issues: string[] }> {
-  // Run project-level checks first
+  // Run project-level checks first. Mechanical milestone checks run AGAINST
+  // the project workdir directly (not a worktree) — they need network for
+  // package fetches but should be RW so godot can write its import cache.
+  // Routed through `runProcess`/`runShellCommand` so the bwrap profile is
+  // honored when sandbox_enabled=1.
+  const milestoneSandbox = await buildSandboxProfile(db, project, project.workdir, {
+    readOnlyWorktree: false,
+    allowNetwork: true,
+  });
+
   const projectIssues: string[] = [];
 
   if (project.build_command) {
-    try {
-      await execFileAsync("sh", ["-c", project.build_command], { cwd: project.workdir, timeout: 120_000 });
-    } catch (err: unknown) {
-      const stderr = (err as { stderr?: string })?.stderr ?? "";
+    const result = await runShellCommand(project.build_command, {
+      cwd: project.workdir,
+      timeoutMs: 120_000,
+      sandbox: milestoneSandbox,
+    });
+    if (result.status !== 0) {
+      const stderr = result.stderr ?? "";
       projectIssues.push(`Build failed: ${stderr.slice(0, 500)}`);
     }
   }
@@ -230,27 +243,32 @@ export async function verifyMilestone(
   if (await pathExists(resolve(project.workdir, "project.godot"))) {
     const gutScript = resolve(project.workdir, "addons/gut/gut_cmdln.gd");
     if (await pathExists(gutScript)) {
-      try {
-        await execFileAsync("godot", ["--headless", "--script", "res://addons/gut/gut_cmdln.gd", "--path", project.workdir], {
-          cwd: project.workdir, timeout: 120_000,
-        });
-      } catch (err: unknown) {
-        const stdout = (err as { stdout?: string })?.stdout ?? "";
-        const stderr = (err as { stderr?: string })?.stderr ?? "";
+      const gutResult = await runProcess("godot", [
+        "--headless", "--script", "res://addons/gut/gut_cmdln.gd", "--path", project.workdir,
+      ], {
+        cwd: project.workdir,
+        timeoutMs: 120_000,
+        sandbox: milestoneSandbox,
+      });
+      if (gutResult.status !== 0) {
+        const stdout = gutResult.stdout ?? "";
+        const stderr = gutResult.stderr ?? "";
         projectIssues.push(`Godot GUT tests failed: ${(stdout + stderr).slice(-500)}`);
       }
     } else {
       // No GUT — try basic script validation
-      try {
-        await execFileAsync("godot", ["--headless", "--quit", "--path", project.workdir], {
-          cwd: project.workdir, timeout: 60_000,
-        });
-      } catch (err: unknown) {
-        const killed = (err as { killed?: boolean })?.killed;
-        if (killed) {
+      const validResult = await runProcess("godot", [
+        "--headless", "--quit", "--path", project.workdir,
+      ], {
+        cwd: project.workdir,
+        timeoutMs: 60_000,
+        sandbox: milestoneSandbox,
+      });
+      if (validResult.status !== 0) {
+        if (validResult.error?.message.includes("timed out")) {
           console.warn("[director:verifier] godot validation timed out — skipping");
         } else {
-          const stderr = (err as { stderr?: string })?.stderr ?? "";
+          const stderr = validResult.stderr ?? "";
           projectIssues.push(`Godot check failed: ${stderr.slice(0, 500)}`);
         }
       }

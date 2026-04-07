@@ -23,6 +23,7 @@ export function ForemanConfig() {
   const [priorityMode, setPriorityMode] = useState('parallel')
   const [continuousExploration, setContinuousExploration] = useState(false)
   const [explorationPreset, setExplorationPreset] = useState('concept')
+  const [sandboxEnabled, setSandboxEnabled] = useState(false)
   const [directorModelId, setDirectorModelId] = useState('')
   const [directorMachineId, setDirectorMachineId] = useState('')
   const [foremanCodeModelId, setForemanCodeModelId] = useState('')
@@ -48,6 +49,7 @@ export function ForemanConfig() {
         setPriorityMode(c.priority_mode)
         setContinuousExploration(!!c.continuous_exploration)
         setExplorationPreset(c.exploration_preset ?? 'concept')
+        setSandboxEnabled(!!c.sandbox_enabled)
         setDirectorModelId(c.director_model_id ?? '')
         setDirectorMachineId(c.director_machine_id ?? '')
         setForemanCodeModelId(c.foreman_code_model_id ?? '')
@@ -87,6 +89,7 @@ export function ForemanConfig() {
         priority_mode: priorityMode,
         continuous_exploration: continuousExploration ? 1 : 0,
         exploration_preset: explorationPreset,
+        sandbox_enabled: sandboxEnabled ? 1 : 0,
         director_model_id: directorModelId || null,
         director_machine_id: directorMachineId || null,
         foreman_code_model_id: foremanCodeModelId || null,
@@ -328,6 +331,40 @@ export function ForemanConfig() {
             )}
           </div>
 
+          {/* Sandbox isolation */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium block">Agent Subprocess Sandbox</span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setSandboxEnabled(!sandboxEnabled)}
+                className={cn(
+                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                  sandboxEnabled ? 'bg-emerald-500' : 'bg-muted',
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block size-4 rounded-full bg-white transition-transform',
+                    sandboxEnabled ? 'translate-x-6' : 'translate-x-1',
+                  )}
+                />
+              </button>
+              <span className="text-sm text-muted-foreground">
+                {sandboxEnabled ? 'On — agent subprocesses run inside bwrap' : 'Off — direct host execution'}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Wraps every subprocess spawned from agent execution paths (Foreman tasks, pipeline stages, verifier,
+              analysis) in a <a href="https://github.com/containers/bubblewrap" target="_blank" rel="noopener noreferrer" className="underline">bubblewrap</a> sandbox: read-only system,
+              isolated <code className="text-[10px] bg-muted px-1 rounded">$HOME</code>, and the worktree as the only
+              writable mount. Per-stage policy disables network for read-only stages
+              (scout / review / verifier / analysis). Linux only — silently falls through to direct spawn on other
+              hosts or when <code className="text-[10px] bg-muted px-1 rounded">bwrap</code> isn't installed.
+              Per-project caches live under <code className="text-[10px] bg-muted px-1 rounded">~/.swe-cache/&lt;project_id&gt;/</code> so
+              builds stay warm.
+            </p>
+          </div>
+
           {/* Save */}
           <div className="flex items-center gap-3 pt-2">
             <Button onClick={handleSave} disabled={saving}>
@@ -356,6 +393,10 @@ export function ForemanConfig() {
                 <span>{config.priority_mode}</span>
                 <span className="text-muted-foreground">Scheduler:</span>
                 <span>Event-driven</span>
+                <span className="text-muted-foreground">Sandbox:</span>
+                <span className={config.sandbox_enabled ? 'text-emerald-500' : 'text-muted-foreground'}>
+                  {config.sandbox_enabled ? 'Enabled (bwrap, Linux)' : 'Disabled'}
+                </span>
               </div>
             </div>
           )}

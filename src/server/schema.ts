@@ -322,5 +322,6 @@ export const foremanConfig = sqliteTable("foreman_config", {
   analysis_enabled: integer("analysis_enabled").notNull().default(1), // 0|1 — global analysis toggle
   continuous_exploration: integer("continuous_exploration").notNull().default(0), // 0|1 — keep generating art overnight
   exploration_preset: text("exploration_preset").notNull().default("concept"), // preset for continuous exploration (default: FLUX.2)
+  sandbox_enabled: integer("sandbox_enabled").notNull().default(0), // 0|1 — wrap agent subprocesses in bwrap (Linux only)
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });

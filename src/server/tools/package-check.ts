@@ -5,8 +5,9 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { runProcess } from "../util/async-process";
+import type { SandboxProfile } from "../util/sandbox";
 
-export function makePackageCheckTool(workdir: string) {
+export function makePackageCheckTool(workdir: string, sandbox?: SandboxProfile) {
   return {
     checkPackage: tool({
       description: 'Check if a package is installed and what version. Returns the version string or "not installed".',
@@ -15,7 +16,7 @@ export function makePackageCheckTool(workdir: string) {
       }),
       execute: async ({ name }) => {
         const result = await runProcess("npm", ["ls", name, "--depth=0", "--json"], {
-          cwd: workdir, timeoutMs: 15_000, shell: true,
+          cwd: workdir, timeoutMs: 15_000, shell: true, sandbox,
         });
 
         try {
@@ -27,7 +28,7 @@ export function makePackageCheckTool(workdir: string) {
         // Fallback: check node_modules directly
         try {
           const pkgResult = await runProcess("node", ["-e", `console.log(require('${name}/package.json').version)`], {
-            cwd: workdir, timeoutMs: 5_000, shell: true,
+            cwd: workdir, timeoutMs: 5_000, shell: true, sandbox,
           });
           const ver = pkgResult.stdout?.trim();
           if (ver && pkgResult.status === 0) return `${name}@${ver}`;

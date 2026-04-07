@@ -25,6 +25,7 @@ import {
 } from "../git";
 import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrlTool, lookupDocs } from "../tools";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
+import { buildSandboxProfile } from "../util/sandbox";
 
 import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
@@ -214,13 +215,21 @@ async function runInferenceTaskWithSession(
     console.log(`[executor] ${task.title}: project lock released, building tools/prompts...`);
     db.updateForemanTask(task.id, { git_branch: branch, git_worktree: worktreePath });
 
+    // Build sandbox profile (RW worktree, network on for npm install /
+    // package fetches). Only constructed when the foreman config opts in;
+    // otherwise the tool factories receive `undefined` and behave as before.
+    const sandbox = await buildSandboxProfile(db, project, worktreePath, {
+      readOnlyWorktree: false,
+      allowNetwork: true,
+    });
+
     // Build tools
-    const fsTools = makeFilesystemTools(worktreePath);
+    const fsTools = makeFilesystemTools(worktreePath, undefined, sandbox);
     const buildTools = makeBuildCheckTools(worktreePath, {
       buildCommand: project.build_command,
       testCommand: project.test_command,
       lintCommand: project.lint_command,
-    });
+    }, sandbox);
     // SubmitGuard: tracks the agent's submitResult attempts and fires
     // escalation when it detects (a) repeat-same-failure or (b) no writes
     // between submit attempts. The executor inspects guard.state.gaveUp
@@ -232,7 +241,7 @@ async function runInferenceTaskWithSession(
       testCommand: project.test_command,
       lintCommand: project.lint_command,
       guard: submitGuard,
-    });
+    }, sandbox);
     const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
     // Build prompts — include directive/milestone context so the implementer

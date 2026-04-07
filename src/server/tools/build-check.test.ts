@@ -50,6 +50,25 @@ describe("runAndExtractErrors", () => {
     const result = await runAndExtractErrors("exit 1", workdir);
     expect(result).toMatch(/^Exit 1/);
   });
+
+  // Regression: runAndExtractErrors must accept an optional SandboxProfile and
+  // behave identically when sandboxing is disabled (the wrapper falls through
+  // to direct spawn when isSandboxAvailable() returns false). This test runs
+  // on all platforms — Windows/macOS will exercise the fall-through path; a
+  // Linux box with bwrap installed will exercise the wrap path.
+  it("accepts a SandboxProfile and runs the command end-to-end", async () => {
+    const profile: import("../util/sandbox").SandboxProfile = {
+      worktree: workdir,
+      projectGitDir: null,
+      cacheRoot: workdir,
+      allowNetwork: false,
+      readOnlyWorktree: true,
+    };
+    // When sandbox is unavailable (Windows/macOS, or Linux without bwrap),
+    // the call must still succeed via the direct-spawn fallback.
+    const result = await runAndExtractErrors("echo ok", workdir, profile);
+    expect(result).toBe("success");
+  });
 });
 
 // ─── Submit tools ───────────────────────────────────────────────────────────

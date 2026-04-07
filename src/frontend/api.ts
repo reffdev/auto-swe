@@ -536,6 +536,8 @@ export interface ForemanConfig {
   analysis_enabled: number;
   continuous_exploration: number;
   exploration_preset: string;
+  /** 0|1 — wrap agent subprocesses in bwrap (Linux only). */
+  sandbox_enabled: number;
   created_at: string;
 }
 

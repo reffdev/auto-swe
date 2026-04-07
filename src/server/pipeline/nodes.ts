@@ -41,6 +41,7 @@ import {
   constructReviewPrompts,
   REVIEW_LENSES,
 } from "../prompts/stage";
+import { buildSandboxProfile } from "../util/sandbox";
 import {
   commitAll,
   pushBranch,
@@ -245,7 +246,11 @@ export async function scoutNode(
   state: PipelineStateType,
   config: LangGraphRunnableConfig
 ): Promise<Partial<PipelineStateType>> {
-  const { ctx, machine, project: _project, model, abortSignal } = config.configurable as PipelineConfig;
+  const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
+  const scoutSandbox = await buildSandboxProfile(ctx.db, project, state.worktreePath, {
+    readOnlyWorktree: true,
+    allowNetwork: false,
+  });
 
   // Check for cached scout brief — reuse if the codebase hasn't changed
   const currentCommit = (await getHeadCommitFull(state.worktreePath)) ?? "";
@@ -319,7 +324,7 @@ export async function scoutNode(
       systemPrompt: constructScoutPrompt({ workingDir: state.worktreePath }),
       userPrompt: userIssue + contextSection,
       tools: {
-        ...makeReadOnlyTools(state.worktreePath),
+        ...makeReadOnlyTools(state.worktreePath, undefined, scoutSandbox),
         ...makeStoryContextTool(ctx.db, state.issueId),
         saveCheckpoint: createSubmitScoutReportTool(scoutAbort, briefHolder),
       } as ToolSet,
@@ -370,7 +375,7 @@ export async function scoutNode(
           { role: "user", content: "You did not call saveCheckpoint with a valid file list. You MUST call saveCheckpoint now with your findings. The parameter is an object with a `files` array where each entry has `path` (string) and `reason` (string). Call it now. Do NOT call any other tools — only saveCheckpoint." },
         ],
         tools: {
-          ...makeReadOnlyTools(state.worktreePath),
+          ...makeReadOnlyTools(state.worktreePath, undefined, scoutSandbox),
           saveCheckpoint: createSubmitScoutReportTool(new AbortController(), retryHolder),
         } as ToolSet,
         maxSteps: 5,
@@ -418,6 +423,11 @@ export async function implementNode(
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "implement" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
+  const sandbox = await buildSandboxProfile(ctx.db, project, state.worktreePath, {
+    readOnlyWorktree: false,
+    allowNetwork: true,
+  });
+
   // Resolve scout manifest → file list with line counts
   const resolvedBrief = await resolveScoutManifest(state.worktreePath, state.scoutBrief);
   const reportLen = resolvedBrief.length;
@@ -460,9 +470,9 @@ export async function implementNode(
     systemPrompt: implPrompts.system,
     userPrompt: implPrompts.user,
     tools: {
-      ...makeFilesystemTools(state.worktreePath),
-      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }),
-      ...makePackageCheckTool(state.worktreePath),
+      ...makeFilesystemTools(state.worktreePath, undefined, sandbox),
+      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }, sandbox),
+      ...makePackageCheckTool(state.worktreePath, sandbox),
       ...makeStoryContextTool(ctx.db, state.issueId),
       ...makeImplementResultTool(),
       readRelevantFiles: createReadRelevantFilesTool(state.worktreePath, state.scoutBrief),
@@ -487,6 +497,11 @@ export async function testWriteNode(
   const { ctx, machine, project, model, abortSignal } = config.configurable as PipelineConfig;
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "test_write" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
+
+  const sandbox = await buildSandboxProfile(ctx.db, project, state.worktreePath, {
+    readOnlyWorktree: false,
+    allowNetwork: true,
+  });
 
   console.log("[pipeline] test-write stage");
 
@@ -513,9 +528,9 @@ export async function testWriteNode(
     systemPrompt: testPrompts.system,
     userPrompt: testPrompts.user,
     tools: {
-      ...makeTestWriteTools(state.worktreePath),
-      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }),
-      ...makePackageCheckTool(state.worktreePath),
+      ...makeTestWriteTools(state.worktreePath, undefined, sandbox),
+      ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }, sandbox),
+      ...makePackageCheckTool(state.worktreePath, sandbox),
       ...makeTestWriteResultTool(),
       lookupDocs,
     } as ToolSet,
@@ -554,6 +569,11 @@ export async function reviewNode(
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
   console.log(`[pipeline] review stage — lens "${lens.name}" (${state.currentLensIndex + 1}/${state.reviewLenses.length})`);
 
+  const sandbox = await buildSandboxProfile(ctx.db, project, state.worktreePath, {
+    readOnlyWorktree: true,
+    allowNetwork: false,
+  });
+
   const gitContext = await captureGitContext(state.worktreePath);
   const projectCtxReview = await gatherProjectContext(state.worktreePath);
   const resolvedBrief = await resolveScoutManifest(state.worktreePath, state.scoutBrief);
@@ -576,7 +596,7 @@ export async function reviewNode(
     systemPrompt: reviewPrompts.system,
     userPrompt: reviewPrompts.sharedContext,
     additionalMessages: [reviewPrompts.lensPrompt],
-    tools: { ...makeVerifyTools(state.worktreePath), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }), ...makeReviewVerdictTool() } as ToolSet,
+    tools: { ...makeVerifyTools(state.worktreePath, undefined, sandbox), ...makeBuildCheckTools(state.worktreePath, { buildCommand: project.build_command, testCommand: project.test_command, lintCommand: project.lint_command }, sandbox), ...makeReviewVerdictTool() } as ToolSet,
     abortSignal,
     contextLimit: machine.context_limit ?? undefined,
     worktreePath: state.worktreePath,
@@ -738,8 +758,15 @@ export async function buildGateNode(
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "build_gate" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId, status: "running", started_at: new Date().toISOString() });
 
+  // Build gate runs the project's build command — needs RW + network so the
+  // build can resolve packages and write build artifacts.
+  const sandbox = await buildSandboxProfile(ctx.db, project, state.worktreePath, {
+    readOnlyWorktree: false,
+    allowNetwork: true,
+  });
+
   console.log(`[pipeline] build gate — running: ${project.build_command}`);
-  const result = await runAndExtractErrors(project.build_command, state.worktreePath);
+  const result = await runAndExtractErrors(project.build_command, state.worktreePath, sandbox);
 
   if (result !== "success") {
     const retryCount = state.buildRetryCount + 1;
@@ -751,7 +778,7 @@ export async function buildGateNode(
   // Build passed — run lint if configured
   if (project.lint_command) {
     console.log(`[pipeline] build gate — running lint: ${project.lint_command}`);
-    const lintResult = await runAndExtractErrors(project.lint_command, state.worktreePath);
+    const lintResult = await runAndExtractErrors(project.lint_command, state.worktreePath, sandbox);
     if (lintResult !== "success") {
       const retryCount = state.buildRetryCount + 1;
       console.log(`[pipeline] build gate — lint FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
@@ -792,8 +819,13 @@ export async function testGateNode(
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "test_gate" });
   ctx.db.updateRun(run.id, { machine_id: state.machineId, status: "running", started_at: new Date().toISOString() });
 
+  const sandbox = await buildSandboxProfile(ctx.db, project, state.worktreePath, {
+    readOnlyWorktree: false,
+    allowNetwork: true,
+  });
+
   console.log(`[pipeline] test gate — running: ${project.test_command}`);
-  const result = await runAndExtractErrors(project.test_command, state.worktreePath);
+  const result = await runAndExtractErrors(project.test_command, state.worktreePath, sandbox);
 
   if (result !== "success") {
     const retryCount = state.testRetryCount + 1;
@@ -805,7 +837,7 @@ export async function testGateNode(
   // Tests passed — run lint if configured
   if (project.lint_command) {
     console.log(`[pipeline] test gate — running lint: ${project.lint_command}`);
-    const lintResult = await runAndExtractErrors(project.lint_command, state.worktreePath);
+    const lintResult = await runAndExtractErrors(project.lint_command, state.worktreePath, sandbox);
     if (lintResult !== "success") {
       const retryCount = state.testRetryCount + 1;
       console.log(`[pipeline] test gate — lint FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);

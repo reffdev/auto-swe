@@ -11,6 +11,12 @@
  */
 
 import { spawn, type ChildProcess, type SpawnOptions } from "child_process";
+import {
+  buildBwrapInvocation,
+  isSandboxAvailable,
+  recordRuntimeFailure,
+  type SandboxProfile,
+} from "./sandbox";
 
 export interface ProcessResult {
   /** Exit code, or null if the process was killed by a signal or timeout. */
@@ -26,6 +32,14 @@ export interface RunOptions extends SpawnOptions {
   timeoutMs?: number;
   /** Data to write to the child's stdin before closing it. */
   input?: string;
+  /**
+   * If set AND `isSandboxAvailable()` is true, the subprocess is wrapped
+   * in `bwrap` per the profile. Tool factories thread this through from
+   * their callers (foreman/executor, pipeline/nodes, verifier, analysis).
+   * Orchestrator code that doesn't pass this field is unaffected — direct
+   * spawn behavior is preserved.
+   */
+  sandbox?: SandboxProfile;
 }
 
 /**
@@ -78,16 +92,56 @@ function waitForProcess(
 }
 
 /**
+ * Detect bwrap-runtime failure from a child process result. bwrap exits
+ * with a small set of distinctive codes when its own setup fails (vs the
+ * wrapped command's exit code, which is forwarded). We treat the following
+ * as "the sandbox itself broke, retry without it":
+ *
+ *   - status === 126 with stderr starting with `bwrap:` (bwrap-internal err)
+ *   - error.message contains ENOENT (bwrap binary missing mid-process —
+ *     shouldn't happen post-probe but defensive)
+ *
+ * We do NOT retry on application exit codes (1, 2, etc.) because those are
+ * the wrapped command's own failures and re-running unsandboxed would mask
+ * legitimate errors.
+ */
+function isBwrapRuntimeFailure(result: ProcessResult): boolean {
+  if (result.status === 126 && result.stderr.startsWith("bwrap:")) return true;
+  if (result.error?.message.includes("ENOENT")) return true;
+  return false;
+}
+
+/**
  * Run a command as a direct spawn (no shell). Prefer this over
  * `runShellCommand` whenever you don't need shell features — passing an args
  * array prevents command injection through user-supplied values.
+ *
+ * If `opts.sandbox` is set AND `isSandboxAvailable()` is true, the
+ * subprocess is wrapped in bwrap per the profile. On bwrap-internal
+ * failure, falls back to direct spawn for this call (the cache is also
+ * decremented after RUNTIME_FAILURE_LIMIT failures).
  */
-export function runProcess(
+export async function runProcess(
   command: string,
   args: readonly string[],
   opts: RunOptions = {},
 ): Promise<ProcessResult> {
-  const { timeoutMs, input, ...spawnOpts } = opts;
+  const { timeoutMs, input, sandbox, ...spawnOpts } = opts;
+
+  if (sandbox && isSandboxAvailable()) {
+    const wrapped = await buildBwrapInvocation(sandbox, command, args, { shell: false });
+    if (wrapped) {
+      const child = spawn(wrapped.command, wrapped.args, { stdio: ["pipe", "pipe", "pipe"], ...spawnOpts });
+      const result = await waitForProcess(child, { timeoutMs, input });
+      if (isBwrapRuntimeFailure(result)) {
+        recordRuntimeFailure(`spawn ${command}: ${result.stderr.slice(0, 200) || result.error?.message}`);
+        // Fall through to direct spawn for this call
+      } else {
+        return result;
+      }
+    }
+  }
+
   const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"], ...spawnOpts });
   return waitForProcess(child, { timeoutMs, input });
 }
@@ -96,12 +150,30 @@ export function runProcess(
  * Run a command through the shell. Equivalent to the old
  * `spawnSync(cmd, { shell: true })` pattern. Use this only when you need
  * shell features (pipes, redirects, globs); prefer `runProcess` otherwise.
+ *
+ * Sandbox handling matches `runProcess` — when a profile is supplied and
+ * available, the shell command runs as `bwrap ... /bin/sh -c <command>`.
  */
-export function runShellCommand(
+export async function runShellCommand(
   command: string,
   opts: Omit<RunOptions, "shell"> = {},
 ): Promise<ProcessResult> {
-  const { timeoutMs, input, ...spawnOpts } = opts;
+  const { timeoutMs, input, sandbox, ...spawnOpts } = opts;
+
+  if (sandbox && isSandboxAvailable()) {
+    const wrapped = await buildBwrapInvocation(sandbox, command, [], { shell: true });
+    if (wrapped) {
+      const child = spawn(wrapped.command, wrapped.args, { stdio: ["pipe", "pipe", "pipe"], ...spawnOpts });
+      const result = await waitForProcess(child, { timeoutMs, input });
+      if (isBwrapRuntimeFailure(result)) {
+        recordRuntimeFailure(`shell: ${result.stderr.slice(0, 200) || result.error?.message}`);
+        // Fall through to direct spawn for this call
+      } else {
+        return result;
+      }
+    }
+  }
+
   const child = spawn(command, { stdio: ["pipe", "pipe", "pipe"], ...spawnOpts, shell: true });
   return waitForProcess(child, { timeoutMs, input });
 }

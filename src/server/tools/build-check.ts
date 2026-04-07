@@ -6,16 +6,22 @@
 import { z } from "zod";
 import { tool } from "ai";
 import { runShellCommand } from "../util/async-process";
+import type { SandboxProfile } from "../util/sandbox";
 import type { SubmitGuard } from "../foreman/submit-guard";
 
 const DEFAULT_BUILD_COMMAND = "npx tsc --noEmit";
 const DEFAULT_TEST_COMMAND = "npx jest --passWithNoTests --no-colors";
 
-export async function runAndExtractErrors(command: string, workdir: string): Promise<string> {
+export async function runAndExtractErrors(
+  command: string,
+  workdir: string,
+  sandbox?: SandboxProfile,
+): Promise<string> {
   const result = await runShellCommand(command, {
     cwd: workdir,
     timeoutMs: 120_000,
     env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+    sandbox,
   });
 
   if (result.status === 0) return "success";
@@ -50,14 +56,18 @@ export async function runAndExtractErrors(command: string, workdir: string): Pro
   return errorLines.join("\n");
 }
 
-export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: string | null; testCommand?: string | null; lintCommand?: string | null }) {
+export function makeBuildCheckTools(
+  workdir: string,
+  opts?: { buildCommand?: string | null; testCommand?: string | null; lintCommand?: string | null },
+  sandbox?: SandboxProfile,
+) {
   const buildCmd = opts?.buildCommand || DEFAULT_BUILD_COMMAND;
   const testCmd = opts?.testCommand || DEFAULT_TEST_COMMAND;
 
   const checkBuild = tool({
     description: `Run the build (${buildCmd}). Returns "success" or only the error messages.`,
     parameters: z.object({}),
-    execute: async () => runAndExtractErrors(buildCmd, workdir),
+    execute: async () => runAndExtractErrors(buildCmd, workdir, sandbox),
   });
 
   const checkTests = tool({
@@ -67,7 +77,7 @@ export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: str
     }),
     execute: async ({ testFile }) => {
       const cmd = testFile ? `${testCmd} -- ${testFile}` : testCmd;
-      return runAndExtractErrors(cmd, workdir);
+      return runAndExtractErrors(cmd, workdir, sandbox);
     },
   });
 
@@ -79,7 +89,7 @@ export function makeBuildCheckTools(workdir: string, opts?: { buildCommand?: str
     tools.checkLint = tool({
       description: `Run the linter (${lintCmd}). Returns "success" or only the error messages.`,
       parameters: z.object({}),
-      execute: async () => runAndExtractErrors(lintCmd, workdir),
+      execute: async () => runAndExtractErrors(lintCmd, workdir, sandbox),
     });
   }
 
@@ -140,7 +150,7 @@ export function makeGatedSubmitTool(workdir: string, opts?: {
    *  runStage returns. Falls back to the simple "fail and retry" behavior
    *  when omitted (used by build-check.test.ts). */
   guard?: SubmitGuard;
-}) {
+}, sandbox?: SandboxProfile) {
   const buildCmd = opts?.buildCommand || null;
   const testCmd = opts?.testCommand || null;
   const lintCmd = opts?.lintCommand || null;
@@ -177,7 +187,7 @@ export function makeGatedSubmitTool(workdir: string, opts?: {
       // Run each gate in order — stop at first failure
       for (const gate of gates) {
         console.log(`[foreman] running ${gate.name.toLowerCase()} gate: ${gate.cmd}`);
-        const result = await runAndExtractErrors(gate.cmd, workdir);
+        const result = await runAndExtractErrors(gate.cmd, workdir, sandbox);
         if (result !== "success") {
           console.log(`[foreman] ${gate.name.toLowerCase()} gate failed — returning errors to agent`);
           if (guard) {

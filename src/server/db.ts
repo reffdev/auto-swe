@@ -182,6 +182,7 @@ export class Db {
         analysis_enabled INTEGER NOT NULL DEFAULT 1,
         continuous_exploration INTEGER NOT NULL DEFAULT 0,
         exploration_preset TEXT NOT NULL DEFAULT 'concept',
+        sandbox_enabled INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS director_directives (
@@ -276,6 +277,7 @@ export class Db {
       "ALTER TABLE foreman_config ADD COLUMN analysis_enabled INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE foreman_config ADD COLUMN continuous_exploration INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_config ADD COLUMN exploration_preset TEXT NOT NULL DEFAULT 'concept'",
+      "ALTER TABLE foreman_config ADD COLUMN sandbox_enabled INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
@@ -581,6 +583,7 @@ export class Db {
           analysis_enabled INTEGER NOT NULL DEFAULT 1,
           continuous_exploration INTEGER NOT NULL DEFAULT 0,
           exploration_preset TEXT NOT NULL DEFAULT 'concept',
+          sandbox_enabled INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
       `);
@@ -1612,6 +1615,7 @@ export class Db {
       analysis_enabled: data.analysis_enabled ?? 1,
       continuous_exploration: data.continuous_exploration ?? 0,
       exploration_preset: data.exploration_preset ?? "concept",
+      sandbox_enabled: data.sandbox_enabled ?? 0,
     }).run();
     return this.getForemanConfig()!;
   }

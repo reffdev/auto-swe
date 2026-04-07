@@ -24,10 +24,21 @@ import {
 import { join, dirname, resolve, isAbsolute, sep, relative } from "path";
 import { ContextBudget } from "./context-budget";
 import { runProcess, runShellCommand } from "../util/async-process";
+import type { SandboxProfile } from "../util/sandbox";
 
 // ─── Full tool set (read + write + run) ───────────────────────────────────────
 
-export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
+/**
+ * Build the agent's filesystem tool set bound to a working directory.
+ *
+ * When `sandbox` is supplied, every internal subprocess invocation
+ * (`runCommand` shell, `searchFiles` rg/grep, `gitStatus`, `gitDiff`) is
+ * routed through bwrap with the given profile. The pure-JS file ops
+ * (`readFile`, `writeFile`, `replaceInFile`, etc.) are NOT subprocess
+ * work and are unaffected — they're confined by the existing in-process
+ * `cleanPath` check, which is the defense-in-depth alongside bwrap.
+ */
+export function makeFilesystemTools(workdir: string, _budget?: ContextBudget, sandbox?: SandboxProfile) {
   /** Normalize Windows \r\n to \n for consistent text handling across platforms */
   const normalizeEol = (text: string) => text.replace(/\r\n/g, "\n");
 
@@ -311,6 +322,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
       const result = await runShellCommand(command_to_run, {
         cwd: resolvedWorkdir,
         timeoutMs: 60_000,
+        sandbox,
       });
       const out = [result.stdout, result.stderr]
         .filter(Boolean)
@@ -394,6 +406,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = await runProcess("rg", args, {
           cwd: resolvedWorkdir,
           timeoutMs: 30_000,
+          sandbox,
         });
         if (result.error) throw { status: null, stderr: '', message: result.error.message };
         if (result.status !== 0) {
@@ -422,6 +435,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = await runProcess("grep", args, {
           cwd: resolvedWorkdir,
           timeoutMs: 30_000,
+          sandbox,
         });
         if (result.error) throw { status: null, stderr: '', message: result.error.message };
         if (result.status !== 0 && result.status !== 1) {
@@ -596,6 +610,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = await runProcess("git", ["status", "--short"], {
           cwd: resolvedWorkdir,
           timeoutMs: 10_000,
+          sandbox,
         });
         const out = (result.stdout ?? "").trim();
         trackSuccess();
@@ -639,6 +654,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = await runProcess("git", args, {
           cwd: resolvedWorkdir,
           timeoutMs: 15_000,
+          sandbox,
         });
         const out = result.stdout ?? "";
         trackSuccess();
@@ -873,14 +889,14 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
 // ─── Restricted tool sets ──────────────────────────────────────────────────────
 
 /** Read-only: for scout/analysis — no writes, no arbitrary shell execution */
-export function makeReadOnlyTools(workdir: string, budget?: ContextBudget) {
+export function makeReadOnlyTools(workdir: string, budget?: ContextBudget, sandbox?: SandboxProfile) {
   const { readFile, listDirectory, searchFiles, getFileInfo } =
-    makeFilesystemTools(workdir, budget);
+    makeFilesystemTools(workdir, budget, sandbox);
   return { readFile, listDirectory, searchFiles, getFileInfo };
 }
 
 /** Test-write tools: read + search + write + run, no git — prevents wasting steps on git commands */
-export function makeTestWriteTools(workdir: string, budget?: ContextBudget) {
+export function makeTestWriteTools(workdir: string, budget?: ContextBudget, sandbox?: SandboxProfile) {
   const {
     readFile,
     listDirectory,
@@ -892,7 +908,7 @@ export function makeTestWriteTools(workdir: string, budget?: ContextBudget) {
     gitStatus,
     gitDiff,
     getFileInfo,
-  } = makeFilesystemTools(workdir, budget);
+  } = makeFilesystemTools(workdir, budget, sandbox);
   return {
     readFile,
     listDirectory,
@@ -908,8 +924,8 @@ export function makeTestWriteTools(workdir: string, budget?: ContextBudget) {
 }
 
 /** Verify tools: read + search + shell + git status/diff, no writes — verify agents must not modify code */
-export function makeVerifyTools(workdir: string, budget?: ContextBudget) {
+export function makeVerifyTools(workdir: string, budget?: ContextBudget, sandbox?: SandboxProfile) {
   const { readFile, listDirectory, searchFiles, runCommand, gitStatus, gitDiff, getFileInfo } =
-    makeFilesystemTools(workdir, budget);
+    makeFilesystemTools(workdir, budget, sandbox);
   return { readFile, listDirectory, searchFiles, runCommand, gitStatus, gitDiff, getFileInfo };
 }

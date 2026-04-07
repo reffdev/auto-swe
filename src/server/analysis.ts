@@ -20,6 +20,7 @@ import {
   ModelNotFoundError,
 } from "./models";
 import { runStaticScan } from "./analysis-scan";
+import { buildSandboxProfile } from "./util/sandbox";
 
 // ─── Frequency helpers ───────────────────────────────────────────────────────
 
@@ -145,6 +146,15 @@ export async function executeAnalysis(
         console.log(`[analysis] starting "${lens.name}" for project "${project.name}" (machine: ${session.machine.name || session.machine.id})`);
         db.updateAnalysisRun(run.id, { status: "running", started_at: new Date().toISOString() });
 
+        // Analysis runs against `project.workdir` directly (not a worktree)
+        // and is read-only by nature — it inspects the codebase to produce
+        // findings, never mutates. Network is off because no analysis lens
+        // needs to fetch packages.
+        const analysisSandbox = await buildSandboxProfile(db, project, project.workdir, {
+          readOnlyWorktree: true,
+          allowNetwork: false,
+        });
+
         // ── Phase 1: Static pre-scan ──
         const scanResult = await runStaticScan(project.workdir);
         const scanJson = JSON.stringify(scanResult, null, 2);
@@ -167,7 +177,7 @@ export async function executeAnalysis(
           systemPrompt: scoutPrompts.system,
           userPrompt: scoutPrompts.user,
           tools: {
-            ...makeReadOnlyTools(project.workdir),
+            ...makeReadOnlyTools(project.workdir, undefined, analysisSandbox),
             ...makeAnalysisGroupsTool(),
           } as ToolSet,
           abortSignal: abortController.signal,
@@ -218,11 +228,11 @@ export async function executeAnalysis(
               systemPrompt: groupPrompts.system,
               userPrompt: groupPrompts.user,
               tools: {
-                ...makeReadOnlyTools(project.workdir),
+                ...makeReadOnlyTools(project.workdir, undefined, analysisSandbox),
                 ...makeBuildCheckTools(project.workdir, {
                   buildCommand: project.build_command,
                   testCommand: project.test_command,
-                }),
+                }, analysisSandbox),
                 ...makeAnalysisFindingsTool(),
               } as ToolSet,
               abortSignal: abortController.signal,
