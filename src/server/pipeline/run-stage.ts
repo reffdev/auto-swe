@@ -68,18 +68,52 @@ export interface RunStageOpts {
    * counting writes between submitResult attempts).
    */
   onToolCall?: (toolName: string) => void;
+  /**
+   * Hard wall-clock timeout for the entire stage (across all compactions and
+   * retries). When the timer fires, the AbortController is aborted, every
+   * in-flight LLM request is cancelled, and runStage throws StageWallTimeoutError.
+   * This is the upper bound that prevents a 502 storm + AI SDK retries from
+   * silently burning 30+ minutes per call. Default: 20 minutes.
+   */
+  wallTimeoutMs?: number;
 }
 
 /**
- * Thrown by runStage when the LLM stream ends with finishReason="tool-calls".
- * This means the model wanted to call MORE tools but `maxSteps` was reached
- * before it could — the agent never reached a natural stopping point and the
- * partial output should NOT be treated as a successful completion. The
- * executor catches this and triggers a fresh-context retry.
+ * Thrown by runStage when the wall-clock timeout fires before the agent
+ * finishes. The executor catches this and discards the worktree, same as
+ * StageStepLimitError.
+ */
+export class StageWallTimeoutError extends Error {
+  constructor(public readonly stageName: string, public readonly elapsedMs: number) {
+    super(`${stageName}: wall-clock timeout after ${Math.round(elapsedMs / 1000)}s. Will retry with fresh context.`);
+    this.name = "StageWallTimeoutError";
+  }
+}
+
+/**
+ * Thrown by runStage when the LLM stream ends without the agent reaching a
+ * natural stopping point. Two finish reasons trigger this:
+ *
+ *   - "tool-calls": the model wanted to call MORE tools but maxSteps was hit.
+ *   - "length":     the model burned its entire completion-token budget on
+ *                   text (no tool calls) — typically a runaway hallucination
+ *                   wall-of-thinking. The 4096+ char text dump is unreliable
+ *                   and must NOT be committed.
+ *
+ * In both cases the partial output should NOT be treated as a successful
+ * completion. The executor catches this, discards the worktree, and triggers
+ * a fresh-context retry via failTaskRun's normal backoff path.
  */
 export class StageStepLimitError extends Error {
-  constructor(public readonly stageName: string, public readonly stepCount: number) {
-    super(`${stageName}: agent exhausted ${stepCount} steps without finishing (finishReason=tool-calls). Will retry with fresh context.`);
+  constructor(
+    public readonly stageName: string,
+    public readonly stepCount: number,
+    public readonly finishReason: "tool-calls" | "length",
+  ) {
+    const detail = finishReason === "tool-calls"
+      ? `agent exhausted ${stepCount} steps without finishing (finishReason=tool-calls)`
+      : `agent ran out of completion-token budget without calling a tool (finishReason=length, ${stepCount} steps) — partial output discarded`;
+    super(`${stageName}: ${detail}. Will retry with fresh context.`);
     this.name = "StageStepLimitError";
   }
 }
@@ -308,6 +342,21 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     }, { once: true });
   }
 
+  // Wall-clock timeout — hard upper bound on stage runtime regardless of how
+  // many compactions/retries are in flight. Default 20 minutes; callers can
+  // raise it for known long stages (full pipelines) or lower it for fast ones.
+  const WALL_TIMEOUT_MS = opts.wallTimeoutMs ?? 20 * 60 * 1000;
+  let wallTimedOut = false;
+  const wallTimer = setTimeout(() => {
+    wallTimedOut = true;
+    const elapsed = Date.now() - startTime;
+    console.warn(`Pipeline [${stageName}]: wall-clock timeout after ${Math.round(elapsed / 1000)}s — aborting stage`);
+    // Abort the in-flight stream, then reject the cancelPromise so any await
+    // unblocks immediately and runStage's catch block sees the timeout.
+    try { compactionAbort?.abort(); } catch { /* already */ }
+    cancelReject?.(new StageWallTimeoutError(stageName, elapsed));
+  }, WALL_TIMEOUT_MS);
+
   // Current user prompt — updated on compaction
   let currentUserPrompt = userPrompt;
   let currentPreloads = opts.preloadedFiles;
@@ -382,14 +431,18 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           throw new Error(`LLM stream ended abnormally (finishReason: ${finishReason})`);
         }
 
-        // finishReason === "tool-calls" means the model wanted to call MORE
-        // tools but maxSteps was hit. The agent never finished — its output
-        // is partial and should not be treated as a successful completion.
-        // Surface as a typed error so the executor can do a fresh-context retry.
+        // finishReason === "tool-calls" → agent wanted more tools but maxSteps hit
+        // finishReason === "length"     → agent burned its output budget on text (runaway wall-of-thinking)
+        // Both mean the agent never reached a natural stopping point. Partial
+        // output is unreliable — surface as a typed error so the executor can
+        // discard the worktree and do a fresh-context retry.
         // Skip this check if compaction or expansion was triggered mid-stream
         // (those legitimately abort the stream and restart).
-        if (finishReason === "tool-calls" && !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected) {
-          throw new StageStepLimitError(stageName, steps.length);
+        if (
+          (finishReason === "tool-calls" || finishReason === "length") &&
+          !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected
+        ) {
+          throw new StageStepLimitError(stageName, steps.length, finishReason);
         }
 
         return text || "(no output)";
@@ -398,6 +451,11 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       try {
         fullText = await Promise.race([agentPromise, cancelPromise]);
       } catch (err) {
+        // Wall-clock timeout — bail out immediately, do NOT compact/retry/loop.
+        // Re-throw the typed error so the executor sees it and discards the worktree.
+        if (wallTimedOut) {
+          throw err instanceof StageWallTimeoutError ? err : new StageWallTimeoutError(stageName, Date.now() - startTime);
+        }
         // Reasoning loop detected — inject a nudge message to break the loop
         let loopTriggeredCompaction = false;
         if (reasoningLoopDetected && !abortSignal?.aborted) {
@@ -551,6 +609,7 @@ Continue from where you left off. Do not redo completed work. Focus on the remai
       break; // completed without needing compaction
     }
   } catch (err) {
+    clearTimeout(wallTimer);
     const durationMs = Date.now() - startTime;
     updateRun({
       status: "fail",
@@ -564,6 +623,7 @@ Continue from where you left off. Do not redo completed work. Focus on the remai
   }
 
   // Success
+  clearTimeout(wallTimer);
   const durationMs = Date.now() - startTime;
   if (fullText && !liveSteps.some(s => s.text === fullText)) {
     liveSteps.push({ step: stepCount + 1, text: fullText, tokens: { prompt: 0, completion: 0 }, durationMs: 0 });

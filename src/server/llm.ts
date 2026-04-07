@@ -17,6 +17,7 @@
 import { streamText, type CoreMessage, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Machine } from "./db";
+import { getBreaker } from "./foreman/circuit-breaker";
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -211,8 +212,14 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
       }
     }
 
-    // Retry loop for server errors and connection failures
+    // Retry loop for server errors and connection failures.
+    // We track the per-machine circuit breaker here so persistent upstream
+    // failures (502 storms, network outages) trip the breaker quickly,
+    // causing acquireLease to refuse subsequent leases on that machine
+    // until the cool-down expires.
+    const breaker = getBreaker(machine.id);
     let res: Response | undefined;
+    let lastErr: unknown = null;
     for (let attempt = 0; attempt <= MAX_SERVER_RETRIES; attempt++) {
       if (callerSignal?.aborted) throw new Error("Aborted");
       try {
@@ -224,7 +231,12 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
         res = await fetch(url as string, { ...init as RequestInit, signal: AbortSignal.any(signals) });
         clearTimeout(connectTimer);
       } catch (err) {
-        if (attempt >= MAX_SERVER_RETRIES) throw err;
+        lastErr = err;
+        if (attempt >= MAX_SERVER_RETRIES) {
+          breaker.recordFailure();
+          console.warn(`LLM: machine ${machine.name || machine.id} circuit breaker → ${breaker.getState()} (consecutive connection failures)`);
+          throw err;
+        }
         const delay = (attempt + 1) * 10_000;
         const bodyLen = typeof (init as RequestInit)?.body === "string" ? ((init as RequestInit).body as string).length : "?";
         const cause = err instanceof TypeError && (err as any).cause ? ` cause=${(err as any).cause?.message ?? (err as any).cause}` : "";
@@ -238,7 +250,20 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
       await sleep(delay);
     }
 
-    if (!res) throw new Error("LLM fetch failed — no response");
+    if (!res) {
+      breaker.recordFailure();
+      throw new Error(`LLM fetch failed — no response${lastErr instanceof Error ? `: ${lastErr.message}` : ""}`);
+    }
+
+    // Persistent 5xx after exhausting retries → trip the breaker
+    if (res.status >= 500) {
+      breaker.recordFailure();
+      console.warn(`LLM: machine ${machine.name || machine.id} circuit breaker → ${breaker.getState()} (persistent ${res.status})`);
+    } else if (res.status < 400) {
+      // 2xx/3xx → upstream is healthy, reset the breaker
+      breaker.recordSuccess();
+    }
+    // 4xx is neither — caller-side problem (auth, bad request), don't trip the breaker
 
     // Wrap streaming responses with inactivity detection
     if (res.body && res.headers.get("content-type")?.includes("text/event-stream")) {

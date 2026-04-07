@@ -8,7 +8,7 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import type { Db, Machine, Project, ForemanTask } from "../db";
-import { runStage, StageStepLimitError } from "../pipeline/run-stage";
+import { runStage, StageStepLimitError, StageWallTimeoutError } from "../pipeline/run-stage";
 import { withProjectLock } from "../pipeline/index";
 import { instantiateLlm, warmUpLlm } from "../llm";
 import { resolveInferenceExecution, getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
@@ -366,11 +366,15 @@ export async function executeForemanTask(
     }
 
   } catch (err) {
-    // ─── Step-limit-exhaustion path: fresh-context retry ─────────────────
-    // The agent hit maxSteps mid-tool-call cycle. The partial worktree
-    // changes are unreliable — discard them so the next retry starts from
-    // a clean slate. failTaskRun handles the retry/backoff bookkeeping.
-    if (err instanceof StageStepLimitError) {
+    // ─── Fresh-context retry paths ───────────────────────────────────────
+    // Three failure modes that all share the same recovery: discard the
+    // worktree (because partial work is unreliable) and let failTaskRun
+    // requeue with backoff for a clean retry.
+    //
+    //   StageStepLimitError  — finishReason=tool-calls or =length
+    //   StageWallTimeoutError — wall-clock budget exhausted (likely upstream
+    //                            stuck or 502 storm)
+    if (err instanceof StageStepLimitError || err instanceof StageWallTimeoutError) {
       console.warn(`[executor] ${task.title}: ${err.message}`);
       try {
         await withProjectLock(project.id, async () => {
