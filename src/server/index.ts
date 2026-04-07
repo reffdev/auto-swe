@@ -112,10 +112,9 @@ const server = app.listen(PORT, () => {
 });
 
 // 9. Terminal WebSocket (PTY for Claude CLI)
-import("./terminal").then(async ({ initPty, attachTerminalServer }) => {
-  if (await initPty()) {
-    attachTerminalServer(server, db);
-  }
+import { initPty, attachTerminalServer, shutdownTerminalSessions } from "./terminal";
+void initPty().then((ok) => {
+  if (ok) attachTerminalServer(server, db);
 }).catch(() => {});
 server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
@@ -127,19 +126,29 @@ server.on("error", (err: NodeJS.ErrnoException) => {
 });
 
 // 7. Graceful shutdown
+let shuttingDown = false;
 function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`\n${signal} received — shutting down`);
+
+  // Kill persistent terminal PTYs and close their WebSockets — without this
+  // server.close() never drains because each PTY holds a file descriptor open
+  // and each WebSocket counts as an active server connection.
+  try { shutdownTerminalSessions(); } catch { /* ignore */ }
+
   server.close(() => {
     db.close();
     console.log("Server closed");
     process.exit(0);
   });
-  // Force exit after 10s if draining takes too long
+  // Force exit after 3s if draining takes too long (systemd's stop timeout
+  // is typically 5s, so leave headroom).
   setTimeout(() => {
     console.log("Forced shutdown after timeout");
     db.close();
     process.exit(1);
-  }, 10_000);
+  }, 3_000);
 }
 
 process.on("SIGTERM", () => { shutdown("SIGTERM"); });

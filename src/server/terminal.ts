@@ -70,6 +70,24 @@ function killSession(session: PtySession, reason: string): void {
 }
 
 /**
+ * Kill all active terminal sessions. Call from the shutdown path so the Node
+ * process can exit — persistent PTYs would otherwise keep file descriptors
+ * open and block server.close() from completing.
+ */
+export function shutdownTerminalSessions(): void {
+  const count = sessions.size;
+  if (count === 0) return;
+  console.log(`Terminal: shutting down ${count} session(s)`);
+  for (const session of sessions.values()) {
+    try { session.ptyProcess.kill(); } catch { /* ignore */ }
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      try { session.ws.close(); } catch { /* ignore */ }
+    }
+  }
+  sessions.clear();
+}
+
+/**
  * Attach the terminal WebSocket server to the HTTP server.
  * Handles /ws/terminal connections.
  */
