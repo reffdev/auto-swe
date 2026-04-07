@@ -236,7 +236,7 @@ export function ForemanConfig() {
               >
                 <option value="">— Select a model —</option>
                 {inferenceModels.map(m => (
-                  <option key={m.id} value={m.id}>{m.name}{m.family ? ` (${m.family})` : ''}</option>
+                  <option key={m.id} value={m.id}>{m.name} — {m.slug}{m.family ? ` · ${m.family}` : ''}</option>
                 ))}
               </select>
               <p className="text-xs text-muted-foreground">Used for Director conversation, planner, verifier, issue decomposition, and analysis runs.</p>
@@ -267,7 +267,7 @@ export function ForemanConfig() {
               >
                 <option value="">— Select a model —</option>
                 {inferenceModels.map(m => (
-                  <option key={m.id} value={m.id}>{m.name}{m.family ? ` (${m.family})` : ''}</option>
+                  <option key={m.id} value={m.id}>{m.name} — {m.slug}{m.family ? ` · ${m.family}` : ''}</option>
                 ))}
               </select>
               <p className="text-xs text-muted-foreground">Used for Foreman code tasks (and pipeline runs). Tasks may also set their own per-task <code className="text-[10px] bg-muted px-1 rounded">model_id</code> override.</p>
