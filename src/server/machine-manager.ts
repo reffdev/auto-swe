@@ -88,7 +88,7 @@ async function releaseColocatedMachines(machine: Machine, allMachines: Machine[]
 
   for (const other of colocated) {
     try {
-      console.log(`Machine manager: releasing colocated ${other.machine_type} "${other.name || other.id}" via ${other.release_url}`);
+      console.log(`[machine-manager] releasing colocated ${other.machine_type} "${other.name || other.id}" via ${other.release_url}`);
       await fetch(other.release_url!, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -98,7 +98,7 @@ async function releaseColocatedMachines(machine: Machine, allMachines: Machine[]
         signal: AbortSignal.timeout(10_000),
       });
     } catch (err) {
-      console.warn(`Machine manager: failed to release ${other.name || other.id}: ${err instanceof Error ? err.message : err}`);
+      console.warn(`[machine-manager] failed to release ${other.name || other.id}: ${err instanceof Error ? err.message : err}`);
     }
   }
 }
@@ -135,7 +135,7 @@ let expiryInterval: ReturnType<typeof setInterval> | null = null;
 export function clearAllLeases(): void {
   const count = getActiveLeases().length;
   activeLeases.clear();
-  if (count > 0) console.log(`Machine manager: cleared ${count} stale lease(s) from previous session`);
+  if (count > 0) console.log(`[machine-manager] cleared ${count} stale lease(s) from previous session`);
 
   // Start periodic expiry check so hung tasks get aborted even if no new leases are acquired
   if (!expiryInterval) {
@@ -156,6 +156,13 @@ const DEFAULT_LEASE_TIMEOUT_MS: Record<LeaseConsumer, number> = {
  * Acquire a lease on an available machine.
  * Returns null if no machine is available (caller should retry later).
  *
+ * This is async because successful lease acquisition also releases any
+ * colocated GPU-sharing machines (via their release_url), which requires an
+ * HTTP round-trip. The colocation release is a mandatory part of acquiring
+ * a lease — doing it separately was a bug, because every consumer that
+ * forgot the extra step would hit a 502 storm when two machines tried to
+ * load models simultaneously.
+ *
  * @param db — Database for machine lookup
  * @param consumer — Who's requesting (director, foreman, etc.)
  * @param label — Human-readable description (e.g., "planning for milestone X")
@@ -163,12 +170,10 @@ const DEFAULT_LEASE_TIMEOUT_MS: Record<LeaseConsumer, number> = {
  * @param preferredMachineId — Try this machine first (e.g., director's configured machine)
  * @param strictPreferred — When set with preferredMachineId, ONLY the preferred
  *        machine is considered. If it's busy/unavailable, returns null instead
- *        of falling through to a type-based search. Used by acquireLeaseForModel
- *        in models.ts to ensure we never dispatch a task to a machine that
- *        doesn't host the requested logical model.
+ *        of falling through to a type-based search.
  * @param timeoutMs — Override default lease timeout
  */
-export function acquireLease(
+export async function acquireLease(
   db: Db,
   consumer: LeaseConsumer,
   label: string,
@@ -180,16 +185,15 @@ export function acquireLease(
     /** If no machine of the primary type is available, try these types in order. */
     fallbackMachineTypes?: string[];
   },
-): { lease: MachineLease; machine: Machine } | null {
+): Promise<{ lease: MachineLease; machine: Machine } | null> {
   // Clean expired leases first
   cleanExpiredLeases();
-
-  // Only log when a lease is denied (not on every attempt)
-
 
   const machines = db.getMachines();
   const machineType = opts?.machineType ?? "inference";
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_LEASE_TIMEOUT_MS[consumer];
+
+  let chosen: { lease: MachineLease; machine: Machine } | null = null;
 
   // Try preferred machine first (skip enabled check — Director can use disabled machines)
   if (opts?.preferredMachineId) {
@@ -197,63 +201,78 @@ export function acquireLease(
     if (preferred) {
       if (hasCapacity(preferred) && getBreaker(preferred.id).canExecute() && !isBlockedByColocatedMachine(preferred, machines)) {
         const lease = createLease(preferred.id, consumer, label, timeoutMs);
-        return { lease, machine: preferred };
+        chosen = { lease, machine: preferred };
+      } else {
+        console.log(`[machine-manager] preferred machine ${preferred.name || preferred.id} busy (leases: ${getLeaseCount(preferred.id)}/${preferred.max_concurrent}, breaker: ${getBreaker(preferred.id).canExecute() ? 'ok' : 'open'}, colocated: ${isBlockedByColocatedMachine(preferred, machines) ? 'blocked' : 'ok'})`);
       }
-      console.log(`Machine manager: preferred machine ${preferred.name || preferred.id} busy (leases: ${getLeaseCount(preferred.id)}/${preferred.max_concurrent}, breaker: ${getBreaker(preferred.id).canExecute() ? 'ok' : 'open'}, colocated: ${isBlockedByColocatedMachine(preferred, machines) ? 'blocked' : 'ok'})`);
     }
     // Strict mode: do not fall through to type-based search.
-    if (opts.strictPreferred) return null;
+    if (!chosen && opts.strictPreferred) return null;
   }
 
-  // Build ordered list of machine types to try: primary first, then fallbacks
-  const typesToTry = [machineType, ...(opts?.fallbackMachineTypes ?? [])];
+  if (!chosen) {
+    // Build ordered list of machine types to try: primary first, then fallbacks
+    const typesToTry = [machineType, ...(opts?.fallbackMachineTypes ?? [])];
 
-  // Foreman should never acquire the Director's reserved machine
-  const directorReserved = consumer === "foreman" ? getDirectorReservedMachine() : null;
+    // Foreman should never acquire the Director's reserved machine
+    const directorReserved = consumer === "foreman" ? getDirectorReservedMachine() : null;
 
-  for (const tryType of typesToTry) {
-    const candidates = machines.filter(m =>
-      m.enabled &&
-      m.machine_type === tryType &&
-      hasCapacity(m) &&
-      getBreaker(m.id).canExecute() &&
-      !isBlockedByColocatedMachine(m, machines) &&
-      m.id !== directorReserved
-    );
+    for (const tryType of typesToTry) {
+      const candidates = machines.filter(m =>
+        m.enabled &&
+        m.machine_type === tryType &&
+        hasCapacity(m) &&
+        getBreaker(m.id).canExecute() &&
+        !isBlockedByColocatedMachine(m, machines) &&
+        m.id !== directorReserved
+      );
 
-    if (candidates.length > 0) {
-      // Pick the machine with the fewest active leases
-      candidates.sort((a, b) => getLeaseCount(a.id) - getLeaseCount(b.id));
-      const machine = candidates[0];
-      const lease = createLease(machine.id, consumer, label, timeoutMs);
-      if (tryType !== machineType) {
-        console.log(`Machine manager: using fallback ${tryType} machine for ${consumer}/${label} (no ${machineType} available)`);
+      if (candidates.length > 0) {
+        // Pick the machine with the fewest active leases
+        candidates.sort((a, b) => getLeaseCount(a.id) - getLeaseCount(b.id));
+        const machine = candidates[0];
+        const lease = createLease(machine.id, consumer, label, timeoutMs);
+        if (tryType !== machineType) {
+          console.log(`[machine-manager] using fallback ${tryType} machine for ${consumer}/${label} (no ${machineType} available)`);
+        }
+        chosen = { lease, machine };
+        break;
       }
-      return { lease, machine };
+    }
+
+    // No machine available — only log if something is actually wrong (not just "all busy")
+    if (!chosen) {
+      const now = Date.now();
+      const lastLog = lastNoMachineLog.get(machineType) ?? 0;
+      if (now - lastLog >= NO_MACHINE_LOG_INTERVAL_MS) {
+        const allOfType = machines.filter(m => m.machine_type === machineType);
+        const enabled = allOfType.filter(m => m.enabled);
+        const withCapacity = enabled.filter(m => hasCapacity(m));
+
+        const allBusy = enabled.length > 0 && withCapacity.length === 0;
+        if (!allBusy) {
+          lastNoMachineLog.set(machineType, now);
+          const breakerOk = enabled.filter(m => getBreaker(m.id).canExecute());
+          const notColocated = enabled.filter(m => !isBlockedByColocatedMachine(m, machines));
+          const notReserved = enabled.filter(m => m.id !== directorReserved);
+          console.log(`[machine-manager] no ${machineType} machine for ${consumer}/${label} — enabled: ${enabled.length}, capacity: ${withCapacity.length}, breaker: ${breakerOk.length}, colocation: ${notColocated.length}, reserved: ${notReserved.length}`);
+        }
+      }
+      return null;
     }
   }
 
-  // No machine available — only log if something is actually wrong (not just "all busy")
-  const now = Date.now();
-  const lastLog = lastNoMachineLog.get(machineType) ?? 0;
-  if (now - lastLog >= NO_MACHINE_LOG_INTERVAL_MS) {
-    const allOfType = machines.filter(m => m.machine_type === machineType);
-    const enabled = allOfType.filter(m => m.enabled);
-    const withCapacity = enabled.filter(m => hasCapacity(m));
-
-    // Only log if there's an unexpected blocker (breaker, colocation, reservation filtering out machines that have capacity)
-    const allBusy = enabled.length > 0 && withCapacity.length === 0;
-    if (!allBusy) {
-      // Machines have capacity but are blocked by something — worth logging
-      lastNoMachineLog.set(machineType, now);
-      const breakerOk = enabled.filter(m => getBreaker(m.id).canExecute());
-      const notColocated = enabled.filter(m => !isBlockedByColocatedMachine(m, machines));
-      const notReserved = enabled.filter(m => m.id !== directorReserved);
-      console.log(`Machine manager: no ${machineType} machine for ${consumer}/${label} — enabled: ${enabled.length}, capacity: ${withCapacity.length}, breaker: ${breakerOk.length}, colocation: ${notColocated.length}, reserved: ${notReserved.length}`);
-    }
-    // If all machines are just busy (no capacity), stay silent — that's normal operation
+  // We have a lease. Release any colocated GPU-sharing machines BEFORE the
+  // caller starts its LLM work so the target machine can load its model.
+  // Fire-and-forget internally with its own 10s timeout per colocated host —
+  // failures here are logged but don't block the lease.
+  try {
+    await releaseColocatedMachines(chosen.machine, machines);
+  } catch (err) {
+    console.warn(`[machine-manager] colocation release failed for ${chosen.machine.name || chosen.machine.id}: ${err instanceof Error ? err.message : err}`);
   }
-  return null;
+
+  return chosen;
 }
 
 /**
@@ -326,14 +345,12 @@ export function getColocatedGpuTypes(machine: Machine, allMachines: Machine[]): 
 }
 
 /**
- * Prepare a machine for use by releasing colocated GPU resources.
- * Call this after acquireLease and before starting work.
+ * Scoped helper: acquire a lease, run fn with the resulting machine, and
+ * always release the lease in a finally block. Returns null without calling
+ * fn if no machine is available.
+ *
+ * Note: colocation release happens inside acquireLease(), not here.
  */
-export async function prepareColocatedMachine(db: Db, machine: Machine): Promise<void> {
-  const allMachines = db.getMachines();
-  await releaseColocatedMachines(machine, allMachines);
-}
-
 export async function withLease<T>(
   db: Db,
   consumer: LeaseConsumer,
@@ -345,12 +362,11 @@ export async function withLease<T>(
     timeoutMs?: number;
   },
 ): Promise<T | null> {
-  const result = acquireLease(db, consumer, label, opts);
+  const result = await acquireLease(db, consumer, label, opts);
   if (!result) return null;
 
   const { lease, machine } = result;
   try {
-    await releaseColocatedMachines(machine, db.getMachines());
     return await fn(machine);
   } finally {
     releaseLease(lease.id);
@@ -388,10 +404,10 @@ function cleanExpiredLeases(): void {
     const expired = leases.filter(l => l.expiresAt <= now);
     if (expired.length > 0) {
       for (const l of expired) {
-        console.warn(`Machine lease expired: ${l.consumer}/${l.label} on machine ${machineId} (held ${Math.round((now - l.acquiredAt) / 1000)}s)`);
+        console.warn(`[machine-manager:lease-expired] ${l.consumer}/${l.label} on machine ${machineId} (held ${Math.round((now - l.acquiredAt) / 1000)}s)`);
         if (l.onExpiry) {
           try { l.onExpiry(); } catch (err) {
-            console.warn(`Machine lease onExpiry error: ${err instanceof Error ? err.message : err}`);
+            console.warn(`[machine-manager:lease-onExpiry] ${err instanceof Error ? err.message : err}`);
           }
         }
       }

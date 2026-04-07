@@ -1465,7 +1465,7 @@ export class Db {
         .set({ depends_on: newDepsJson })
         .where(eq(schema.foremanTasks.id, dep.id))
         .run();
-      console.log(`Foreman: pruned deleted task ${id} from dependent "${dep.title}" (${dep.id}) — ${pruned.length} dep(s) remaining`);
+      console.log(`[foreman] pruned deleted task ${id} from dependent "${dep.title}" (${dep.id}) — ${pruned.length} dep(s) remaining`);
     }
 
     this.sqlite.prepare("DELETE FROM foreman_runs WHERE task_id = ?").run(id);
@@ -1499,7 +1499,7 @@ export class Db {
       if (!task.depends_on) continue;
       let deps: string[];
       try { deps = JSON.parse(task.depends_on); } catch {
-        console.warn(`Foreman: task "${task.title}" (${task.id}) has malformed depends_on — marking failed`);
+        console.warn(`[foreman] task "${task.title}" (${task.id}) has malformed depends_on — marking failed`);
         this.updateForemanTask(task.id, { status: "failed", error_message: "Malformed depends_on JSON" });
         continue;
       }
@@ -1514,7 +1514,7 @@ export class Db {
           continue;
         }
         if (dep.status === "failed") {
-          console.warn(`Foreman: task "${task.title}" (${task.id}) depends on failed task "${dep.title}" — marking failed`);
+          console.warn(`[foreman] task "${task.title}" (${task.id}) depends on failed task "${dep.title}" — marking failed`);
           this.updateForemanTask(task.id, { status: "failed", error_message: `Dependency failed: "${dep.title}"` });
           hardFailed = true;
           break;
@@ -1526,7 +1526,7 @@ export class Db {
       if (prunedDepIds.length > 0) {
         const newDepsJson = survivingDeps.length > 0 ? JSON.stringify(survivingDeps) : null;
         this.updateForemanTask(task.id, { depends_on: newDepsJson });
-        console.log(`Foreman: pruned ${prunedDepIds.length} missing dep(s) from "${task.title}" (${task.id}) — ${survivingDeps.length} remaining`);
+        console.log(`[foreman] pruned ${prunedDepIds.length} missing dep(s) from "${task.title}" (${task.id}) — ${survivingDeps.length} remaining`);
       }
     }
 

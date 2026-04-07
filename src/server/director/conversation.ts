@@ -7,8 +7,9 @@
 
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { instantiateLlm, stream as llmStream } from "../llm";
-import type { Db, Machine } from "../db";
+import { stream as llmStream } from "../llm";
+import type { LlmSession } from "../llm-dispatch";
+import type { Db } from "../db";
 import { buildConversationSystemPrompt } from "./prompts";
 import { assembleDirectorContext } from "./memory";
 import { webSearchTool } from "../tools/web-search";
@@ -42,29 +43,27 @@ export async function generateDirectorResponse(opts: {
   db: Db;
   conversationId: string;
   directiveId: string;
-  machine: Machine;
-  modelId: string;
+  session: LlmSession;
   projectName: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<void> {
   const { db } = opts;
+  const { machine, providerModelId: modelId, llm: model } = opts.session;
 
-  console.log(`Director conversation: generating response for ${opts.conversationId} (directive: ${opts.directiveId}) via "${opts.machine.name || opts.machine.id}" model ${opts.modelId}`);
-
-  const model = instantiateLlm({ machine: opts.machine, providerModelId: opts.modelId });
+  console.log(`[director:conversation] generating response for ${opts.conversationId} (directive: ${opts.directiveId}) via "${machine.name || machine.id}" model ${modelId}`);
 
   // Build context from directive + project
   const directive = db.getDirectorDirective(opts.directiveId);
   const project = directive ? db.getProject(directive.project_id) : null;
 
-  if (!directive) console.warn(`Director: directive ${opts.directiveId} not found`);
-  if (!project) console.warn(`Director: project not found for directive ${opts.directiveId}`);
+  if (!directive) console.warn(`[director] directive ${opts.directiveId} not found`);
+  if (!project) console.warn(`[director] project not found for directive ${opts.directiveId}`);
 
   let projectContext: string | undefined;
   let designDocsContent: string | undefined;
 
   if (directive && project) {
-    console.log(`Director: assembling context for project "${project.name}" (workdir: ${project.workdir})`);
+    console.log(`[director] assembling context for project "${project.name}" (workdir: ${project.workdir})`);
     projectContext = await assembleDirectorContext(db, directive, project, { includeTaskSummaries: false });
 
     // Read input design docs referenced by the directive
@@ -91,7 +90,7 @@ export async function generateDirectorResponse(opts: {
     ? Object.keys(makeReadOnlyTools(project.workdir)).length +
       Object.keys(makeMemoryTools(project.workdir)).length + 3
     : 3;
-  console.log(`Director: system prompt ${systemPrompt.length} chars, ${opts.messages.length} message(s), ${toolCount} tools`);
+  console.log(`[director] system prompt ${systemPrompt.length} chars, ${opts.messages.length} message(s), ${toolCount} tools`);
 
   // Initialize streaming state
   activeStreams.set(opts.conversationId, { text: "", done: false });
@@ -128,14 +127,14 @@ export async function generateDirectorResponse(opts: {
       for (const step of steps) {
         const toolCalls = step.toolCalls as Array<{ toolName?: string }> | undefined;
         if (toolCalls?.length) {
-          console.log(`Director: step — tool calls: ${toolCalls.map(tc => tc.toolName).join(", ")}`);
+          console.log(`[director] step — tool calls: ${toolCalls.map(tc => tc.toolName).join(", ")}`);
         }
       }
     } catch { /* steps not available */ }
 
-    console.log(`Director: response complete — ${fullText.length} chars, ${stepCount} steps`);
+    console.log(`[director] response complete — ${fullText.length} chars, ${stepCount} steps`);
     if (!fullText) {
-      console.warn(`Director: empty response generated! This usually means the LLM only made tool calls without producing text. Check maxSteps and tool usage.`);
+      console.warn(`[director] empty response generated! This usually means the LLM only made tool calls without producing text. Check maxSteps and tool usage.`);
     }
 
     // Save final message to DB
@@ -149,9 +148,9 @@ export async function generateDirectorResponse(opts: {
     setTimeout(() => activeStreams.delete(opts.conversationId), 5000);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Director conversation: LLM error for ${opts.conversationId}:`, errMsg);
+    console.error(`[director:conversation] LLM error for ${opts.conversationId}:`, errMsg);
     if (err instanceof Error && err.stack) {
-      console.error(`Director conversation: LLM stack:`, err.stack);
+      console.error(`[director:conversation] LLM stack:`, err.stack);
     }
     const errorText = `Error generating response: ${errMsg.slice(0, 200)}`;
     db.createDirectorMessage({

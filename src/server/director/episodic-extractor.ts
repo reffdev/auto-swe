@@ -5,11 +5,10 @@
  * Uses an LLM to analyze logs and produce structured insights.
  */
 
-import { instantiateLlm, generate } from "../llm";
-import { selectLightMachine } from "../planner-llm";
+import { generate } from "../llm";
+import { withLightLlmSession } from "../llm-dispatch";
 import { getGlobalDb } from "./scheduler";
 import { writeMemory, readMemory } from "./persistent-memory";
-import type { Db } from "../db";
 
 /**
  * Extract patterns from episodic logs about to be pruned.
@@ -22,34 +21,30 @@ export async function extractPatternsFromLogs(
   // Need a DB to find a machine
   const db = getGlobalDb();
   if (!db) {
-    console.log("Episodic extraction: no DB available, skipping");
+    console.log("[director:episodic] no DB available, skipping");
     return;
   }
-
-  // Prefer NPU for lightweight extraction, fall back to inference
-  const machineInfo = selectLightMachine(db);
-  if (!machineInfo) {
-    console.log("Episodic extraction: no machine available, skipping");
-    return;
-  }
-
-  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
-  console.log(`Episodic extraction: using ${machineInfo.machine.machine_type} machine (${machineInfo.machine.name || machineInfo.machine.id})`);
 
   const combined = logContents.join("\n\n---\n\n");
 
-  let extractions: Extraction[];
-  try {
-    console.log(`Episodic extraction: LLM thinking (${logContents.length} logs, ${combined.length} chars) ...`);
-    const text = await generate(model, { system: EXTRACTION_PROMPT, prompt: combined });
-    extractions = parseExtractions(text);
-  } catch (err) {
-    console.warn("Episodic extraction LLM call failed:", err instanceof Error ? err.message : String(err));
+  const extractions = await withLightLlmSession(db, "director", "episodic-extraction", async (session) => {
+    console.log(`[director:episodic] using ${session.machine.machine_type} machine (${session.machine.name || session.machine.id})`);
+    console.log(`[director:episodic] LLM thinking (${logContents.length} logs, ${combined.length} chars) ...`);
+    try {
+      const text = await generate(session.llm, { system: EXTRACTION_PROMPT, prompt: combined });
+      return parseExtractions(text);
+    } catch (err) {
+      console.warn("[director:episodic] LLM call failed:", err instanceof Error ? err.message : String(err));
+      return [];
+    }
+  });
+
+  if (extractions === null) {
+    console.log("[director:episodic] no NPU machine available, skipping");
     return;
   }
-
   if (extractions.length === 0) {
-    console.log("Episodic extraction: no patterns found worth saving");
+    console.log("[director:episodic] no patterns found worth saving");
     return;
   }
 
@@ -70,7 +65,7 @@ export async function extractPatternsFromLogs(
     }
   }
 
-  console.log(`Episodic extraction: saved ${extractions.length} pattern(s) to semantic memory`);
+  console.log(`[director:episodic] saved ${extractions.length} pattern(s) to semantic memory`);
 }
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────

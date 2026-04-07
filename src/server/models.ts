@@ -419,53 +419,6 @@ export function resolveInferenceExecution(
   };
 }
 
-/**
- * Acquire a machine lease for a logical model. Iterates the resolved
- * candidate list in priority order, calling acquireLease(preferredMachineId)
- * for each, returning the first one that succeeds. Returns null when none
- * have capacity (caller should defer / retry on capacity-change events).
- *
- * This is the recommended entry point for Foreman code dispatch and any
- * other consumer that wants automatic capacity-aware fallback.
- */
-export function acquireLeaseForModel(
-  db: Db,
-  consumer: LeaseConsumer,
-  label: string,
-  modelId: string,
-  opts?: { preferMachineId?: string | null; timeoutMs?: number },
-): { lease: MachineLease; execution: ResolvedExecution } | null {
-  const { model, candidates } = resolveInferenceCandidates(db, modelId, { preferMachineId: opts?.preferMachineId });
-  // Iterate the candidate machines in priority order. Each acquireLease call
-  // uses `strictPreferred: true` so that if a candidate is busy/blocked,
-  // acquireLease returns null instead of dispatching to an unrelated inference
-  // machine that doesn't host this model. This guarantees we either pick a
-  // machine that hosts the requested logical model, or return null so the
-  // caller can defer.
-  for (const c of candidates) {
-    const result = acquireLease(db, consumer, label, {
-      preferredMachineId: c.machine.id,
-      strictPreferred: true,
-      machineType: "inference",
-      timeoutMs: opts?.timeoutMs,
-    });
-    if (result) {
-      // strictPreferred ensures result.machine.id === c.machine.id
-      return {
-        lease: result.lease,
-        execution: {
-          model,
-          binding: c.binding,
-          machine: c.machine,
-          providerModelId: c.providerModelId,
-          effectiveContextLimit: c.effectiveContextLimit,
-        },
-      };
-    }
-  }
-  return null;
-}
-
 // ─── NPU light pathway ──────────────────────────────────────────────────────
 
 /**

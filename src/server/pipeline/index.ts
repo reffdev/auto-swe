@@ -11,9 +11,8 @@
 import { StateGraph, START, END, type LangGraphRunnableConfig } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
-import { instantiateLlm } from "../llm";
+import { withLlmSession, type LlmSession } from "../llm-dispatch";
 import {
-  resolveInferenceExecution,
   getForemanCodeModelId,
   ModelSlotUnconfiguredError,
   NoMachineHostsModelError,
@@ -45,7 +44,7 @@ import {
   setupWorktree,
   removeWorktree,
 } from "../git";
-import type { Db, Machine, Issue, Project } from "../db";
+import type { Db, Issue, Project } from "../db";
 
 // Re-export public parsers for tests and external consumers
 export { extractScoutBrief, parseVerdict, parseTestVerdict } from "./parsers";
@@ -53,22 +52,7 @@ export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
 // ─── LLM helpers — delegates to unified llm.ts module ──────────────────────
 
-export { createProvider as createModelProvider, instantiateLlm, generate, stream } from "../llm";
-
-/**
- * Internal helper: resolve the Foreman-code logical model into a binding on
- * the given machine, returning the (provider string, effective context limit).
- * Throws a clear error if the slot is unconfigured or the machine doesn't
- * host the configured model.
- */
-function resolvePipelineExecution(db: Db, machine: Machine): { providerModelId: string; effectiveContextLimit: number | null } {
-  const requestedModelId = getForemanCodeModelId(db);
-  const exec = resolveInferenceExecution(db, requestedModelId, { preferMachineId: machine.id });
-  if (exec.machine.id !== machine.id) {
-    throw new Error(`Machine ${machine.id} does not host the configured Foreman code model (resolver picked ${exec.machine.id})`);
-  }
-  return { providerModelId: exec.providerModelId, effectiveContextLimit: exec.effectiveContextLimit };
-}
+export { generate, stream } from "../llm";
 
 // ─── Graph wiring (shared between production and tests) ─────────────────────
 
@@ -170,11 +154,52 @@ export interface PipelineContext {
 
 export async function executePipeline(
   ctx: PipelineContext,
-  machine: Machine,
   issue: Issue,
   project: Project,
   reviewLenses?: string[],
 ): Promise<void> {
+  let foremanCodeModelId: string;
+  try {
+    foremanCodeModelId = getForemanCodeModelId(ctx.db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      console.error(`[pipeline] ${issue.title}: ${err.message}`);
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const result = await withLlmSession(
+      ctx.db,
+      "pipeline",
+      `pipeline: ${issue.title.slice(0, 40)}`,
+      foremanCodeModelId,
+      async (session) => runPipelineWithSession(ctx, issue, project, session, reviewLenses),
+    );
+    if (result === null) {
+      console.warn(`[pipeline] ${issue.title}: no machine available`);
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+    }
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      console.error(`[pipeline] ${issue.title}: ${err.message}`);
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      return;
+    }
+    throw err;
+  }
+}
+
+async function runPipelineWithSession(
+  ctx: PipelineContext,
+  issue: Issue,
+  project: Project,
+  session: LlmSession,
+  reviewLenses?: string[],
+): Promise<"ok"> {
+  const machine = session.machine;
   const branch = makeBranchName(issue.id, issue.title);
   const worktreePath = makeWorktreePath(project.workdir, issue.id);
   const abortController = new AbortController();
@@ -200,23 +225,10 @@ export async function executePipeline(
       }
     });
 
-    console.log(`Pipeline: starting for "${issue.title}" (machine: ${machine.name || machine.id})`);
+    console.log(`[pipeline] starting for "${issue.title}" (machine: ${machine.name || machine.id})`);
 
-    // Resolve model once — shared across all pipeline nodes. Pipeline runs use
-    // the configured Foreman code slot.
-    let modelId: string;
-    try {
-      const resolved = resolvePipelineExecution(ctx.db, machine);
-      modelId = resolved.providerModelId;
-    } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
-        throw new Error(err.message);
-      }
-      throw err;
-    }
-    const model = instantiateLlm({ machine, providerModelId: modelId });
+    const modelId = session.providerModelId;
+    const model = session.llm;
 
     // Fresh run: unique thread_id so we don't resume stale checkpoints
     const threadId = `pipeline-${issue.id}-${Date.now()}`;
@@ -228,10 +240,10 @@ export async function executePipeline(
     }
 
     lastThreadIds.set(issue.id, threadId);
-    console.log(`Pipeline: thread_id = ${threadId}`);
+    console.log(`[pipeline] thread_id = ${threadId}`);
 
     const lenses = reviewLenses?.length ? reviewLenses : ["general"];
-    console.log(`Pipeline: review lenses = [${lenses.join(", ")}]`);
+    console.log(`[pipeline] review lenses = [${lenses.join(", ")}]`);
 
     const finalState = await graph.invoke(
       {
@@ -253,7 +265,7 @@ export async function executePipeline(
       }
     );
 
-    console.log(`Pipeline: graph complete — verdict=${finalState.reviewVerdict}, error=${finalState.error || "(none)"}, retryCount=${finalState.retryCount}`);
+    console.log(`[pipeline] graph complete — verdict=${finalState.reviewVerdict}, error=${finalState.error || "(none)"}, retryCount=${finalState.retryCount}`);
 
     // Check for errors from git_ops node
     if (finalState.error) {
@@ -266,13 +278,13 @@ export async function executePipeline(
         status: "failed",
         retry_count: finalState.retryCount,
       });
-      console.log(`Pipeline: failed after ${finalState.retryCount} retries`);
+      console.log(`[pipeline] failed after ${finalState.retryCount} retries`);
     }
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     const wasCancelled = abortController.signal.aborted;
-    console.error(`Pipeline: "${issue.title}" ${wasCancelled ? "cancelled" : "failed"}:`, errorMsg);
+    console.error(`[pipeline] "${issue.title}" ${wasCancelled ? "cancelled" : "failed"}:`, errorMsg);
     // Don't overwrite status if gitOps already succeeded (awaiting_review/completed)
     const currentIssue = ctx.db.getIssue(issue.id);
     if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
@@ -285,7 +297,7 @@ export async function executePipeline(
     if (finalIssue?.status === "awaiting_review" || finalIssue?.status === "completed") {
       await removeWorktree(project.workdir, worktreePath).catch(() => {});
     } else {
-      console.log(`Pipeline: keeping worktree for retry — ${worktreePath}`);
+      console.log(`[pipeline] keeping worktree for retry — ${worktreePath}`);
     }
     // Only set idle if no more active runs on this machine
     const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
@@ -293,6 +305,7 @@ export async function executePipeline(
       ctx.db.updateMachine(machine.id, { status: "idle" });
     }
   }
+  return "ok";
 }
 
 /**
@@ -302,10 +315,60 @@ export async function executePipeline(
  */
 export async function executeStageRetry(
   ctx: PipelineContext,
-  machine: Machine,
   issue: Issue,
   project: Project,
 ): Promise<void> {
+  let foremanCodeModelId: string;
+  try {
+    foremanCodeModelId = getForemanCodeModelId(ctx.db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      console.error(`[pipeline] stage retry ${issue.title}: ${err.message}`);
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      return;
+    }
+    throw err;
+  }
+
+  let needsFallback = false;
+  try {
+    const result = await withLlmSession(
+      ctx.db,
+      "pipeline",
+      `pipeline retry: ${issue.title.slice(0, 40)}`,
+      foremanCodeModelId,
+      async (session) => {
+        const r = await runStageRetryWithSession(ctx, issue, project, session);
+        if (r === "fallback") needsFallback = true;
+        return "ok" as const;
+      },
+    );
+    if (result === null) {
+      console.warn(`[pipeline] stage retry ${issue.title}: no machine available`);
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      return;
+    }
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      console.error(`[pipeline] stage retry ${issue.title}: ${err.message}`);
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      return;
+    }
+    throw err;
+  }
+
+  if (needsFallback) {
+    await executePipeline(ctx, issue, project);
+  }
+}
+
+async function runStageRetryWithSession(
+  ctx: PipelineContext,
+  issue: Issue,
+  project: Project,
+  session: LlmSession,
+): Promise<"ok" | "fallback"> {
+  const machine = session.machine;
   const branch = issue.git_branch || makeBranchName(issue.id, issue.title);
   const worktreePath = issue.git_worktree || makeWorktreePath(project.workdir, issue.id);
   const abortController = new AbortController();
@@ -314,6 +377,7 @@ export async function executeStageRetry(
   ctx.db.updateMachine(machine.id, { status: "working" });
   ctx.db.updateIssue(issue.id, { status: "running" });
 
+  let didFallback = false;
   try {
     let worktreeFresh = false;
     await withProjectLock(project.id, async () => {
@@ -328,27 +392,18 @@ export async function executeStageRetry(
 
     // If worktree was recreated fresh (rebase failed), checkpoint is invalid — fall back to full pipeline
     if (worktreeFresh) {
-      console.log(`Pipeline: worktree recreated fresh — checkpoint invalid, falling back to full pipeline`);
+      console.log(`[pipeline] worktree recreated fresh — checkpoint invalid, falling back to full pipeline`);
       activePipelines.delete(issue.id);
       const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
       if (activeCount === 0) ctx.db.updateMachine(machine.id, { status: "idle" });
-      // Re-run as a full pipeline instead of checkpoint resume
-      return await executePipeline(ctx, machine, issue, project);
+      // Re-run as a full pipeline instead of checkpoint resume — release this
+      // session first by returning "fallback" so the outer wrapper invokes
+      // executePipeline outside the lease.
+      didFallback = true;
+      return "fallback";
     }
 
-    let modelId: string;
-    try {
-      const resolved = resolvePipelineExecution(ctx.db, machine);
-      modelId = resolved.providerModelId;
-    } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
-        throw new Error(err.message);
-      }
-      throw err;
-    }
-    const model = instantiateLlm({ machine, providerModelId: modelId });
+    const model = session.llm;
 
     // Use the thread_id from the last executePipeline run to resume from checkpoint
     const threadId = lastThreadIds.get(issue.id);
@@ -359,7 +414,7 @@ export async function executeStageRetry(
     // Check if we have a checkpoint to resume from
     const existingState = await graph.getState({ configurable: { thread_id: threadId } });
     if (existingState?.values) {
-      console.log(`Pipeline: resuming from checkpoint for "${issue.title}" (thread: ${threadId}, machine: ${machine.name || machine.id})`);
+      console.log(`[pipeline] resuming from checkpoint for "${issue.title}" (thread: ${threadId}, machine: ${machine.name || machine.id})`);
     } else {
       throw new Error("Checkpoint state is empty — use 'Retry All' to start a fresh pipeline");
     }
@@ -376,7 +431,7 @@ export async function executeStageRetry(
       }
     );
 
-    console.log(`Pipeline: stage retry complete — verdict=${finalState.reviewVerdict}, error=${finalState.error || "(none)"}`);
+    console.log(`[pipeline] stage retry complete — verdict=${finalState.reviewVerdict}, error=${finalState.error || "(none)"}`);
 
     if (finalState.error) {
       throw new Error(finalState.error);
@@ -392,7 +447,7 @@ export async function executeStageRetry(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     const wasCancelled = abortController.signal.aborted;
-    console.error(`Pipeline: stage retry "${issue.title}" ${wasCancelled ? "cancelled" : "failed"}:`, errorMsg);
+    console.error(`[pipeline] stage retry "${issue.title}" ${wasCancelled ? "cancelled" : "failed"}:`, errorMsg);
     const currentIssue = ctx.db.getIssue(issue.id);
     if (currentIssue && currentIssue.status !== "awaiting_review" && currentIssue.status !== "completed") {
       ctx.db.updateIssue(issue.id, { status: wasCancelled ? "cancelled" : "failed" });
@@ -403,7 +458,7 @@ export async function executeStageRetry(
     if (finalIssue?.status === "awaiting_review" || finalIssue?.status === "completed") {
       await removeWorktree(project.workdir, worktreePath).catch(() => {});
     } else {
-      console.log(`Pipeline: keeping worktree for retry — ${worktreePath}`);
+      console.log(`[pipeline] keeping worktree for retry — ${worktreePath}`);
     }
     // Only set idle if no more active runs on this machine
     const activeCount = ctx.db.getActiveIssuesForMachine(machine.id).length;
@@ -411,4 +466,5 @@ export async function executeStageRetry(
       ctx.db.updateMachine(machine.id, { status: "idle" });
     }
   }
+  return didFallback ? "fallback" : "ok";
 }

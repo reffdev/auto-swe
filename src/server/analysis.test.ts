@@ -118,17 +118,17 @@ describe("analysis runs", () => {
     expect(latest!.id).toBe(run2.id);
   });
 
-  it("analysis runs count toward machine availability", () => {
-    const m = db.createMachine({ base_url: "http://test/v1" }); // max_concurrent defaults to 1
+  it("analysis runs count toward machine availability", async () => {
+    db.createMachine({ base_url: "http://test/v1" }); // max_concurrent defaults to 1
 
     // Acquire a lease — machine should now be at capacity
-    const lease = acquireLease(db, "analysis", "blocker", { machineType: "inference" });
+    const lease = await acquireLease(db, "analysis", "blocker", { machineType: "inference" });
     expect(lease).not.toBeNull();
 
     // Second lease should fail
-    const second = acquireLease(db, "analysis", "second", { machineType: "inference" });
+    const second = await acquireLease(db, "analysis", "second", { machineType: "inference" });
     expect(second).toBeNull();
 
-    releaseLease(lease.lease.id);
+    releaseLease(lease!.lease.id);
   });
 });

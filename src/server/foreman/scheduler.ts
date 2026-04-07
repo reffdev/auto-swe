@@ -7,10 +7,8 @@
  */
 
 import type { Db } from "../db";
-import { classifyTask, resolveForemanCodeModelId, sortByModelAffinity } from "./routing";
+import { classifyTask, sortByModelAffinity } from "./routing";
 import { executeForemanTask, cancelForemanTask, unregisterActiveTask } from "./executor";
-import { acquireLease, releaseLease, getColocatedGpuTypes, type MachineLease } from "../machine-manager";
-import { acquireLeaseForModel, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import { isComfyUITaskType } from "./task-types";
 import { canForemanDispatch } from "../orchestrator";
 import { isStyleLocked } from "../director/style-lock";
@@ -71,7 +69,7 @@ export function notifyCapacityChange(machineType?: string): void {
 /** Register the DB instance so nudge() can be called without passing it. */
 export function startForemanScheduler(db: Db): void {
   schedulerDb = db;
-  console.log("Foreman scheduler ready (event-driven)");
+  console.log("[foreman] scheduler ready (event-driven)");
   // Don't nudge here — the orchestrator controls when the first dispatch happens.
   // Auto-bootstrap ComfyUI if a machine exists but no manifest is set up
   tryComfyUIBootstrap(db);
@@ -85,7 +83,7 @@ export function stopForemanScheduler(): void {
     clearTimeout(retryTimer);
     retryTimer = null;
   }
-  console.log("Foreman scheduler stopped");
+  console.log("[foreman] scheduler stopped");
 }
 
 /**
@@ -104,7 +102,7 @@ export function nudgeForeman(db?: Db): void {
   // This ensures the Director's machine reservation is set before Foreman tries to dispatch
   setTimeout(() => {
     pendingNudge = false;
-    schedulerTick(d).catch(err => console.error("Foreman scheduler error:", err));
+    schedulerTick(d).catch(err => console.error("[foreman] scheduler error:", err));
   }, 0);
 }
 
@@ -124,7 +122,7 @@ async function schedulerTick(db: Db): Promise<void> {
 
   const project = db.getProject(config.project_id);
   if (!project) {
-    console.error(`Foreman: project ${config.project_id} not found`);
+    console.error(`[foreman] project ${config.project_id} not found`);
     return;
   }
 
@@ -154,91 +152,59 @@ async function schedulerTick(db: Db): Promise<void> {
     // Sort by logical-model affinity then priority
     const sorted = sortByModelAffinity(db, ready, lastInferenceModelId);
 
-    // Find the first task that has an available machine lease
-    let task = null;
-    let leaseResult: { lease: MachineLease; machine: import("../db").Machine } | null = null;
+    // Pick the first dispatchable task. The executor opens its own session
+    // (via withLlmSession in llm-dispatch.ts) so we don't acquire any leases
+    // here — we just mark the task running so the next dispatch tick won't
+    // pick it up again, then fire-and-forget the executor.
+    //
+    // Affinity-sorting + the colocated-yield bookkeeping below are
+    // best-effort optimizations. The executor will re-queue the task if its
+    // session can't acquire a lease, so even imperfect scheduling decisions
+    // are recoverable.
+    let task: import("../db").ForemanTask | null = null;
     for (const candidate of sorted) {
       const route = classifyTask(candidate);
-      // Skip machine types we already know are at capacity this tick
       if (exhaustedMachineTypes.has(route.machineType)) continue;
-      // Colocated yield: skip types that should yield to their colocated partner
       if (colocatedYield.has(route.machineType)) continue;
-      const result = tryAcquireForCandidate(db, candidate, route.machineType);
-      if (result) {
-        task = candidate;
-        leaseResult = result;
-        break;
-      }
-      // Mark this machine type as exhausted so we don't retry (and log) for every remaining task
-      exhaustedMachineTypes.add(route.machineType);
+      task = candidate;
+      break;
     }
-
-    // If nothing dispatched due to yield, clear yield and retry without it
-    // (the colocated type may not have any ready tasks after all)
-    if (!task && !leaseResult && colocatedYield.size > 0) {
+    if (!task && colocatedYield.size > 0) {
       colocatedYield.clear();
       for (const candidate of sorted) {
         const route = classifyTask(candidate);
         if (exhaustedMachineTypes.has(route.machineType)) continue;
-        const result = tryAcquireForCandidate(db, candidate, route.machineType);
-        if (result) {
-          task = candidate;
-          leaseResult = result;
-          break;
-        }
-        exhaustedMachineTypes.add(route.machineType);
+        task = candidate;
+        break;
       }
     }
-    if (!task || !leaseResult) break; // no dispatchable task+machine pair
+    if (!task) break;
 
-    const { lease, machine } = leaseResult;
+    const dispatchedTask = task;
 
-    // Reserve task BEFORE dispatching to prevent double-dispatch
-    db.updateForemanTask(task.id, { status: "running", machine_id: machine.id });
-    console.log(`Foreman: dispatched "${task.title}" (${task.type}) → ${machine.name || machine.id}`);
+    // Reserve task BEFORE dispatching to prevent double-dispatch within the
+    // same tick. The executor will reset to "queued" if its session can't
+    // open (no machine available). machine_id is set inside the session
+    // callback when we know which machine the executor is actually using.
+    db.updateForemanTask(dispatchedTask.id, { status: "running" });
+    console.log(`[foreman] dispatched "${dispatchedTask.title}" (${dispatchedTask.type})`);
 
-    // Abort task if lease expires (prevents hung tasks staying "running" forever)
-    const taskId = task.id;
-    lease.onExpiry = () => {
-      console.warn(`Foreman: aborting hung task "${task.title}" — lease expired`);
-      cancelForemanTask(taskId);
-    };
-
-    executeForemanTask({ db }, machine, task, project)
+    void executeForemanTask({ db }, dispatchedTask, project)
       .catch(err => {
-        console.error(`Foreman task ${task.id} error:`, err);
-        // Ensure task doesn't stay stuck in "running" if executor threw before updating status
-        const current = db.getForemanTask(task.id);
+        console.error(`[foreman] task ${dispatchedTask.id} error:`, err);
+        const current = db.getForemanTask(dispatchedTask.id);
         if (current && current.status === "running") {
-          db.updateForemanTask(task.id, { status: "failed", error_message: `Executor error: ${err instanceof Error ? err.message : String(err)}` });
+          db.updateForemanTask(dispatchedTask.id, { status: "failed", error_message: `Executor error: ${err instanceof Error ? err.message : String(err)}` });
         }
       })
       .finally(() => {
-        releaseLease(lease.id);
-        unregisterActiveTask(task.id);
+        unregisterActiveTask(dispatchedTask.id);
         // Track logical model id for affinity sorting on the next tick
-        const fresh = db.getForemanTask(task.id);
+        const fresh = db.getForemanTask(dispatchedTask.id);
         if (fresh?.model_id) lastInferenceModelId = fresh.model_id;
-        else if (!isComfyUITaskType(task.type)) {
+        else if (!isComfyUITaskType(dispatchedTask.type)) {
           lastInferenceModelId = db.getForemanConfig()?.foreman_code_model_id ?? lastInferenceModelId;
         }
-
-        // Capacity freed — clear exhaustion for this machine type
-        exhaustedMachineTypes.delete(machine.machine_type);
-
-        // Colocated yield: if there are queued tasks for the colocated GPU type,
-        // yield this type for one tick so the other type gets a turn
-        const colocatedTypes = getColocatedGpuTypes(machine, db.getMachines());
-        if (colocatedTypes.length > 0) {
-          const ready = db.getForemanTasksReadyToRun();
-          for (const ct of colocatedTypes) {
-            if (ready.some(t => classifyTask(t).machineType === ct)) {
-              colocatedYield.add(machine.machine_type);
-              break;
-            }
-          }
-        }
-
         nudgeForeman(db);
       });
 
@@ -251,56 +217,6 @@ async function schedulerTick(db: Db): Promise<void> {
   if (dispatched === 0) {
     // Nothing dispatched — schedule a wake-up for the nearest retry backoff
     scheduleRetryWakeup(db);
-  }
-}
-
-// ─── Lease acquisition for a single candidate ────────────────────────────────
-
-/**
- * Try to acquire a lease for one candidate task.
- *
- * For inference tasks: resolve the logical model (per-task override or
- * configured Foreman code slot) and call acquireLeaseForModel(), which
- * iterates the candidate machines that host that model and returns the
- * first one with capacity. If the model is not configured or not hosted
- * anywhere, the task is failed with a clear message and we return null.
- *
- * For ComfyUI tasks: fall back to the legacy machineType-based acquireLease()
- * — ComfyUI dispatch is deliberately untouched by the logical-models refactor.
- */
-function tryAcquireForCandidate(
-  db: Db,
-  task: import("../db").ForemanTask,
-  machineType: import("./routing").RouteMachineType,
-): { lease: MachineLease; machine: import("../db").Machine } | null {
-  if (machineType === "comfyui") {
-    return acquireLease(db, "foreman", task.title, { machineType: "comfyui" });
-  }
-
-  // Inference path — resolve via logical model
-  const modelId = resolveForemanCodeModelId(db, task);
-  if (!modelId) {
-    db.updateForemanTask(task.id, {
-      status: "failed",
-      error_message: "Foreman code model is not configured. Set it under Settings → Foreman → Models, or set a per-task model_id.",
-    });
-    console.error(`Foreman scheduler: ${task.title}: foreman code model not configured`);
-    return null;
-  }
-  try {
-    const result = acquireLeaseForModel(db, "foreman", task.title, modelId);
-    if (!result) return null;
-    return { lease: result.lease, machine: result.execution.machine };
-  } catch (err) {
-    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
-      db.updateForemanTask(task.id, {
-        status: "failed",
-        error_message: err.message,
-      });
-      console.error(`Foreman scheduler: ${task.title}: ${err.message}`);
-      return null;
-    }
-    throw err;
   }
 }
 
@@ -372,6 +288,6 @@ function tryComfyUIBootstrap(db: Db): void {
     if (existsSync(manifestPath)) return;
     await bootstrapComfyUI(comfyMachine.base_url, project.workdir);
   })().catch(err =>
-    console.warn("ComfyUI auto-bootstrap failed:", err),
+    console.warn("[comfyui:bootstrap] auto-bootstrap failed:", err),
   );
 }

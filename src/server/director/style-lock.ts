@@ -65,7 +65,7 @@ export function lockStyle(
 
   // Write config
   writeFileSync(resolve(dir, STYLE_LOCK_FILE), JSON.stringify(config, null, 2));
-  console.log(`Style lock: locked for ${projectWorkdir} (preset: ${config.preset}, checkpoint: ${config.checkpoint})`);
+  console.log(`[director:style-lock] locked for ${projectWorkdir} (preset: ${config.preset}, checkpoint: ${config.checkpoint})`);
 }
 
 /**
@@ -105,5 +105,5 @@ export function unlockStyle(projectWorkdir: string): void {
   const refPath = resolve(dir, STYLE_REFERENCE_FILE);
   try { unlinkSync(lockPath); } catch { /* doesn't exist */ }
   try { unlinkSync(refPath); } catch { /* doesn't exist */ }
-  console.log(`Style lock: unlocked for ${projectWorkdir}`);
+  console.log(`[director:style-lock] unlocked for ${projectWorkdir}`);
 }

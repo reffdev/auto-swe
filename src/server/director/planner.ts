@@ -7,7 +7,9 @@
  * - After a milestone transitions (new milestone tasks)
  */
 
-import { instantiateLlm, stream as llmStream, warmUpLlm } from "../llm";
+import { stream as llmStream } from "../llm";
+import { withLlmSession } from "../llm-dispatch";
+import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import { MACHINE_TYPE_TASK_TYPES } from "../foreman/task-types";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
@@ -22,7 +24,6 @@ import { postProcessArtTasks } from "./art-task-processor";
 import { makeTaskQueryTools } from "../tools/task-query";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
 
-import { selectPlannerMachine } from "../planner-llm";
 import { nudgeForeman } from "../foreman/scheduler";
 import { logEpisodic } from "./persistent-memory";
 
@@ -42,16 +43,19 @@ export async function planNextTasks(
 ): Promise<number> {
   const planStartTime = Date.now();
   const reason = verificationIssues?.length ? "corrective" : idleMachineTypes?.length ? `top-up (idle: ${idleMachineTypes.join(", ")})` : "initial";
-  console.log(`Director planner: "${milestone.title}" — ${reason}`);
+  console.log(`[director:planner] "${milestone.title}" — ${reason}`);
 
-  // Select machine
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) {
-    console.error("Director planner: no machine available");
-    return 0;
+  // Director slot supplies the planner model.
+  let directorModelId: string;
+  try {
+    directorModelId = getDirectorModelId(db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      console.error(`[director:planner] ${err.message}`);
+      return 0;
+    }
+    throw err;
   }
-
-  const { machine, modelId } = machineInfo;
 
   // Assemble context + manifest + prompt
   const contextStartTime = Date.now();
@@ -73,10 +77,7 @@ export async function planNextTasks(
 
   const totalPromptChars = system.length + user.length;
   const estimatedTokens = Math.round(totalPromptChars / 4);
-  console.log(`Director planner: context ready — ~${estimatedTokens} tokens, ${Math.round((Date.now() - contextStartTime) / 1000)}s`);
-  if (machine.context_limit && estimatedTokens > machine.context_limit * 0.8) {
-    console.warn(`Director planner: prompt (~${estimatedTokens} tokens) approaching context limit (${machine.context_limit}) — may be truncated`);
-  }
+  console.log(`[director:planner] context ready — ~${estimatedTokens} tokens, ${Math.round((Date.now() - contextStartTime) / 1000)}s`);
 
   // Build tools
   let tools;
@@ -93,47 +94,62 @@ export async function planNextTasks(
       ...taskTools,
     };
   } catch (toolErr) {
-    console.error("Director planner: tool construction failed:", toolErr);
+    console.error("[director:planner] tool construction failed:", toolErr);
     throw toolErr;
   }
 
-  // Stream LLM response with progress logging
-  const llmStartTime = Date.now();
-  const execution = { machine, providerModelId: modelId };
-  const model = instantiateLlm(execution);
-  // Ensure the model is loaded before sending requests
-  await warmUpLlm(execution);
-
-  console.log(`Director planner: calling ${machine.name || modelId} ...`);
-
-  let resultText: string;
+  // Open a session for the LLM call. Hold the lease only for the duration of
+  // the LLM streaming — task creation/parsing happens after the session closes.
+  let resultText: string | null;
   try {
-    const stream = llmStream({
-      model,
-      system,
-      prompt: user,
-      tools,
-      maxSteps: 50,
-      onStepFinish: ({ toolCalls }) => {
-        if (toolCalls?.length) {
-          const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
-          const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-          console.log(`Director planner: step — ${toolNames} (${elapsed}s)`);
+    resultText = await withLlmSession(
+      db,
+      "director",
+      `plan: ${milestone.title.slice(0, 40)}`,
+      directorModelId,
+      async (session): Promise<string> => {
+        if (session.effectiveContextLimit && estimatedTokens > session.effectiveContextLimit * 0.8) {
+          console.warn(`[director:planner] prompt (~${estimatedTokens} tokens) approaching context limit (${session.effectiveContextLimit}) — may be truncated`);
         }
+        console.log(`[director:planner] calling ${session.machine.name || session.providerModelId} ...`);
+        const llmStartTime = Date.now();
+        const stream = llmStream({
+          model: session.llm,
+          system,
+          prompt: user,
+          tools,
+          maxSteps: 50,
+          onStepFinish: ({ toolCalls }) => {
+            if (toolCalls?.length) {
+              const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
+              const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+              console.log(`[director:planner] step — ${toolNames} (${elapsed}s)`);
+            }
+          },
+        });
+        let text = "";
+        for await (const chunk of stream.textStream) {
+          text += chunk;
+        }
+        const steps = await stream.steps;
+        const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+        console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s`);
+        return text;
       },
-    });
-    let text = "";
-    for await (const chunk of stream.textStream) {
-      text += chunk;
-    }
-    resultText = text;
-    const steps = await stream.steps;
-    const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-    console.log(`Director planner: LLM done — ${resultText.length} chars, ${steps.length} steps, ${elapsed}s`);
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    );
   } catch (llmErr) {
-    const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-    console.error(`Director planner: LLM failed after ${elapsed}s:`, llmErr instanceof Error ? llmErr.message : String(llmErr));
+    if (llmErr instanceof NoMachineHostsModelError || llmErr instanceof ModelNotFoundError) {
+      console.error(`[director:planner] ${llmErr.message}`);
+      return 0;
+    }
+    const elapsed = Math.round((Date.now() - planStartTime) / 1000);
+    console.error(`[director:planner] LLM failed after ${elapsed}s:`, llmErr instanceof Error ? llmErr.message : String(llmErr));
     throw llmErr;
+  }
+  if (resultText === null) {
+    console.error("[director:planner] no machine available");
+    return 0;
   }
 
   // Parse tasks
@@ -150,7 +166,7 @@ export async function planNextTasks(
     const before = rawTasks.length;
     rawTasks = rawTasks.filter(t => allowedTypes.has(t.type));
     if (rawTasks.length < before) {
-      console.log(`Director planner: filtered ${before - rawTasks.length} task(s) not matching idle machine types (${idleMachineTypes.join(", ")})`);
+      console.log(`[director:planner] filtered ${before - rawTasks.length} task(s) not matching idle machine types (${idleMachineTypes.join(", ")})`);
     }
   }
 
@@ -160,15 +176,15 @@ export async function planNextTasks(
     const rawCount = parseNextTasks(resultText).length;
     if (rawCount > 0) {
       // Tasks were parsed but all got filtered (e.g., top-up requested comfyui but LLM only generated code tasks)
-      console.log(`Director planner: ${rawCount} task(s) parsed but all filtered — none matched requested types`);
+      console.log(`[director:planner] ${rawCount} task(s) parsed but all filtered — none matched requested types`);
     } else {
       const hasTaskBlock = resultText.includes("```next_tasks");
       if (hasTaskBlock) {
-        console.warn(`Director planner: LLM produced a next_tasks block but parsing yielded 0 tasks — possible format issue. Output sample: ${resultText.slice(0, 300)}`);
+        console.warn(`[director:planner] LLM produced a next_tasks block but parsing yielded 0 tasks — possible format issue. Output sample: ${resultText.slice(0, 300)}`);
       } else if (resultText.length < 50) {
-        console.warn(`Director planner: LLM returned very short response (${resultText.length} chars) — possible error`);
+        console.warn(`[director:planner] LLM returned very short response (${resultText.length} chars) — possible error`);
       } else {
-        console.log(`Director planner: no tasks generated (milestone may be complete)`);
+        console.log(`[director:planner] no tasks generated (milestone may be complete)`);
       }
     }
     return 0;
@@ -218,7 +234,7 @@ export async function planNextTasks(
       suffix++;
     }
     if (candidate !== title) {
-      console.log(`Director planner: renamed "${title}" → "${candidate}" (title already exists in status "${existingStatus}" — retry allowed)`);
+      console.log(`[director:planner] renamed "${title}" → "${candidate}" (title already exists in status "${existingStatus}" — retry allowed)`);
     }
     batchTitles.add(candidate.toLowerCase());
     return { action: "use", title: candidate };
@@ -240,7 +256,7 @@ export async function planNextTasks(
     const decision = decideDedupe(parsed.title);
 
     if (decision.action === "drop") {
-      console.warn(`Director planner: dropping duplicate task — ${decision.reason}`);
+      console.warn(`[director:planner] dropping duplicate task — ${decision.reason}`);
       logEpisodic(project.workdir, `Planner generated a duplicate of already-done work: ${decision.reason}`, "");
       batchMap.set(i + 1, null);
       droppedDuplicates++;
@@ -275,7 +291,7 @@ export async function planNextTasks(
   }
 
   if (droppedDuplicates > 0) {
-    console.warn(`Director planner: dropped ${droppedDuplicates} duplicate task(s) that targeted already-accepted work`);
+    console.warn(`[director:planner] dropped ${droppedDuplicates} duplicate task(s) that targeted already-accepted work`);
   }
 
   // Pass 2: Resolve depends_on references (task numbers → UUIDs)
@@ -296,7 +312,7 @@ export async function planNextTasks(
         if (numTarget !== null) {
           resolvedDeps.push(numTarget);
         } else {
-          console.warn(`Director planner: task "${parsed.title}" depends on dropped duplicate #${depNum} — dependency removed`);
+          console.warn(`[director:planner] task "${parsed.title}" depends on dropped duplicate #${depNum} — dependency removed`);
         }
       } else {
         // Try matching by title against this batch first, then existing directive tasks
@@ -307,13 +323,13 @@ export async function planNextTasks(
         if (byTitle && byTitle[1] !== null) {
           resolvedDeps.push(byTitle[1]);
         } else if (byTitle && byTitle[1] === null) {
-          console.warn(`Director planner: task "${parsed.title}" depends on dropped duplicate "${dep}" — dependency removed`);
+          console.warn(`[director:planner] task "${parsed.title}" depends on dropped duplicate "${dep}" — dependency removed`);
         } else {
           const existing = allDirectiveTasks.find(t => t.title.toLowerCase() === dep.toLowerCase());
           if (existing) {
             resolvedDeps.push(existing.id);
           } else {
-            console.warn(`Director planner: unresolved dependency "${dep}" for task "${parsed.title}" — dependency will be ignored`);
+            console.warn(`[director:planner] unresolved dependency "${dep}" for task "${parsed.title}" — dependency will be ignored`);
           }
         }
       }
@@ -322,12 +338,12 @@ export async function planNextTasks(
     // Filter out self-dependencies
     const filteredDeps = resolvedDeps.filter(depId => depId !== taskId);
     if (filteredDeps.length !== resolvedDeps.length) {
-      console.warn(`Director planner: "${parsed.title}" had a self-dependency — removed`);
+      console.warn(`[director:planner] "${parsed.title}" had a self-dependency — removed`);
     }
 
     if (filteredDeps.length > 0) {
       db.updateForemanTask(taskId, { depends_on: JSON.stringify(filteredDeps) });
-      console.log(`Director planner: "${parsed.title}" depends on ${filteredDeps.length} task(s)`);
+      console.log(`[director:planner] "${parsed.title}" depends on ${filteredDeps.length} task(s)`);
     }
   }
 
@@ -356,7 +372,7 @@ export async function planNextTasks(
   for (const id of batchMap.values()) {
     if (id === null) continue;
     if (hasCycle(id)) {
-      console.warn(`Director planner: dependency cycle detected in batch — clearing all depends_on to prevent deadlock`);
+      console.warn(`[director:planner] dependency cycle detected in batch — clearing all depends_on to prevent deadlock`);
       for (const taskId of batchMap.values()) {
         if (taskId !== null) db.updateForemanTask(taskId, { depends_on: null });
       }
@@ -378,13 +394,13 @@ export async function planNextTasks(
         if (pt) createdTitles.push(`"${pt.title}" (${pt.type})`);
       }
     }
-    console.log(`Director planner: created ${created} task(s) in ${totalTime}s — ${createdTitles.join(", ")}`);
+    console.log(`[director:planner] created ${created} task(s) in ${totalTime}s — ${createdTitles.join(", ")}`);
     const taskTypes = parsedTasks.map(t => t.type).join(", ");
     logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
     nudgeForeman(db);
   } else {
     const skipped = rawTasks.length;
-    console.log(`Director planner: 0 new tasks in ${totalTime}s${skipped > 0 ? ` (${skipped} duplicate${skipped > 1 ? "s" : ""} skipped)` : ""}`);
+    console.log(`[director:planner] 0 new tasks in ${totalTime}s${skipped > 0 ? ` (${skipped} duplicate${skipped > 1 ? "s" : ""} skipped)` : ""}`);
   }
 
   return created;

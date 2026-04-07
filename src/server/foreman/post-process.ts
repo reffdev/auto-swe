@@ -18,7 +18,7 @@ async function getSharp(): Promise<typeof import("sharp") | null> {
     sharpModule = (await import("sharp")).default as unknown as typeof import("sharp");
     return sharpModule;
   } catch {
-    console.warn("PostProcess: sharp not available — image post-processing disabled");
+    console.warn("[foreman:post-process] sharp not available — image post-processing disabled");
     return null;
   }
 }
@@ -61,7 +61,7 @@ export async function postProcessImage(
 
     return true;
   } catch (err) {
-    console.warn(`PostProcess: failed for ${imagePath}:`, err instanceof Error ? err.message : err);
+    console.warn(`[foreman:post-process] failed for ${imagePath}:`, err instanceof Error ? err.message : err);
     // Clean up temp file if it was created
     try { const { unlinkSync } = await import("fs"); unlinkSync(imagePath + ".tmp"); } catch { /* doesn't exist */ }
     return false;

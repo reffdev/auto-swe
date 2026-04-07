@@ -19,9 +19,9 @@ const SOX_AVAILABLE = (() => {
 })();
 
 if (SOX_AVAILABLE) {
-  console.log("Voice STT: sox detected — audio preprocessing enabled");
+  console.log("[voice:stt] sox detected — audio preprocessing enabled");
 } else {
-  console.log("Voice STT: sox not found — audio preprocessing disabled (install with: sudo apt install sox)");
+  console.log("[voice:stt] sox not found — audio preprocessing disabled (install with: sudo apt install sox)");
 }
 
 /**

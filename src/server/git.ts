@@ -94,7 +94,7 @@ export async function ensureWorkdir(project: Project): Promise<void> {
     throw new Error(`Workdir missing and no git_remote to clone from: ${project.workdir}`);
   }
 
-  console.log(`Git: workdir missing, re-cloning ${project.git_remote} → ${project.workdir}`);
+  console.log(`[git] workdir missing, re-cloning ${project.git_remote} → ${project.workdir}`);
   mkdirSync(dirname(project.workdir), { recursive: true });
 
   const cloneUrl =
@@ -113,7 +113,7 @@ export async function ensureWorkdir(project: Project): Promise<void> {
     throw new Error(`Failed to re-clone: ${result.stderr || result.stdout || "unknown error"}`);
   }
 
-  console.log(`Git: re-cloned successfully to ${project.workdir}`);
+  console.log(`[git] re-cloned successfully to ${project.workdir}`);
 }
 
 /**
@@ -126,17 +126,17 @@ export async function resetToOrigin(project: Project): Promise<void> {
   const defaultBranch = project.git_default_branch || "main";
 
   try {
-    console.log(`Git: resetting ${workdir} to origin/${defaultBranch}`);
+    console.log(`[git] resetting ${workdir} to origin/${defaultBranch}`);
     await git("fetch origin", workdir);
     // Discard any local changes
-    await git("checkout -- .", workdir).catch(() => { console.warn("Git: checkout discard failed (non-fatal)"); });
-    await gitSafe(["clean", "-fd"], workdir).catch(() => { console.warn("Git: clean failed (non-fatal)"); });
+    await git("checkout -- .", workdir).catch(() => { console.warn("[git] checkout discard failed (non-fatal)"); });
+    await gitSafe(["clean", "-fd"], workdir).catch(() => { console.warn("[git] clean failed (non-fatal)"); });
     // Hard reset to match origin
     await gitSafe(["reset", "--hard", `origin/${defaultBranch}`], workdir);
     const hash = (await git("rev-parse --short HEAD", workdir)).trim();
-    console.log(`Git: reset to origin/${defaultBranch} @ ${hash}`);
+    console.log(`[git] reset to origin/${defaultBranch} @ ${hash}`);
   } catch (err) {
-    console.error("Git: resetToOrigin failed:", err);
+    console.error("[git] resetToOrigin failed:", err);
     // Non-fatal — setupWorktree will still work from whatever state the repo is in
   }
 }
@@ -216,7 +216,7 @@ export async function setupWorktree(
 
             await git(`rebase origin/${defaultBranch}`, worktreePath);
             const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-            console.log(`Git: reusing worktree for ${branch} @ ${hash} (rebased onto origin/${defaultBranch})`);
+            console.log(`[git] reusing worktree for ${branch} @ ${hash} (rebased onto origin/${defaultBranch})`);
           } catch (rebaseErr) {
             // Rebase conflict — abort rebase and reset to origin/main so agent works on current code.
             // Previous commits are preserved in reflog. The agent will redo its work from the current base.
@@ -225,13 +225,13 @@ export async function setupWorktree(
             try {
               await git(`reset --hard origin/${defaultBranch}`, worktreePath);
               const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-              console.warn(`Git: rebase conflict for ${branch} — reset to origin/${defaultBranch} @ ${hash} (agent will redo work from current base)`);
+              console.warn(`[git] rebase conflict for ${branch} — reset to origin/${defaultBranch} @ ${hash} (agent will redo work from current base)`);
               didReset = true;
             } catch {
               const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
               const errMsg = rebaseErr instanceof Error ? rebaseErr.message : String(rebaseErr);
-              console.warn(`Git: rebase failed for ${branch} and reset failed — keeping as-is @ ${hash}`);
-              console.warn(`Git: rebase error: ${errMsg.slice(0, 500)}`);
+              console.warn(`[git] rebase failed for ${branch} and reset failed — keeping as-is @ ${hash}`);
+              console.warn(`[git] rebase error: ${errMsg.slice(0, 500)}`);
             }
             return { ok: true, fresh: false, rebaseReset: didReset };
           }
@@ -242,20 +242,20 @@ export async function setupWorktree(
       }
 
       // Remove the stale worktree — try git first, fall back to rm -rf
-      console.log(`Git: removing stale worktree at ${worktreePath}`);
+      console.log(`[git] removing stale worktree at ${worktreePath}`);
       try {
         await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
       } catch {
         // git worktree remove failed — force-remove the directory
         try {
           rmSync(worktreePath, { recursive: true, force: true });
-          console.log(`Git: force-removed stale worktree directory`);
+          console.log(`[git] force-removed stale worktree directory`);
         } catch (rmErr) {
-          console.error(`Git: failed to remove stale worktree directory:`, rmErr);
+          console.error(`[git] failed to remove stale worktree directory:`, rmErr);
         }
       }
       // Prune any orphaned worktree entries
-      try { await git("worktree prune", mainWorkdir); } catch { console.warn("Git: worktree prune failed (non-fatal)"); }
+      try { await git("worktree prune", mainWorkdir); } catch { console.warn("[git] worktree prune failed (non-fatal)"); }
     }
 
     // Check if the branch already has commits (from a prior retry)
@@ -270,7 +270,7 @@ export async function setupWorktree(
 
     if (branchHasWork) {
       // Branch has work from a prior attempt — create worktree on the existing branch
-      console.log(`Git: branch ${branch} has prior work — reusing`);
+      console.log(`[git] branch ${branch} has prior work — reusing`);
       await gitSafe(["worktree", "add", worktreePath, branch], mainWorkdir);
     } else {
       // No prior work — delete stale branch and create fresh
@@ -286,7 +286,7 @@ export async function setupWorktree(
     const entries = readdirSync(worktreePath).filter((e) => e !== ".git");
     if (entries.length === 0) {
       const msg = `worktree created but contains no files for ${branch}`;
-      console.error(`Git: ${msg}`);
+      console.error(`[git] ${msg}`);
       try {
         await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
       } catch {
@@ -302,7 +302,7 @@ export async function setupWorktree(
     return { ok: true, fresh: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`Git: failed to create worktree for ${branch}:`, msg);
+    console.error(`[git] failed to create worktree for ${branch}:`, msg);
     return { ok: false, error: msg };
   }
 }
@@ -313,21 +313,21 @@ export async function removeWorktree(
 ): Promise<boolean> {
   try {
     await gitSafe(["worktree", "remove", worktreePath, "--force"], mainWorkdir);
-    console.log(`Git: worktree removed ${worktreePath}`);
+    console.log(`[git] worktree removed ${worktreePath}`);
   } catch {
     // git worktree remove failed — force-remove the directory
     if (existsSync(worktreePath)) {
       try {
         rmSync(worktreePath, { recursive: true, force: true });
-        console.log(`Git: force-removed worktree directory ${worktreePath}`);
+        console.log(`[git] force-removed worktree directory ${worktreePath}`);
       } catch (rmErr) {
-        console.error(`Git: failed to remove worktree directory:`, rmErr);
+        console.error(`[git] failed to remove worktree directory:`, rmErr);
         return false;
       }
     }
   }
   // Prune orphaned worktree entries
-  try { await git("worktree prune", mainWorkdir); } catch { console.warn("Git: worktree prune failed (non-fatal)"); }
+  try { await git("worktree prune", mainWorkdir); } catch { console.warn("[git] worktree prune failed (non-fatal)"); }
   return true;
 }
 
@@ -349,28 +349,28 @@ export async function commitAll(
           const sizeBytes = parseInt(sizeOut.trim(), 10);
           if (sizeBytes > 100 * 1024 * 1024) {
             await git(`reset HEAD -- "${file}"`, worktreePath);
-            console.warn(`Git: unstaged large file ${file} (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
+            console.warn(`[git] unstaged large file ${file} (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
           }
         } catch { /* skip — file might be deleted */ }
       }
-    } catch { console.warn("Git: large file check failed (non-fatal)"); }
+    } catch { console.warn("[git] large file check failed (non-fatal)"); }
 
     const { stdout: stagedOut } = await execAsync("git diff --cached --stat", {
       cwd: worktreePath,
       encoding: "utf-8",
     });
     if (!stagedOut.trim()) {
-      console.log("Git: nothing to commit");
+      console.log("[git] nothing to commit");
       return null;
     }
 
     await gitCommit(message, worktreePath);
 
     const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-    console.log(`Git: committed ${hash}`);
+    console.log(`[git] committed ${hash}`);
     return hash;
   } catch (err) {
-    console.error("Git: commit failed:", err);
+    console.error("[git] commit failed:", err);
     return null;
   }
 }
@@ -401,14 +401,14 @@ export async function rebaseAndPush(
 
     await git(`rebase origin/${defaultBranch}`, worktreePath);
     const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-    console.log(`Git: rebased ${branch} onto origin/${defaultBranch} @ ${hash}`);
+    console.log(`[git] rebased ${branch} onto origin/${defaultBranch} @ ${hash}`);
 
     await pushBranch(worktreePath, branch);
     return true;
   } catch (err) {
     // Abort any in-progress rebase
     try { await git("rebase --abort", worktreePath); } catch { /* already aborted */ }
-    console.warn(`Git: rebase failed for ${branch}:`, err instanceof Error ? err.message : String(err));
+    console.warn(`[git] rebase failed for ${branch}:`, err instanceof Error ? err.message : String(err));
     return false;
   }
 }
@@ -420,7 +420,7 @@ export async function pushBranch(
   try {
     await gitSafe(["push", "origin", branch], worktreePath);
     const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-    console.log(`Git: pushed ${branch} @ ${hash} to origin`);
+    console.log(`[git] pushed ${branch} @ ${hash} to origin`);
     return true;
   } catch (err) {
     // Non-fast-forward = branch was reset (e.g., rebase conflict recovery). Force push with lease.
@@ -429,14 +429,14 @@ export async function pushBranch(
       try {
         await gitSafe(["push", "--force-with-lease", "origin", branch], worktreePath);
         const hash = (await git("rev-parse --short HEAD", worktreePath)).trim();
-        console.log(`Git: force-pushed ${branch} @ ${hash} to origin (branch was reset)`);
+        console.log(`[git] force-pushed ${branch} @ ${hash} to origin (branch was reset)`);
         return true;
       } catch (forceErr) {
-        console.error(`Git: force-push also failed for ${branch}:`, forceErr);
+        console.error(`[git] force-push also failed for ${branch}:`, forceErr);
         return false;
       }
     }
-    console.error(`Git: push failed for ${branch}:`, err);
+    console.error(`[git] push failed for ${branch}:`, err);
     return false;
   }
 }
@@ -545,13 +545,13 @@ export async function createGitHubIssue(
   body: string
 ): Promise<GitHubIssueResult | null> {
   if (!project.git_remote || !project.git_server_token) {
-    console.log("Git: skipping GitHub issue creation — configure git_remote and git_server_token");
+    console.log("[git] skipping GitHub issue creation — configure git_remote and git_server_token");
     return null;
   }
 
   const parsed = parseRemote(project.git_remote);
   if (!parsed) {
-    console.error(`Git: cannot parse remote URL: ${project.git_remote}`);
+    console.error(`[git] cannot parse remote URL: ${project.git_remote}`);
     return null;
   }
 
@@ -573,10 +573,10 @@ export async function createGitHubIssue(
     }
 
     const issue = (await res.json()) as { html_url: string; number: number };
-    console.log(`Git: issue #${issue.number} created → ${issue.html_url}`);
+    console.log(`[git] issue #${issue.number} created → ${issue.html_url}`);
     return { url: issue.html_url, number: issue.number };
   } catch (err) {
-    console.error("Git: GitHub issue creation failed:", err);
+    console.error("[git] GitHub issue creation failed:", err);
     return null;
   }
 }
@@ -603,7 +603,7 @@ export async function createPullRequest(
 
   const parsed = parseRemote(project.git_remote);
   if (!parsed) {
-    console.error(`Git: cannot parse remote URL: ${project.git_remote}`);
+    console.error(`[git] cannot parse remote URL: ${project.git_remote}`);
     return null;
   }
 
@@ -626,10 +626,10 @@ export async function createPullRequest(
     }
 
     const pr = (await res.json()) as { html_url: string; number: number };
-    console.log(`Git: PR #${pr.number} opened → ${pr.html_url}`);
+    console.log(`[git] PR #${pr.number} opened → ${pr.html_url}`);
     return { url: pr.html_url, number: pr.number };
   } catch (err) {
-    console.error("Git: PR creation failed:", err);
+    console.error("[git] PR creation failed:", err);
     return null;
   }
 }
@@ -640,13 +640,13 @@ export async function mergePullRequest(
   message?: string,
 ): Promise<boolean> {
   if (!project.git_remote || !project.git_server_token) {
-    console.error("Git: cannot merge PR — no remote or token configured");
+    console.error("[git] cannot merge PR — no remote or token configured");
     return false;
   }
 
   const parsed = parseRemote(project.git_remote);
   if (!parsed) {
-    console.error(`Git: cannot parse remote URL: ${project.git_remote}`);
+    console.error(`[git] cannot parse remote URL: ${project.git_remote}`);
     return false;
   }
 
@@ -669,10 +669,10 @@ export async function mergePullRequest(
       throw new Error(`HTTP ${res.status}: ${text}`);
     }
 
-    console.log(`Git: PR #${prNumber} merged`);
+    console.log(`[git] PR #${prNumber} merged`);
     return true;
   } catch (err) {
-    console.error(`Git: PR merge failed:`, err);
+    console.error(`[git] PR merge failed:`, err);
     return false;
   }
 }

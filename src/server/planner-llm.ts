@@ -5,18 +5,10 @@
  * Streams responses and stores partial text in memory for polling.
  */
 
-import { instantiateLlm, stream as llmStream } from "./llm";
-import type { Db, Machine, Project } from "./db";
+import { stream as llmStream } from "./llm";
+import type { LlmSession } from "./llm-dispatch";
+import type { Db } from "./db";
 import { constructPlannerSystemPrompt } from "./prompts/planner";
-import {
-  getDirectorModelId,
-  getDirectorPreferredMachineId,
-  resolveInferenceExecution,
-  resolveLightNpuExecution,
-  ModelSlotUnconfiguredError,
-  NoMachineHostsModelError,
-  ModelNotFoundError,
-} from "./models";
 
 // ─── In-memory streaming state ───────────────────────────────────────────────
 
@@ -36,65 +28,20 @@ export function isGenerating(conversationId: string): boolean {
   return stream !== undefined && !stream.done;
 }
 
-// ─── Machine selection ───────────────────────────────────────────────────────
-//
-// Both helpers below are thin shims around the unified resolver in models.ts.
-// They preserve the legacy `{ machine, modelId }` return shape so the many
-// existing call sites don't have to change in lockstep with this refactor.
-// New code should call resolveInferenceExecution() / resolveLightNpuExecution()
-// directly to get the full ResolvedExecution (which carries effective context
-// limit and the logical model record).
-//
-// `project` is accepted for backwards compat but ignored — projects no longer
-// have their own model selection (per the logical-models refactor; pipeline
-// runs use the configured Foreman code slot, analysis uses the Director slot).
-
-export function selectPlannerMachine(db: Db, _project?: Project): { machine: Machine; modelId: string } | null {
-  try {
-    const modelId = getDirectorModelId(db);
-    const preferId = getDirectorPreferredMachineId(db);
-    const exec = resolveInferenceExecution(db, modelId, { preferMachineId: preferId });
-    return { machine: exec.machine, modelId: exec.providerModelId };
-  } catch (err) {
-    if (err instanceof ModelSlotUnconfiguredError ||
-        err instanceof NoMachineHostsModelError ||
-        err instanceof ModelNotFoundError) {
-      console.warn(`selectPlannerMachine: ${err.message}`);
-      return null;
-    }
-    throw err;
-  }
-}
-
-/**
- * Select a machine for lightweight single-shot tasks (knowledge extraction,
- * episodic extraction, art feedback, style exploration). Prefers NPU machines.
- * Returns null if no NPU machine has an enabled binding.
- *
- * Note: this NO LONGER falls back to inference machines. The previous fallback
- * existed because old setups didn't always have NPU. Post-refactor, NPU is the
- * intended pathway for light workloads; if you don't have an NPU machine, the
- * caller should fall back to the Director slot explicitly (see foreman/art-feedback.ts
- * for the canonical pattern).
- */
-export function selectLightMachine(db: Db): { machine: Machine; modelId: string } | null {
-  const exec = resolveLightNpuExecution(db);
-  if (!exec) return null;
-  return { machine: exec.machine, modelId: exec.providerModelId };
-}
-
 // ─── Response generation ─────────────────────────────────────────────────────
 
+/**
+ * Generate a planner LLM response within an open session. The caller is
+ * responsible for opening the session via withLlmSession() and ensuring it
+ * stays open for the duration of this call.
+ */
 export async function generatePlannerResponse(opts: {
   db: Db;
   conversationId: string;
-  machine: Machine;
-  modelId: string;
+  session: LlmSession;
   projectName: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<void> {
-  const model = instantiateLlm({ machine: opts.machine, providerModelId: opts.modelId });
-
   const systemPrompt = constructPlannerSystemPrompt({
     projectName: opts.projectName,
   });
@@ -104,7 +51,7 @@ export async function generatePlannerResponse(opts: {
 
   try {
     const result = llmStream({
-      model,
+      model: opts.session.llm,
       system: systemPrompt,
       messages: opts.messages.map(m => ({ role: m.role, content: m.content })),
     });

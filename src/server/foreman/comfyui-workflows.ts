@@ -486,14 +486,14 @@ export function buildWorkflow(opts: WorkflowOptions): Workflow {
   const isFlux = opts.checkpoint.toLowerCase().includes("flux");
 
   if (isFlux) {
-    console.log(`ComfyUI workflow: FLUX pipeline — checkpoint: ${opts.checkpoint}, weight_dtype: ${opts.weight_dtype ?? "default"}, lora: ${opts.lora ?? "none"}, ${opts.width}x${opts.height}, ${opts.steps} steps`);
+    console.log(`[comfyui:workflow] FLUX pipeline — checkpoint: ${opts.checkpoint}, weight_dtype: ${opts.weight_dtype ?? "default"}, lora: ${opts.lora ?? "none"}, ${opts.width}x${opts.height}, ${opts.steps} steps`);
     if (opts.lora) {
       return buildFluxTxt2ImgWithLoRAWorkflow(opts as WorkflowOptions & { lora: string });
     }
     return buildFluxTxt2ImgWorkflow(opts);
   }
 
-  console.log(`ComfyUI workflow: SDXL pipeline — checkpoint: ${opts.checkpoint}, lora: ${opts.lora ?? "none"}, ${opts.width}x${opts.height}, ${opts.steps} steps`);
+  console.log(`[comfyui:workflow] SDXL pipeline — checkpoint: ${opts.checkpoint}, lora: ${opts.lora ?? "none"}, ${opts.width}x${opts.height}, ${opts.steps} steps`);
   if (opts.lora) {
     return buildTxt2ImgWithLoRAWorkflow(opts as WorkflowOptions & { lora: string });
   }
@@ -551,7 +551,7 @@ export function applyIPAdapter(workflow: Workflow, opts: IPAdapterOptions): Work
   // Find KSampler node — it receives the model input we need to intercept
   const kSamplerEntry = Object.entries(wf).find(([, n]) => n.class_type === "KSampler");
   if (!kSamplerEntry) {
-    console.warn("applyIPAdapter: no KSampler found in workflow — skipping");
+    console.warn("[comfyui:workflow] applyIPAdapter: no KSampler found in workflow — skipping");
     return wf;
   }
 

@@ -27,7 +27,6 @@ import {
   resolveInferenceCandidates,
   resolveInferenceExecution,
   resolveLightNpuExecution,
-  acquireLeaseForModel,
   // Slot accessors
   getDirectorModelId,
   getForemanCodeModelId,
@@ -249,13 +248,13 @@ describe("resolveInferenceCandidates / resolveInferenceExecution", () => {
     expect(exec.providerModelId).toBe("p2");
   });
 
-  it("prefers a machine with capacity over one at capacity", () => {
+  it("prefers a machine with capacity over one at capacity", async () => {
     const m1 = db.createMachine({ base_url: "http://a/v1", name: "m1", max_concurrent: 1 });
     const m2 = db.createMachine({ base_url: "http://b/v1", name: "m2", max_concurrent: 1 });
     createBinding(db, { machine_id: m1.id, model_id: modelId, provider_id: "p1" });
     createBinding(db, { machine_id: m2.id, model_id: modelId, provider_id: "p2" });
     // Fill m1 to capacity via a real lease so hasCapacity() returns false
-    const lease = acquireLease(db, "foreman", "blocker", { preferredMachineId: m1.id });
+    const lease = await acquireLease(db, "foreman", "blocker", { preferredMachineId: m1.id });
     expect(lease).not.toBeNull();
     const exec = resolveInferenceExecution(db, modelId);
     expect(exec.machine.id).toBe(m2.id);
@@ -290,49 +289,6 @@ describe("resolveInferenceCandidates / resolveInferenceExecution", () => {
     createBinding(db, { machine_id: m2.id, model_id: modelId, provider_id: "p2" });
     const result = resolveInferenceCandidates(db, modelId);
     expect(result.candidates).toHaveLength(2);
-  });
-});
-
-// ─── acquireLeaseForModel ────────────────────────────────────────────────────
-
-describe("acquireLeaseForModel", () => {
-  it("acquires a lease and returns the resolved execution", () => {
-    const modelId = createLogicalModel(db, { name: "M", slug: "m" }).id;
-    const machine = db.createMachine({ base_url: "http://a/v1" });
-    createBinding(db, { machine_id: machine.id, model_id: modelId, provider_id: "p" });
-    const result = acquireLeaseForModel(db, "foreman", "task", modelId);
-    expect(result).not.toBeNull();
-    expect(result!.execution.machine.id).toBe(machine.id);
-    expect(result!.execution.providerModelId).toBe("p");
-    releaseLease(result!.lease.id);
-  });
-
-  it("returns null when all hosting machines are at capacity", () => {
-    const modelId = createLogicalModel(db, { name: "M", slug: "m" }).id;
-    const machine = db.createMachine({ base_url: "http://a/v1", max_concurrent: 1 });
-    createBinding(db, { machine_id: machine.id, model_id: modelId, provider_id: "p" });
-    const blocker = acquireLease(db, "foreman", "blocker", { preferredMachineId: machine.id });
-    expect(blocker).not.toBeNull();
-    expect(acquireLeaseForModel(db, "foreman", "next", modelId)).toBeNull();
-    if (blocker) releaseLease(blocker.lease.id);
-  });
-
-  it("falls through to a second hosting machine when the first is full", () => {
-    const modelId = createLogicalModel(db, { name: "M", slug: "m" }).id;
-    const m1 = db.createMachine({ base_url: "http://a/v1", max_concurrent: 1 });
-    const m2 = db.createMachine({ base_url: "http://b/v1", max_concurrent: 1 });
-    createBinding(db, { machine_id: m1.id, model_id: modelId, provider_id: "p1" });
-    createBinding(db, { machine_id: m2.id, model_id: modelId, provider_id: "p2" });
-    const blocker = acquireLease(db, "foreman", "blocker", { preferredMachineId: m1.id });
-    const next = acquireLeaseForModel(db, "foreman", "next", modelId);
-    expect(next).not.toBeNull();
-    expect(next!.execution.machine.id).toBe(m2.id);
-    if (blocker) releaseLease(blocker.lease.id);
-    if (next) releaseLease(next.lease.id);
-  });
-
-  it("propagates ModelNotFoundError", () => {
-    expect(() => acquireLeaseForModel(db, "foreman", "x", "nope")).toThrow(ModelNotFoundError);
   });
 });
 

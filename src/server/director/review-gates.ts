@@ -68,7 +68,7 @@ export function shouldEscalate(
   };
 
   if (!rules[autonomyLevel]) {
-    console.warn(`Director review: unknown autonomy level "${autonomyLevel}" — defaulting to conservative`);
+    console.warn(`[director:review] unknown autonomy level "${autonomyLevel}" — defaulting to conservative`);
   }
   return rules[autonomyLevel]?.[trigger] ?? true; // default to conservative
 }
@@ -113,7 +113,7 @@ export function processReviewResponse(
   review: DirectorReview,
 ): { action: "resume" | "retry_task" | "generate_tasks" | "lock_style" | "regenerate_style" | "enhance_style"; context: string } {
   if (review.status !== "responded") {
-    console.warn(`Director review: processReviewResponse called on review ${review.id} with status "${review.status}" — expected "responded"`);
+    console.warn(`[director:review] processReviewResponse called on review ${review.id} with status "${review.status}" — expected "responded"`);
   }
   const response = review.response ?? "";
 
@@ -159,7 +159,7 @@ export function processReviewResponse(
 
     default: {
       const _exhaustive: never = review.review_type as never;
-      console.warn(`Director review: unhandled type "${review.review_type}" — defaulting to resume`);
+      console.warn(`[director:review] unhandled type "${review.review_type}" — defaulting to resume`);
       return { action: "resume", context: response };
     }
   }

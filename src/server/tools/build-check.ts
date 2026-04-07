@@ -171,27 +171,27 @@ export function makeGatedSubmitTool(workdir: string, opts?: {
       if (guard) {
         const pre = guard.beginSubmitAttempt();
         if (pre.action === "fatal") {
-          console.warn(`Foreman submit guard: short-circuit before gates — ${guard.state.gaveUpReason}`);
+          console.warn(`[foreman:submit-guard] short-circuit before gates — ${guard.state.gaveUpReason}`);
           return pre.message;
         }
       }
 
       // Run each gate in order — stop at first failure
       for (const gate of gates) {
-        console.log(`Foreman: running ${gate.name.toLowerCase()} gate: ${gate.cmd}`);
+        console.log(`[foreman] running ${gate.name.toLowerCase()} gate: ${gate.cmd}`);
         const result = runAndExtractErrors(gate.cmd, workdir);
         if (result !== "success") {
-          console.log(`Foreman: ${gate.name.toLowerCase()} gate failed — returning errors to agent`);
+          console.log(`[foreman] ${gate.name.toLowerCase()} gate failed — returning errors to agent`);
           if (guard) {
             const decision = guard.recordGateFailure(gate.name, result);
             if (decision.action === "fatal") {
-              console.warn(`Foreman submit guard: escalation triggered after gate failure — ${guard.state.gaveUpReason}`);
+              console.warn(`[foreman:submit-guard] escalation triggered after gate failure — ${guard.state.gaveUpReason}`);
             }
             return decision.message;
           }
           return `❌ ${gate.name} failed — fix these errors and call submitResult again:\n\n${result}`;
         }
-        console.log(`Foreman: ${gate.name.toLowerCase()} gate passed`);
+        console.log(`[foreman] ${gate.name.toLowerCase()} gate passed`);
       }
 
       // All gates passed

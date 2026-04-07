@@ -79,7 +79,7 @@ function scanDependencyGraph(workdir: string): DepGraph {
 
     return { files, circular };
   } catch (err) {
-    console.error("Static scan: madge failed:", err);
+    console.error("[analysis:static-scan] madge failed:", err);
     return { files: {}, circular: [] };
   }
 }
@@ -215,7 +215,7 @@ function findDeadExports(metrics: FileMetrics[], depGraph: DepGraph): DeadExport
 // ─── Main Export ────────────────────────────────────────────────────────────
 
 export async function runStaticScan(workdir: string): Promise<StaticScanResult> {
-  console.log("Analysis: running static pre-scan...");
+  console.log("[analysis] running static pre-scan...");
   const start = Date.now();
 
   const depGraph = scanDependencyGraph(workdir);
@@ -243,7 +243,7 @@ export async function runStaticScan(workdir: string): Promise<StaticScanResult> 
 
   const elapsed = Date.now() - start;
   const sizeKb = Math.round(JSON.stringify(result).length / 1024);
-  console.log(`Analysis: static scan complete in ${(elapsed / 1000).toFixed(1)}s (${sizeKb}KB, ${result.summary.totalFiles} files, ${result.summary.totalFunctions} functions)`);
+  console.log(`[analysis] static scan complete in ${(elapsed / 1000).toFixed(1)}s (${sizeKb}KB, ${result.summary.totalFiles} files, ${result.summary.totalFunctions} functions)`);
 
   return result;
 }

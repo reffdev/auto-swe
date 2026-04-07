@@ -37,14 +37,14 @@ export function startOrchestrator(database: Db): void {
 
   // Clean up stale worktrees from failed/completed tasks
   cleanupWorktrees(db).then(result => {
-    if (result.cleaned > 0) console.log(`Startup: cleaned ${result.cleaned} stale worktree(s)`);
+    if (result.cleaned > 0) console.log(`[startup] cleaned ${result.cleaned} stale worktree(s)`);
   }).catch(() => {});
 
   // Director starts first — may reserve a machine for style exploration
   try {
     startDirectorScheduler(db);
   } catch (err) {
-    console.error("Orchestrator: Director scheduler failed to start:", err instanceof Error ? err.message : err);
+    console.error("[orchestrator] Director scheduler failed to start:", err instanceof Error ? err.message : err);
   }
   startForemanScheduler(db);
 

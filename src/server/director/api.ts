@@ -6,12 +6,12 @@ import { Router } from "express";
 import { spawnSync } from "child_process";
 import type { Db } from "../db";
 import { getUnattributedCommits } from "./unattributed-commits";
-import { selectPlannerMachine } from "../planner-llm";
 import { generateDirectorResponse, getDirectorStream, isDirectorGenerating } from "./conversation";
 import { decomposeDirective } from "./decomposer";
 import { planNextTasks } from "./planner";
 import { nudgeDirector } from "./scheduler";
-import { acquireLease, releaseLease } from "../machine-manager";
+import { withLlmSession } from "../llm-dispatch";
+import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError } from "../models";
 
 
 export function createDirectorRouter(db: Db): Router {
@@ -107,18 +107,25 @@ export function createDirectorRouter(db: Db): Router {
     // Auto-trigger Director LLM response to the initial directive
     const project = db.getProject(directive.project_id);
     if (project) {
-      const machineInfo = selectPlannerMachine(db, project);
-      if (machineInfo) {
+      let directorModelId: string | null = null;
+      try { directorModelId = getDirectorModelId(db); } catch { /* slot unconfigured — skip auto-response */ }
+      if (directorModelId) {
         const allMessages = db.getDirectorMessages(conversation.id);
-        void generateDirectorResponse({
+        void withLlmSession(
           db,
-          conversationId: conversation.id,
-          directiveId: directive.id,
-          machine: machineInfo.machine,
-          modelId: machineInfo.modelId,
-          projectName: project.name,
-          messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-        }).catch(err => console.error("Director initial response error:", err));
+          "director",
+          `initial: ${directive.directive.slice(0, 40)}`,
+          directorModelId,
+          async (session) => generateDirectorResponse({
+            db,
+            conversationId: conversation.id,
+            directiveId: directive.id,
+            session,
+            projectName: project.name,
+            messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+          }),
+          { preferMachineId: getDirectorPreferredMachineId(db) },
+        ).catch(err => console.error("[director] initial response error:", err));
       }
     }
 
@@ -132,7 +139,7 @@ export function createDirectorRouter(db: Db): Router {
     res.json({ conversation, messages });
   });
 
-  router.post("/conversations/:id/messages", (req, res) => {
+  router.post("/conversations/:id/messages", async (req, res) => {
     const conversation = db.getDirectorConversation(req.params.id);
     if (!conversation) return res.status(404).json({ error: "Conversation not found" });
     if (conversation.status !== "active") {
@@ -153,33 +160,39 @@ export function createDirectorRouter(db: Db): Router {
     const project = db.getProject(directive.project_id);
     if (!project) return res.status(500).json({ error: "Project not found" });
 
-    // Select machine and acquire lease
-    const machineInfo = selectPlannerMachine(db, project);
-    if (!machineInfo) return res.status(503).json({ error: "No machine available" });
-
-    const leaseResult = acquireLease(db, "director", `conversation: ${directive.directive.slice(0, 40)}`, {
-      preferredMachineId: machineInfo.machine.id,
-    });
-    if (!leaseResult) return res.status(503).json({ error: "No machine available (all busy)" });
-
-    console.log(`Director message: using machine "${leaseResult.machine.name || leaseResult.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
+    // Director slot supplies the model.
+    let directorModelId: string;
+    try {
+      directorModelId = getDirectorModelId(db);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError) {
+        return res.status(409).json({ error: err.message });
+      }
+      throw err;
+    }
 
     // Get all messages for context
     const allMessages = db.getDirectorMessages(conversation.id);
 
-    // Fire and forget — streaming response, release lease when done
-    const leaseId = leaseResult.lease.id;
-    generateDirectorResponse({
+    // Fire-and-forget: open a session, run the LLM call inside it, release on completion.
+    void withLlmSession(
       db,
-      conversationId: conversation.id,
-      directiveId: directive.id,
-      machine: leaseResult.machine,
-      modelId: machineInfo.modelId,
-      projectName: project.name,
-      messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-    })
-      .catch(err => console.error("Director conversation error:", err))
-      .finally(() => releaseLease(leaseId));
+      "director",
+      `conversation: ${directive.directive.slice(0, 40)}`,
+      directorModelId,
+      async (session) => {
+        console.log(`[director:message] using machine "${session.machine.name || session.machine.id}" (${session.providerModelId}) for conversation ${conversation.id}`);
+        return generateDirectorResponse({
+          db,
+          conversationId: conversation.id,
+          directiveId: directive.id,
+          session,
+          projectName: project.name,
+          messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+        });
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    ).catch(err => console.error("[director:conversation] error:", err));
 
     res.status(202).json({ message_id: msg.id });
   });
@@ -200,7 +213,7 @@ export function createDirectorRouter(db: Db): Router {
     });
   });
 
-  router.post("/conversations/:id/retry", (req, res) => {
+  router.post("/conversations/:id/retry", async (req, res) => {
     const conversation = db.getDirectorConversation(req.params.id);
     if (!conversation) return res.status(404).json({ error: "Conversation not found" });
 
@@ -215,15 +228,15 @@ export function createDirectorRouter(db: Db): Router {
     const project = db.getProject(directive.project_id);
     if (!project) return res.status(500).json({ error: "Project not found" });
 
-    const machineInfo = selectPlannerMachine(db, project);
-    if (!machineInfo) return res.status(503).json({ error: "No machine available" });
-
-    const leaseResult = acquireLease(db, "director", `retry: ${directive.directive.slice(0, 40)}`, {
-      preferredMachineId: machineInfo.machine.id,
-    });
-    if (!leaseResult) return res.status(503).json({ error: "No machine available (all busy)" });
-
-    console.log(`Director retry: using machine "${leaseResult.machine.name || leaseResult.machine.id}" (${machineInfo.modelId}) for conversation ${conversation.id}`);
+    let directorModelId: string;
+    try {
+      directorModelId = getDirectorModelId(db);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError) {
+        return res.status(409).json({ error: err.message });
+      }
+      throw err;
+    }
 
     // Delete the last assistant message (the failed one)
     const allMessages = db.getDirectorMessages(conversation.id);
@@ -233,19 +246,25 @@ export function createDirectorRouter(db: Db): Router {
     }
 
     // Re-trigger generation with remaining messages
-    const leaseId = leaseResult.lease.id;
     const remainingMessages = db.getDirectorMessages(conversation.id);
-    generateDirectorResponse({
+    void withLlmSession(
       db,
-      conversationId: conversation.id,
-      directiveId: directive.id,
-      machine: leaseResult.machine,
-      modelId: machineInfo.modelId,
-      projectName: project.name,
-      messages: remainingMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-    })
-      .catch(err => console.error("Director retry error:", err))
-      .finally(() => releaseLease(leaseId));
+      "director",
+      `retry: ${directive.directive.slice(0, 40)}`,
+      directorModelId,
+      async (session) => {
+        console.log(`[director:retry] using machine "${session.machine.name || session.machine.id}" (${session.providerModelId}) for conversation ${conversation.id}`);
+        return generateDirectorResponse({
+          db,
+          conversationId: conversation.id,
+          directiveId: directive.id,
+          session,
+          projectName: project.name,
+          messages: remainingMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+        });
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    ).catch(err => console.error("[director:retry] error:", err));
 
     res.status(202).json({ retrying: true });
   });
@@ -275,9 +294,9 @@ export function createDirectorRouter(db: Db): Router {
       const firstMilestone = milestones[0];
 
       if (firstMilestone) {
-        console.log(`Director: approved — starting task planning for milestone "${firstMilestone.title}"`);
+        console.log(`[director] approved — starting task planning for milestone "${firstMilestone.title}"`);
         void planNextTasks(db, updatedDirective, project, firstMilestone)
-          .catch(err => console.error("Director: initial task planning failed:", err));
+          .catch(err => console.error("[director] initial task planning failed:", err));
       }
 
       res.json({
@@ -436,7 +455,7 @@ export function createDirectorRouter(db: Db): Router {
 
     db.updateForemanTask(task.id, { completed_at: completedAt });
 
-    console.log(`Director: manual commit submission "${title}" — ${commit_shas.length} commit(s)`);
+    console.log(`[director] manual commit submission "${title}" — ${commit_shas.length} commit(s)`);
     res.json(task);
   });
 

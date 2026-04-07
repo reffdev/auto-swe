@@ -373,18 +373,14 @@ describe("issue actions", () => {
     expect(res.status).toBe(409);
   });
 
-  it("POST /api/issues/:id/approve requires available machine", async () => {
-    // Fill the only inference machine to capacity via the lease system
-    const { acquireLease, releaseLease } = await import("./machine-manager");
-    const lease = acquireLease(db, "pipeline", "blocker", { machineType: "inference" });
-    expect(lease).not.toBeNull();
+  it("POST /api/issues/:id/approve rejects when foreman code model is unconfigured", async () => {
+    // Clear the foreman code slot — approve should refuse rather than dispatch
+    db.upsertForemanConfig({ foreman_code_model_id: null });
 
     const issue = db.createIssue({ project_id: projectId, title: "Fix bug" });
     const res = await request(app).post(`/api/issues/${issue.id}/approve`);
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/no machine available/);
-
-    if (lease) releaseLease(lease.lease.id);
+    expect(res.body.error).toMatch(/not configured/i);
   });
 
   it("POST /api/issues/:id/retry resets failed issue", async () => {

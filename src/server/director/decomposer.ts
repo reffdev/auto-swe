@@ -64,7 +64,7 @@ export async function decomposeDirective(
   // Create milestone records (dedup: skip if milestones already exist for this directive)
   const existingMilestones = db.getDirectorMilestones(directive.id);
   if (existingMilestones.length > 0) {
-    console.warn(`Decomposer: directive ${directive.id} already has ${existingMilestones.length} milestone(s) — skipping creation to prevent duplicates`);
+    console.warn(`[director:decomposer] directive ${directive.id} already has ${existingMilestones.length} milestone(s) — skipping creation to prevent duplicates`);
   } else {
     for (let i = 0; i < parsedMilestones.length; i++) {
       const m = parsedMilestones[i];

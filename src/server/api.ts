@@ -14,19 +14,16 @@ import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type
 
 import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
 import { getGenerationSpeed, getAllMachineSpeeds } from "./stats";
-import { selectPlannerMachine } from "./planner-llm";
+import { withLlmSession } from "./llm-dispatch";
 import {
-  acquireLeaseForModel,
   getDirectorModelId,
+  getDirectorPreferredMachineId,
   getForemanCodeModelId,
   ModelSlotUnconfiguredError,
-  NoMachineHostsModelError,
-  ModelNotFoundError,
 } from "./models";
 import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
-import { instantiateLlm, generate } from "./llm";
-import { releaseLease } from "./machine-manager";
+import { generate } from "./llm";
 import { isDirectorBusy, isDirectorPlanning, getDirectorReservedMachine } from "./director/director-state";
 import { notifyCapacityChange } from "./foreman/scheduler";
 import { getActiveAnalysisCount } from "./analysis";
@@ -204,7 +201,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         if (project) {
           import("./foreman/comfyui-bootstrap").then(({ bootstrapComfyUI }) => {
             bootstrapComfyUI(base_url, project.workdir).catch(err =>
-              console.warn("ComfyUI bootstrap failed:", err),
+              console.warn("[comfyui:bootstrap] failed:", err),
             );
           });
         }
@@ -409,7 +406,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   // approve, retry, approve-pr, reject-pr are defined here as stubs.
   // The approve/retry handlers will be wired to the runner in a later step.
 
-  router.post("/issues/:id/approve", (req, res) => {
+  router.post("/issues/:id/approve", async (req, res) => {
     const issue = db.getIssue(req.params.id);
     if (!issue) {
       res.status(404).json({ error: "issue not found" });
@@ -424,38 +421,25 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       return;
     }
     const project = db.getProject(issue.project_id)!;
-    // Pipeline runs use the configured Foreman code slot (per refactor).
-    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
+    // Validate the Foreman code slot is configured before accepting the request.
     try {
-      const requestedModelId = getForemanCodeModelId(db);
-      leaseResult = acquireLeaseForModel(db, "pipeline", issue.title, requestedModelId);
+      getForemanCodeModelId(db);
     } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
+      if (err instanceof ModelSlotUnconfiguredError) {
         res.status(409).json({ error: err.message });
         return;
       }
       throw err;
     }
-    if (!leaseResult) {
-      res.status(409).json({ error: "no machine available — all hosts of the configured Foreman code model are at capacity" });
-      return;
-    }
-    const { lease, execution } = leaseResult;
-    const machine = execution.machine;
     db.updateIssue(issue.id, { status: "approved" });
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
 
-    // Fire-and-forget: pipeline creates its own run records per stage
+    // Fire-and-forget: executePipeline opens its own LLM session.
     if (options?.pipelineCtx) {
       const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
-      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses)
-        .catch((err) => { console.error(`Pipeline error (approve):`, err); })
-        .finally(() => releaseLease(lease.id));
-    } else {
-      releaseLease(lease.id);
+      executePipeline(options.pipelineCtx, freshIssue, project, lenses)
+        .catch((err) => { console.error(`[pipeline] error (approve):`, err); });
     }
   });
 
@@ -478,19 +462,35 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       return;
     }
 
-    const selected = selectPlannerMachine(db, project);
-    if (!selected) {
-      res.status(503).json({ error: "no enabled machines available" });
-      return;
+    // Issue decomposition uses the Director model slot.
+    let directorModelId: string;
+    try {
+      directorModelId = getDirectorModelId(db);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
     }
 
     try {
-      const model = instantiateLlm({ machine: selected.machine, providerModelId: selected.modelId });
+      const result = await withLlmSession(
+        db,
+        "director",
+        `decompose issue: ${issue.title.slice(0, 40)}`,
+        directorModelId,
+        async (session) => generate(session.llm, {
+          system: constructDecomposePrompt(),
+          prompt: `## Issue to decompose\n\n**Title:** ${issue.title}\n\n**Description:**\n${issue.description}`,
+        }),
+        { preferMachineId: getDirectorPreferredMachineId(db) },
+      );
 
-      const result = await generate(model, {
-        system: constructDecomposePrompt(),
-        prompt: `## Issue to decompose\n\n**Title:** ${issue.title}\n\n**Description:**\n${issue.description}`,
-      });
+      if (result === null) {
+        res.status(503).json({ error: "no machine available — all hosts of the configured Director model are at capacity" });
+        return;
+      }
 
       const epicProposal = parseEpicProposal(result);
       if (!epicProposal) {
@@ -570,7 +570,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getIssue(issue.id));
   });
 
-  router.post("/issues/:id/retry", (req, res) => {
+  router.post("/issues/:id/retry", async (req, res) => {
     const issue = db.getIssue(req.params.id);
     if (!issue) {
       res.status(404).json({ error: "issue not found" });
@@ -580,25 +580,15 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry issue in status '${issue.status}'` });
       return;
     }
-    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
     try {
-      const requestedModelId = getForemanCodeModelId(db);
-      leaseResult = acquireLeaseForModel(db, "pipeline", `retry: ${issue.title}`, requestedModelId);
+      getForemanCodeModelId(db);
     } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
+      if (err instanceof ModelSlotUnconfiguredError) {
         res.status(409).json({ error: err.message });
         return;
       }
       throw err;
     }
-    if (!leaseResult) {
-      res.status(409).json({ error: "no machine available — all hosts of the configured Foreman code model are at capacity" });
-      return;
-    }
-    const { lease, execution } = leaseResult;
-    const machine = execution.machine;
     db.updateIssue(issue.id, {
       status: "approved",
       git_branch: null,
@@ -614,11 +604,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
     if (options?.pipelineCtx) {
       const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
-      executePipeline(options.pipelineCtx, machine, freshIssue, project, lenses)
-        .catch((err) => { console.error(`Pipeline error (retry):`, err); })
-        .finally(() => releaseLease(lease.id));
-    } else {
-      releaseLease(lease.id);
+      executePipeline(options.pipelineCtx, freshIssue, project, lenses)
+        .catch((err) => { console.error(`[pipeline] error (retry):`, err); });
     }
   });
 
@@ -655,7 +642,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json({ hasCheckpoint: hasCheckpoint(req.params.id) });
   });
 
-  router.post("/issues/:id/retry-stage", (req, res) => {
+  router.post("/issues/:id/retry-stage", async (req, res) => {
     const issue = db.getIssue(req.params.id);
     if (!issue) {
       res.status(404).json({ error: "issue not found" });
@@ -665,35 +652,22 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry stage for issue in status '${issue.status}'` });
       return;
     }
-    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
     try {
-      const requestedModelId = getForemanCodeModelId(db);
-      leaseResult = acquireLeaseForModel(db, "pipeline", `retry: ${issue.title}`, requestedModelId);
+      getForemanCodeModelId(db);
     } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
+      if (err instanceof ModelSlotUnconfiguredError) {
         res.status(409).json({ error: err.message });
         return;
       }
       throw err;
     }
-    if (!leaseResult) {
-      res.status(409).json({ error: "no machine available — all hosts of the configured Foreman code model are at capacity" });
-      return;
-    }
-    const { lease, execution } = leaseResult;
-    const machine = execution.machine;
     const project = db.getProject(issue.project_id)!;
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
 
     if (options?.pipelineCtx) {
-      executeStageRetry(options.pipelineCtx, machine, freshIssue, project)
-        .catch((err) => { console.error(`Pipeline error (retry-stage):`, err); })
-        .finally(() => releaseLease(lease.id));
-    } else {
-      releaseLease(lease.id);
+      executeStageRetry(options.pipelineCtx, freshIssue, project)
+        .catch((err) => { console.error(`[pipeline] error (retry-stage):`, err); });
     }
   });
 
@@ -1016,31 +990,14 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   router.post("/projects/:id/analysis/trigger/:lensKey", async (req, res) => {
     const project = db.getProject(req.params.id);
     if (!project) { res.status(404).json({ error: "project not found" }); return; }
-    // Analysis runs use the configured Director model slot.
-    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
-    try {
-      const requestedModelId = getDirectorModelId(db);
-      leaseResult = acquireLeaseForModel(db, "analysis", req.params.lensKey, requestedModelId);
-    } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
-        res.status(409).json({ error: err.message });
-        return;
-      }
-      throw err;
-    }
-    if (!leaseResult) { res.status(409).json({ error: "no machine available — all hosts of the configured Director model are at capacity" }); return; }
-    const { lease, execution } = leaseResult;
-    const machine = execution.machine;
 
     const config = db.upsertAnalysisConfig({ project_id: project.id, lens_key: req.params.lensKey });
 
-    // Dynamic import to avoid circular dependency
+    // Dynamic import to avoid circular dependency. executeAnalysis owns its
+    // own lease via withLlmSession — no manual lease management here.
     const { executeAnalysis } = await import("./analysis");
-    executeAnalysis(db, machine, project, config)
-      .catch((err: Error) => { console.error("Analysis trigger error:", err); })
-      .finally(() => releaseLease(lease.id));
+    void executeAnalysis(db, project, config)
+      .catch((err: Error) => { console.error("[analysis] trigger error:", err); });
     res.status(202).json({ config });
   });
 
@@ -1058,7 +1015,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       return;
     }
     db.upsertForemanConfig({ analysis_enabled: enabled ? 1 : 0 });
-    console.log(`Analysis: globally ${enabled ? "enabled" : "disabled"}`);
+    console.log(`[analysis] globally ${enabled ? "enabled" : "disabled"}`);
     res.json({ enabled });
   });
 

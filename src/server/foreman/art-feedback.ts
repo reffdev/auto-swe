@@ -7,8 +7,9 @@
  * the feedback while maintaining the original intent.
  */
 
-import { instantiateLlm, generate } from "../llm";
-import { selectPlannerMachine, selectLightMachine } from "../planner-llm";
+import { generate } from "../llm";
+import { withLightOrLogicalLlmSession } from "../llm-dispatch";
+import { getDirectorModelId, ModelSlotUnconfiguredError } from "../models";
 import type { Db } from "../db";
 import { serializeConfig, type ComfyUITaskConfig } from "./comfyui-config";
 
@@ -55,7 +56,7 @@ export async function processArtFeedback(
       description = updateFeedbackNote(description, feedbackText);
       return description;
     } catch (err) {
-      console.error("Art feedback: failed to revise style exploration prompts:", err instanceof Error ? err.message : err);
+      console.error("[foreman:art-feedback] failed to revise style exploration prompts:", err instanceof Error ? err.message : err);
       // Fall through to append feedback tag
     }
   }
@@ -179,24 +180,38 @@ Respond with ONLY the revised prompt text. No explanation, no quotes, no formatt
  * Revise an array of style exploration prompts based on user feedback.
  * Each prompt is revised independently but with the same feedback applied.
  */
+/**
+ * Get the configured Director model id (for fallback when no NPU is available),
+ * or throw a descriptive error.
+ */
+function getFallbackModelId(db: Db): string {
+  try {
+    return getDirectorModelId(db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      throw new Error("No machine available for prompt revision: NPU not configured AND Director model slot not configured. Set the Director model under Settings → Foreman → Models.");
+    }
+    throw err;
+  }
+}
+
 async function revisePromptsWithLLM(
   db: Db,
   prompts: string[],
   feedback: string,
 ): Promise<string[]> {
-  // Prefer NPU for lightweight prompt revision, fall back to inference
-  const machineInfo = selectLightMachine(db) ?? selectPlannerMachine(db);
-  if (!machineInfo) {
-    throw new Error("No machine available for prompt revision");
-  }
+  const fallbackModelId = getFallbackModelId(db);
 
-  console.log(`Art feedback: revising ${prompts.length} style exploration prompts via ${machineInfo.machine.base_url}`);
-
-  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
-
-  const promptList = prompts.map((p, i) => `${i + 1}. ${p}`).join("\n");
-  const revised = (await generate(model, {
-    system: `You are an expert at writing image generation prompts for ComfyUI (Stable Diffusion XL).
+  const result = await withLightOrLogicalLlmSession(
+    db,
+    "director",
+    "revise-style-exploration-prompts",
+    fallbackModelId,
+    async (session) => {
+      console.log(`[foreman:art-feedback] revising ${prompts.length} style exploration prompts via ${session.machine.base_url}`);
+      const promptList = prompts.map((p, i) => `${i + 1}. ${p}`).join("\n");
+      const raw = (await generate(session.llm, {
+        system: `You are an expert at writing image generation prompts for ComfyUI (Stable Diffusion XL).
 
 Given a set of style exploration prompts and user feedback, produce REVISED prompts that:
 1. Address the user's feedback across ALL prompts
@@ -205,25 +220,28 @@ Given a set of style exploration prompts and user feedback, produce REVISED prom
 4. Each describes ONE image with specific visual details
 
 Respond with a JSON array of exactly ${prompts.length} revised prompt strings. No explanation, no formatting — just the JSON array.`,
-    prompt: `Original prompts:\n${promptList}\n\nUser feedback: ${feedback}`,
-  })).trim();
+        prompt: `Original prompts:\n${promptList}\n\nUser feedback: ${feedback}`,
+      })).trim();
 
-  const jsonMatch = revised.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error(`LLM response is not a JSON array: ${revised.slice(0, 200)}`);
-  }
-  const parsed = JSON.parse(jsonMatch[0]) as unknown;
-  if (!Array.isArray(parsed) || !parsed.every(p => typeof p === "string")) {
-    throw new Error("LLM returned invalid prompt array");
-  }
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) {
+        throw new Error(`LLM response is not a JSON array: ${raw.slice(0, 200)}`);
+      }
+      const parsed = JSON.parse(jsonMatch[0]) as unknown;
+      if (!Array.isArray(parsed) || !parsed.every(p => typeof p === "string")) {
+        throw new Error("LLM returned invalid prompt array");
+      }
 
-  const result = (parsed as string[]).slice(0, prompts.length);
-  // Pad if LLM returned fewer
-  while (result.length < prompts.length) {
-    result.push(result[result.length - 1]);
-  }
+      const out = (parsed as string[]).slice(0, prompts.length);
+      while (out.length < prompts.length) out.push(out[out.length - 1]);
 
-  console.log(`Art feedback: revised ${result.length} prompts (feedback: "${feedback.slice(0, 80)}")`);
+      console.log(`[foreman:art-feedback] revised ${out.length} prompts (feedback: "${feedback.slice(0, 80)}")`);
+      return out;
+    },
+  );
+  if (result === null) {
+    throw new Error("No machine available for prompt revision (NPU and fallback model both unavailable)");
+  }
   return result;
 }
 
@@ -232,29 +250,33 @@ async function revisePromptWithLLM(
   currentPrompt: string,
   feedback: string,
 ): Promise<string> {
-  // Prefer NPU for lightweight prompt revision, fall back to inference
-  const machineInfo = selectLightMachine(db) ?? selectPlannerMachine(db);
-  if (!machineInfo) {
-    throw new Error("No machine available for prompt revision (no npu or inference machine found)");
+  const fallbackModelId = getFallbackModelId(db);
+
+  const result = await withLightOrLogicalLlmSession(
+    db,
+    "director",
+    "revise-art-prompt",
+    fallbackModelId,
+    async (session) => {
+      console.log(`[foreman:art-feedback] revising prompt via ${session.machine.base_url} (model: ${session.providerModelId})`);
+      const revised = (await generate(session.llm, {
+        system: REVISION_SYSTEM_PROMPT,
+        prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
+      })).trim();
+      if (!revised || revised.length <= 5) {
+        throw new Error(`LLM returned empty/too-short response (${revised.length} chars): "${revised}"`);
+      }
+      if (revised.length >= 2000) {
+        throw new Error(`LLM returned oversized response (${revised.length} chars)`);
+      }
+      console.log(`[foreman:art-feedback] revised prompt "${currentPrompt}" → "${revised}" (feedback: "${feedback}")`);
+      return revised;
+    },
+  );
+  if (result === null) {
+    throw new Error("No machine available for prompt revision (NPU and fallback model both unavailable)");
   }
-
-  console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
-
-  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
-
-  const revised = (await generate(model, {
-    system: REVISION_SYSTEM_PROMPT,
-    prompt: `Original prompt: ${currentPrompt}\nUser feedback: ${feedback}`,
-  })).trim();
-  if (!revised || revised.length <= 5) {
-    throw new Error(`LLM returned empty/too-short response (${revised.length} chars): "${revised}"`);
-  }
-  if (revised.length >= 2000) {
-    throw new Error(`LLM returned oversized response (${revised.length} chars)`);
-  }
-
-  console.log(`Art feedback: revised prompt "${currentPrompt}" → "${revised}" (feedback: "${feedback}")`);
-  return revised;
+  return result;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

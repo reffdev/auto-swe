@@ -110,9 +110,9 @@ export function createVoiceRouter(config: VoiceConfig): Router {
 
     try {
       // 1. STT — transcribe audio to text
-      console.log(`Voice: STT starting (${pcm.length} bytes, ${sampleRate}Hz, session ${session.id})`);
+      console.log(`[voice] STT starting (${pcm.length} bytes, ${sampleRate}Hz, session ${session.id})`);
       const transcript = await config.stt.transcribe(pcm, sampleRate);
-      console.log(`Voice: STT result: "${transcript}"`);
+      console.log(`[voice] STT result: "${transcript}"`);
 
       if (!transcript.trim()) {
         session.processing = false;
@@ -130,7 +130,7 @@ export function createVoiceRouter(config: VoiceConfig): Router {
       if (canStream) {
         // ─── Streaming mode: sentence-by-sentence TTS ───────────────
         // Each chunk is a complete WAV file (one per sentence)
-        console.log(`Voice: streaming mode (${session.messages.length} messages)`);
+        console.log(`[voice] streaming mode (${session.messages.length} messages)`);
 
         res.status(200)
           .set("X-Session-Id", session.id)
@@ -148,14 +148,14 @@ export function createVoiceRouter(config: VoiceConfig): Router {
 
         for await (const sentence of sentenceSplitter(textStream)) {
           if (clientDisconnected) {
-            console.log(`Voice: client disconnected, stopping after ${sentenceCount} sentences`);
+            console.log(`[voice] client disconnected, stopping after ${sentenceCount} sentences`);
             break;
           }
 
           fullResponse += (sentenceCount > 0 ? " " : "") + sentence;
           sentenceCount++;
 
-          console.log(`Voice: TTS chunk ${sentenceCount}: "${sentence.slice(0, 60)}${sentence.length > 60 ? "..." : ""}"`);
+          console.log(`[voice] TTS chunk ${sentenceCount}: "${sentence.slice(0, 60)}${sentence.length > 60 ? "..." : ""}"`);
 
           try {
             const chunkPcm = await config.tts.synthesize(sentence, sampleRate);
@@ -163,30 +163,30 @@ export function createVoiceRouter(config: VoiceConfig): Router {
               res.write(chunkPcm);
             }
           } catch (ttsErr) {
-            console.error(`Voice: TTS error on chunk ${sentenceCount}:`, ttsErr);
+            console.error(`[voice] TTS error on chunk ${sentenceCount}:`, ttsErr);
           }
         }
 
         if (fullResponse) {
           session.messages.push({ role: "assistant", content: fullResponse });
         }
-        console.log(`Voice: streaming complete (${sentenceCount} sentences, ${fullResponse.length} chars)`);
+        console.log(`[voice] streaming complete (${sentenceCount} sentences, ${fullResponse.length} chars)`);
 
         // Set response text header (only useful if client reads trailing headers, otherwise for logs)
         res.end();
 
       } else {
         // ─── Non-streaming mode: full response then TTS ─────────────
-        console.log(`Voice: non-streaming mode (${session.messages.length} messages)`);
+        console.log(`[voice] non-streaming mode (${session.messages.length} messages)`);
 
         const response = await config.llm.chat(session.messages, systemPrompt);
-        console.log(`Voice: LLM response: "${response.slice(0, 100)}${response.length > 100 ? "..." : ""}"`);
+        console.log(`[voice] LLM response: "${response.slice(0, 100)}${response.length > 100 ? "..." : ""}"`);
 
         session.messages.push({ role: "assistant", content: response });
 
-        console.log(`Voice: TTS starting (${response.length} chars)`);
+        console.log(`[voice] TTS starting (${response.length} chars)`);
         const responsePcm = await config.tts.synthesize(response, sampleRate);
-        console.log(`Voice: TTS complete (${responsePcm.length} bytes)`);
+        console.log(`[voice] TTS complete (${responsePcm.length} bytes)`);
 
         res.status(200)
           .set("X-Session-Id", session.id)
@@ -198,7 +198,7 @@ export function createVoiceRouter(config: VoiceConfig): Router {
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Voice: pipeline error (session ${session.id}):`, msg);
+      console.error(`[voice] pipeline error (session ${session.id}):`, msg);
       if (!res.headersSent) {
         res.status(500).json({ error: msg });
       } else {

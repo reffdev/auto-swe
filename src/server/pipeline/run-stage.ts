@@ -241,7 +241,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         for (const tc of toolCalls) {
           if (tc.toolName) {
             try { opts.onToolCall(tc.toolName); } catch (cbErr) {
-              console.warn(`runStage onToolCall error: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`);
+              console.warn(`[pipeline] runStage onToolCall error: ${cbErr instanceof Error ? cbErr.message : String(cbErr)}`);
             }
           }
         }
@@ -284,13 +284,13 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
 
     const stepSec = stepDuration / 1000;
     const stepTime = stepSec >= 10 ? `${Math.round(stepSec)}s` : `${stepSec.toFixed(1)}s`;
-    console.log(`Pipeline [${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepTime}, prompt=${promptTok})`);
+    console.log(`[pipeline ${stageName}]: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${stepTime}, prompt=${promptTok})`);
 
     // Detect reasoning loops — consecutive steps with text but no tool calls
     if (!toolCalls?.length && step.text && step.text.length > 50) {
       textOnlySteps++;
       if (textOnlySteps >= MAX_TEXT_ONLY_STEPS) {
-        console.error(`Pipeline [${stageName}]: detected reasoning loop — ${textOnlySteps} consecutive text-only steps with no tool calls, aborting`);
+        console.error(`[pipeline ${stageName}]: detected reasoning loop — ${textOnlySteps} consecutive text-only steps with no tool calls, aborting`);
         reasoningLoopDetected = true;
         compactionAbort?.abort();
       }
@@ -308,7 +308,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
             const files = JSON.parse(filesJson) as Array<{ path: string; content: string }>;
             pendingExpandFiles = files.map(f => ({ path: f.path, content: f.content }));
             expandFilesNeeded = true;
-            console.log(`Pipeline [${stageName}]: readRelevantFiles expanding into ${files.length} individual file reads`);
+            console.log(`[pipeline ${stageName}]: readRelevantFiles expanding into ${files.length} individual file reads`);
             compactionAbort?.abort();
           } catch { /* not valid — treat as normal result */ }
           break;
@@ -320,7 +320,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     const maxSteps = opts.maxSteps ?? 100;
     const nearEnd = stepCount >= maxSteps - 5;
     if (!expandFilesNeeded && !nearEnd && promptTok >= compactionTokenThreshold && compactionCount < MAX_COMPACTIONS) {
-      console.log(`Pipeline [${stageName}]: prompt tokens (${promptTok}) exceed ${Math.round(COMPACTION_THRESHOLD * 100)}% of context limit (${contextLimit}) — triggering compaction`);
+      console.log(`[pipeline ${stageName}]: prompt tokens (${promptTok}) exceed ${Math.round(COMPACTION_THRESHOLD * 100)}% of context limit (${contextLimit}) — triggering compaction`);
       compactionNeeded = true;
       compactionAbort?.abort();
     }
@@ -337,7 +337,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   if (abortSignal) {
     if (abortSignal.aborted) throw new Error("Pipeline cancelled");
     abortSignal.addEventListener("abort", () => {
-      console.log(`Pipeline [${stageName}]: cancelled`);
+      console.log(`[pipeline ${stageName}]: cancelled`);
       cancelReject?.(new Error(`${stageName}: pipeline cancelled`));
     }, { once: true });
   }
@@ -350,7 +350,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   const wallTimer = setTimeout(() => {
     wallTimedOut = true;
     const elapsed = Date.now() - startTime;
-    console.warn(`Pipeline [${stageName}]: wall-clock timeout after ${Math.round(elapsed / 1000)}s — aborting stage`);
+    console.warn(`[pipeline ${stageName}]: wall-clock timeout after ${Math.round(elapsed / 1000)}s — aborting stage`);
     // Abort the in-flight stream, then reject the cancelPromise so any await
     // unblocks immediately and runStage's catch block sees the timeout.
     try { compactionAbort?.abort(); } catch { /* already */ }
@@ -413,7 +413,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           }
         }
 
-        console.log(`Pipeline [${stageName}]: calling LLM (system=${systemPrompt.length}, messages=${messages.length}, tools=${Object.keys(tools ?? {}).length})`);
+        console.log(`[pipeline ${stageName}]: calling LLM (system=${systemPrompt.length}, messages=${messages.length}, tools=${Object.keys(tools ?? {}).length})`);
         const result = llmStream({
           model, system: systemPrompt, messages,
           tools, maxSteps: maxSteps ?? 100,
@@ -424,7 +424,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         for await (const chunk of result.textStream) { text += chunk; }
         const steps = await result.steps;
         const finishReason = steps[steps.length - 1]?.finishReason;
-        console.log(`Pipeline [${stageName}]: stream ended — ${steps.length} steps, finishReason=${finishReason}, text=${text.length} chars`);
+        console.log(`[pipeline ${stageName}]: stream ended — ${steps.length} steps, finishReason=${finishReason}, text=${text.length} chars`);
 
         // Detect abnormal stream termination
         if (finishReason === "error" || finishReason === "unknown") {
@@ -472,7 +472,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
               `- If you need to check something, call searchFiles or listDirectory\n` +
               `- If you are done, call submitVerdict or the appropriate completion tool\n\n` +
               `If you genuinely cannot proceed, call writeFile to create a file explaining what you're stuck on.`;
-            console.log(`Pipeline [${stageName}]: reasoning loop detected — injecting nudge to force tool use`);
+            console.log(`[pipeline ${stageName}]: reasoning loop detected — injecting nudge to force tool use`);
           } else {
             throw new Error(`Agent stuck in reasoning loop after all compactions exhausted — ${MAX_TEXT_ONLY_STEPS} consecutive steps with no tool calls`);
           }
@@ -482,7 +482,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         if (expandFilesNeeded && !compactionNeeded && !abortSignal?.aborted) {
           expandFilesNeeded = false;
           expandFilesUsed = true; // prevent re-expansion if agent calls readRelevantFiles again
-          console.log(`Pipeline [${stageName}]: expanding readRelevantFiles into ${pendingExpandFiles.length} individual reads`);
+          console.log(`[pipeline ${stageName}]: expanding readRelevantFiles into ${pendingExpandFiles.length} individual reads`);
 
           // Add info step to UI
           liveSteps.push({
@@ -503,7 +503,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         // If this was a loop nudge (not full compaction), skip checkpoint — just restart with nudge
         if (loopTriggeredCompaction && !abortSignal?.aborted) {
           compactionCount++;
-          console.log(`Pipeline [${stageName}]: loop nudge ${compactionCount}/${MAX_COMPACTIONS} — restarting with anti-loop prompt`);
+          console.log(`[pipeline ${stageName}]: loop nudge ${compactionCount}/${MAX_COMPACTIONS} — restarting with anti-loop prompt`);
           liveSteps.push({
             step: stepCount + 1,
             text: `**Reasoning loop detected** — restarting with anti-loop nudge (${compactionCount}/${MAX_COMPACTIONS})`,
@@ -519,7 +519,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         // If this was a compaction abort (not a cancel), handle it
         if (compactionNeeded && !abortSignal?.aborted) {
           compactionCount++;
-          console.log(`Pipeline [${stageName}]: compaction ${compactionCount}/${MAX_COMPACTIONS} — requesting checkpoint`);
+          console.log(`[pipeline ${stageName}]: compaction ${compactionCount}/${MAX_COMPACTIONS} — requesting checkpoint`);
 
           // Add compaction info step to UI
           liveSteps.push({
@@ -551,7 +551,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
             ],
             abortSignal,
           }) || "(no checkpoint produced)";
-          console.log(`Pipeline [${stageName}]: checkpoint produced (${checkpoint.length} chars)`);
+          console.log(`[pipeline ${stageName}]: checkpoint produced (${checkpoint.length} chars)`);
 
           // Capture git state
           const gitDiff = worktreePath ? captureGitDiff(worktreePath) : "";
@@ -595,7 +595,7 @@ Continue from where you left off. Do not redo completed work. Focus on the remai
         if (isStreamError && !abortSignal?.aborted && streamRetryCount < MAX_STREAM_RETRIES) {
           streamRetryCount++;
           const delay = streamRetryCount * 5000;
-          console.log(`Pipeline [${stageName}]: stream terminated — retrying in ${delay / 1000}s (attempt ${streamRetryCount + 1}/${MAX_STREAM_RETRIES + 1})`);
+          console.log(`[pipeline ${stageName}]: stream terminated — retrying in ${delay / 1000}s (attempt ${streamRetryCount + 1}/${MAX_STREAM_RETRIES + 1})`);
           await new Promise(r => setTimeout(r, delay));
           continue; // restart the while loop — same prompt, fresh stream
         }

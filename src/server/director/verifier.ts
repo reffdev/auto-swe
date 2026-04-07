@@ -6,7 +6,9 @@
  * 2. LLM review — agent with read-only tool access evaluates the work against requirements
  */
 
-import { instantiateLlm, generate, warmUpLlm } from "../llm";
+import { generate } from "../llm";
+import { withLlmSession } from "../llm-dispatch";
+import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import { spawnSync, execFile } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { promisify } from "util";
@@ -19,7 +21,6 @@ import { makeVerifyTools } from "../tools/filesystem";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
-import { selectPlannerMachine } from "../planner-llm";
 import { readProjectBrief } from "./persistent-memory";
 
 export interface VerificationResult {
@@ -34,19 +35,24 @@ export interface VerificationResult {
  * The verifier agent can read files, search, and run commands to
  * thoroughly check the work — not just review the diff.
  */
+// Wall-clock budget for the verifier. Used by both verifyTask and verifyMilestone.
+const VERIFIER_WALL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min — verifier does real investigation
+
 export async function verifyTask(
   db: Db,
   task: ForemanTask,
   project: Project,
 ): Promise<VerificationResult> {
-  // Select a machine for verification (ideally different from executor)
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) {
-    // No machine right now — return a soft signal so the scheduler retries next tick
-    return { verdict: "escalate", confidence: 0, issues: ["No machine available — will retry"], reasoning: "deferred" };
+  // Director slot supplies the verifier model.
+  let directorModelId: string;
+  try {
+    directorModelId = getDirectorModelId(db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      return { verdict: "escalate", confidence: 0, issues: [err.message], reasoning: "Director model slot unconfigured" };
+    }
+    throw err;
   }
-
-  const { machine, modelId } = machineInfo;
 
   const workdir = resolveTaskWorkdir(task, project);
 
@@ -66,7 +72,7 @@ export async function verifyTask(
   // Parse acceptance criteria
   const criteria: string[] = task.acceptance_criteria ? JSON.parse(task.acceptance_criteria) : [];
 
-  console.log(`Director verifier: "${task.title}" — branch: ${task.git_branch}, diff: ${gitDiff.length} chars${supplementalFiles ? ", has supplemental files" : ""}`);
+  console.log(`[director:verifier] "${task.title}" — branch: ${task.git_branch}, diff: ${gitDiff.length} chars${supplementalFiles ? ", has supplemental files" : ""}`);
 
   // Build verification context: diff + any target files not in the diff
   const verificationContext = supplementalFiles
@@ -82,102 +88,115 @@ export async function verifyTask(
     executorNotes: task.executor_notes ?? undefined,
   });
 
-  const execution = { machine, providerModelId: modelId };
-  await warmUpLlm(execution);
-  const model = instantiateLlm(execution);
   const tools = makeVerifyTools(workdir);
 
-  // Wall-clock budget for the verifier. The OLD code had a manual setTimeout
-  // here; that's now redundant with runStage's wallTimeoutMs which has proper
-  // cleanup and produces a typed StageWallTimeoutError on expiry.
-  const VERIFIER_WALL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min — verifier does real investigation
-
+  let result: VerificationResult | null;
   try {
-    const text = await runStage({
+    result = await withLlmSession(
       db,
-      runId: "",  // no pipeline run — verifier is standalone
-      issueId: `verifier:${task.id}`,
-      stageName: `verifier:${task.title}`,
-      model,
-      modelId,
-      systemPrompt: system,
-      userPrompt: user,
-      tools,
-      maxSteps: 30,
-      contextLimit: machine.context_limit ?? undefined,
-      worktreePath: workdir,
-      wallTimeoutMs: VERIFIER_WALL_TIMEOUT_MS,
-    });
+      "director",
+      `verify: ${task.title.slice(0, 40)}`,
+      directorModelId,
+      async (session): Promise<VerificationResult> => {
+        const text = await runStage({
+          db,
+          runId: "",  // no pipeline run — verifier is standalone
+          issueId: `verifier:${task.id}`,
+          stageName: `verifier:${task.title}`,
+          model: session.llm,
+          modelId: session.providerModelId,
+          systemPrompt: system,
+          userPrompt: user,
+          tools,
+          maxSteps: 30,
+          contextLimit: session.effectiveContextLimit ?? undefined,
+          worktreePath: workdir,
+          wallTimeoutMs: VERIFIER_WALL_TIMEOUT_MS,
+        });
 
-    const parsed = parseVerdict(text);
+        const parsed = parseVerdict(text);
+        if (!parsed) {
+          return {
+            verdict: "escalate",
+            confidence: 0.3,
+            issues: ["Could not parse verification verdict from LLM response — agent did not produce the expected ```verdict``` block"],
+            reasoning: text.slice(0, 500),
+          };
+        }
 
-    if (!parsed) {
-      return {
-        verdict: "escalate",
-        confidence: 0.3,
-        issues: ["Could not parse verification verdict from LLM response — agent did not produce the expected ```verdict``` block"],
-        reasoning: text.slice(0, 500),
-      };
-    }
+        const mapped: VerificationResult = {
+          verdict: parsed.result,
+          confidence: parsed.confidence,
+          issues: parsed.issues,
+          reasoning: parsed.reasoning,
+        };
 
-    const mapped: VerificationResult = {
-      verdict: parsed.result,
-      confidence: parsed.confidence,
-      issues: parsed.issues,
-      reasoning: parsed.reasoning,
-    };
-
-    // Apply confidence threshold
-    if (mapped.verdict === "pass" && mapped.confidence < 0.7) {
-      return { ...mapped, verdict: "escalate", reasoning: `Pass with low confidence (${mapped.confidence}): ${mapped.reasoning}` };
-    }
-
-    return mapped;
+        // Apply confidence threshold
+        if (mapped.verdict === "pass" && mapped.confidence < 0.7) {
+          return { ...mapped, verdict: "escalate", reasoning: `Pass with low confidence (${mapped.confidence}): ${mapped.reasoning}` };
+        }
+        return mapped;
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    );
   } catch (err) {
-    // Honest, distinct verdicts depending on WHY verification failed.
+    return mapVerifierError(err, task.title);
+  }
 
-    // Wall-clock budget exhausted — the verifier was actively investigating
-    // but didn't reach a verdict in time. Surface that clearly so the user
-    // doesn't think the verifier evaluated and chose to escalate.
-    if (err instanceof StageWallTimeoutError) {
-      const minutes = Math.round(VERIFIER_WALL_TIMEOUT_MS / 60_000);
-      console.warn(`Director verifier: "${task.title}" exceeded ${minutes}-min wall-clock budget`);
-      return {
-        verdict: "escalate",
-        confidence: 0,
-        issues: [
-          `Verifier exceeded its ${minutes}-minute wall-clock budget without producing a verdict.`,
-          `The agent was still investigating when time ran out — this is NOT a real failure of the work itself.`,
-          `Possible causes: project setup is unusual (e.g. test runner CLI not where the verifier expected), upstream LLM is slow, or the verifier got stuck on a research dead-end.`,
-        ],
-        reasoning: "Verifier ran out of time while investigating. Manual review required to evaluate the actual work.",
-      };
-    }
+  if (result === null) {
+    // No machine right now — soft signal so the scheduler retries next tick
+    return { verdict: "escalate", confidence: 0, issues: ["No machine available — will retry"], reasoning: "deferred" };
+  }
+  return result;
+}
 
-    // Step-limit exhaustion — agent looped on tool calls or burned its
-    // completion budget on text. Same class of "verifier didn't actually
-    // decide" failure.
-    if (err instanceof StageStepLimitError) {
-      console.warn(`Director verifier: "${task.title}" hit step limit — ${err.message}`);
-      return {
-        verdict: "escalate",
-        confidence: 0,
-        issues: [
-          `Verifier hit its step/output limit (${err.finishReason}) before reaching a verdict.`,
-          `The agent ran out of room before it could finish evaluating the work.`,
-        ],
-        reasoning: "Verifier did not complete its evaluation. Manual review required.",
-      };
-    }
-
-    // Anything else (LLM connection failure, parser exception, etc.)
+/**
+ * Map a verifier-side exception into an honest VerificationResult. Covers
+ * StageWallTimeoutError (timed out), StageStepLimitError (looped/maxed),
+ * NoMachineHostsModelError (model orphaned), ModelNotFoundError (model
+ * archived/missing), and any other crash.
+ */
+function mapVerifierError(err: unknown, taskTitle: string): VerificationResult {
+  if (err instanceof StageWallTimeoutError) {
+    const minutes = Math.round(VERIFIER_WALL_TIMEOUT_MS / 60_000);
+    console.warn(`[director:verifier] "${taskTitle}" exceeded ${minutes}-min wall-clock budget`);
     return {
       verdict: "escalate",
-      confidence: 0.3,
-      issues: [`Verifier error: ${err instanceof Error ? err.message : String(err)}`],
-      reasoning: "Verifier crashed before reaching a verdict. Manual review required.",
+      confidence: 0,
+      issues: [
+        `Verifier exceeded its ${minutes}-minute wall-clock budget without producing a verdict.`,
+        `The agent was still investigating when time ran out — this is NOT a real failure of the work itself.`,
+        `Possible causes: project setup is unusual (e.g. test runner CLI not where the verifier expected), upstream LLM is slow, or the verifier got stuck on a research dead-end.`,
+      ],
+      reasoning: "Verifier ran out of time while investigating. Manual review required to evaluate the actual work.",
     };
   }
+  if (err instanceof StageStepLimitError) {
+    console.warn(`[director:verifier] "${taskTitle}" hit step limit — ${err.message}`);
+    return {
+      verdict: "escalate",
+      confidence: 0,
+      issues: [
+        `Verifier hit its step/output limit (${err.finishReason}) before reaching a verdict.`,
+        `The agent ran out of room before it could finish evaluating the work.`,
+      ],
+      reasoning: "Verifier did not complete its evaluation. Manual review required.",
+    };
+  }
+  if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+    return {
+      verdict: "escalate",
+      confidence: 0,
+      issues: [err.message],
+      reasoning: "Director model is not available for verification. Manual review required.",
+    };
+  }
+  return {
+    verdict: "escalate",
+    confidence: 0.3,
+    issues: [`Verifier error: ${err instanceof Error ? err.message : String(err)}`],
+    reasoning: "Verifier crashed before reaching a verdict. Manual review required.",
+  };
 }
 
 /**
@@ -223,7 +242,7 @@ export async function verifyMilestone(
       } catch (err: unknown) {
         const killed = (err as { killed?: boolean })?.killed;
         if (killed) {
-          console.warn("Director verifier: godot validation timed out — skipping");
+          console.warn("[director:verifier] godot validation timed out — skipping");
         } else {
           const stderr = (err as { stderr?: string })?.stderr ?? "";
           projectIssues.push(`Godot check failed: ${stderr.slice(0, 500)}`);
@@ -241,10 +260,14 @@ export async function verifyMilestone(
     return { passed: true, issues: [] };
   }
 
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) {
-    // No machine right now — signal deferral so the scheduler retries next tick
-    return { passed: false, issues: ["deferred:no-machine"] };
+  let directorModelId: string;
+  try {
+    directorModelId = getDirectorModelId(db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      return { passed: false, issues: [err.message] };
+    }
+    throw err;
   }
 
   const tasks = db.getDirectiveTasks(directiveId);
@@ -263,23 +286,36 @@ export async function verifyMilestone(
     projectState,
   });
 
-  const milestoneExecution = { machine: machineInfo.machine, providerModelId: machineInfo.modelId };
-  await warmUpLlm(milestoneExecution);
-  const model = instantiateLlm(milestoneExecution);
-
+  let result: { passed: boolean; issues: string[] } | null;
   try {
-    const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
-    const text = await generate(model, { system, prompt: user, abortSignal: milestoneTimeout });
-    const parsed = parseVerdict(text);
-    if (!parsed) {
-      console.warn(`Director verifier: milestone could not parse verdict for "${milestone.title}" — failing to be safe`);
-      return { passed: false, issues: ["Could not parse milestone verdict from LLM response"] };
-    }
-    return { passed: parsed.result === "pass", issues: parsed.issues };
+    result = await withLlmSession(
+      db,
+      "director",
+      `verify-milestone: ${milestone.title.slice(0, 40)}`,
+      directorModelId,
+      async (session): Promise<{ passed: boolean; issues: string[] }> => {
+        const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
+        const text = await generate(session.llm, { system, prompt: user, abortSignal: milestoneTimeout });
+        const parsed = parseVerdict(text);
+        if (!parsed) {
+          console.warn(`[director:verifier] milestone could not parse verdict for "${milestone.title}" — failing to be safe`);
+          return { passed: false, issues: ["Could not parse milestone verdict from LLM response"] };
+        }
+        return { passed: parsed.result === "pass", issues: parsed.issues };
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    );
   } catch (err) {
-    console.warn(`Director verifier: milestone LLM call failed for "${milestone.title}":`, err instanceof Error ? err.message : String(err));
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      return { passed: false, issues: [err.message] };
+    }
+    console.warn(`[director:verifier] milestone LLM call failed for "${milestone.title}":`, err instanceof Error ? err.message : String(err));
     return { passed: false, issues: [`LLM milestone verification failed: ${err instanceof Error ? err.message : "unknown error"}`] };
   }
+  if (result === null) {
+    return { passed: false, issues: ["deferred:no-machine"] };
+  }
+  return result;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

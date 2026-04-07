@@ -33,7 +33,7 @@ function resolveYamlModelSlug(db: Db, slug: string | undefined, taskRef: string)
   if (!slug || slug === "auto") return null;
   const model = getModelBySlug(db, slug);
   if (!model) {
-    console.warn(`Foreman yaml-sync: ${taskRef}: model slug "${slug}" did not match any logical model — task will use the default Foreman code model`);
+    console.warn(`[foreman:yaml-sync] ${taskRef}: model slug "${slug}" did not match any logical model — task will use the default Foreman code model`);
     return null;
   }
   return model.id;

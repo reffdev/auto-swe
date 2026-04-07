@@ -165,7 +165,7 @@ function pruneEpisodicLogs(projectWorkdir: string): void {
   try {
     createSnapshot(projectWorkdir, "pre-prune");
   } catch (err) {
-    console.warn("Director memory: failed to create pre-prune snapshot:", err);
+    console.warn("[director:memory] failed to create pre-prune snapshot:", err);
   }
 
   // Extract patterns asynchronously, then delete
@@ -180,7 +180,7 @@ function deleteFiles(dir: string, files: string[]): void {
   for (const file of files) {
     try { unlinkSync(resolve(dir, file)); } catch { /* best effort */ }
   }
-  console.log(`Director memory: pruned ${files.length} episodic log(s) older than ${PRUNE_DAYS} days`);
+  console.log(`[director:memory] pruned ${files.length} episodic log(s) older than ${PRUNE_DAYS} days`);
 }
 
 /**
@@ -198,7 +198,7 @@ function extractAndPrune(
     extractPatternsFromLogs(projectWorkdir, logContents)
       .then(() => deleteFiles(episodicDir, files))
       .catch(err => {
-        console.warn("Director memory: episodic pattern extraction failed — pruning anyway:", err);
+        console.warn("[director:memory] episodic pattern extraction failed — pruning anyway:", err);
         deleteFiles(episodicDir, files);
       });
   }).catch(() => {

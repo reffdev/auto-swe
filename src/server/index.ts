@@ -11,15 +11,15 @@ installConsoleCapture(); // must be first — before any console.log calls
 // Prevent transient network/abort errors from crashing the process
 process.on("unhandledRejection", (err) => {
   if (err instanceof DOMException && err.name === "AbortError") {
-    console.warn("Caught unhandled AbortError (task cancellation) — ignored");
+    console.warn("[server] caught unhandled AbortError (task cancellation) — ignored");
     return;
   }
   // Socket errors from dropped connections (e.g., nginx reload, network hiccup)
   if (err instanceof TypeError && (err.message === "terminated" || err.message === "fetch failed")) {
-    console.warn(`Caught unhandled network error: ${err.message} — ignored (connection was dropped)`);
+    console.warn(`[server] caught unhandled network error: ${err.message} — ignored (connection was dropped)`);
     return;
   }
-  console.error("Unhandled rejection:", err);
+  console.error("[server] unhandled rejection:", err);
 });
 
 import express from "express";
@@ -47,7 +47,7 @@ const db = new Db();
 // 2. Crash recovery — reset stuck machines/runs from prior crashes
 const recovered = db.recoverFromCrash();
 if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0 || recovered.foremanTasks > 0 || recovered.foremanRuns > 0 || recovered.directorDirectives > 0 || recovered.analysisRuns > 0) {
-  console.log(`Crash recovery: reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s), ${recovered.foremanTasks} foreman task(s), ${recovered.foremanRuns} foreman run(s), ${recovered.directorDirectives} directive(s), ${recovered.analysisRuns} analysis run(s)`);
+  console.log(`[crash-recovery] reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s), ${recovered.foremanTasks} foreman task(s), ${recovered.foremanRuns} foreman run(s), ${recovered.directorDirectives} directive(s), ${recovered.analysisRuns} analysis run(s)`);
 }
 
 // 3. Create Express app
@@ -60,13 +60,13 @@ if (process.env.STT_URL || process.env.VOICE_LLM_URL || process.env.TTS_URL || p
   let tts: TtsAdapter;
   if (process.env.PIPER_PATH && process.env.PIPER_MODEL) {
     tts = new PiperCliTts(process.env.PIPER_PATH, process.env.PIPER_MODEL, process.env.PIPER_CONFIG);
-    console.log(`Voice TTS: Piper CLI (${process.env.PIPER_MODEL})`);
+    console.log(`[voice:tts] Piper CLI (${process.env.PIPER_MODEL})`);
   } else if (process.env.PIPER_URL) {
     tts = new PiperHttpTts(process.env.PIPER_URL);
-    console.log(`Voice TTS: Piper HTTP (${process.env.PIPER_URL})`);
+    console.log(`[voice:tts] Piper HTTP (${process.env.PIPER_URL})`);
   } else {
     tts = new LlamaCppTts(process.env.TTS_URL ?? "http://localhost:8082");
-    console.log(`Voice TTS: llama.cpp (${process.env.TTS_URL ?? "http://localhost:8082"})`);
+    console.log(`[voice:tts] llama.cpp (${process.env.TTS_URL ?? "http://localhost:8082"})`);
   }
 
   const voiceRouter = createVoiceRouter({
@@ -120,7 +120,7 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
     console.error(`\nFATAL: Port ${PORT} is already in use. Kill the old process first:\n  cmd.exe /c "taskkill /F /PID $(netstat -ano | grep :${PORT} | head -1 | awk '{print $NF}')"\n`);
   } else {
-    console.error("Server error:", err);
+    console.error("[server] error:", err);
   }
   process.exit(1);
 });

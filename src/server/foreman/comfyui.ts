@@ -50,7 +50,7 @@ export async function executeComfyUIWorkflow(
   const url = baseUrl.replace(/\/$/, "");
 
   // 1. Submit the workflow
-  console.log(`ComfyUI: submitting to ${url}/prompt (${Object.keys(workflow).length} nodes)`);
+  console.log(`[comfyui] submitting to ${url}/prompt (${Object.keys(workflow).length} nodes)`);
   let submitRes: Response;
   try {
     submitRes = await fetch(`${url}/prompt`, {
@@ -80,7 +80,7 @@ export async function executeComfyUIWorkflow(
     throw new Error(`ComfyUI workflow has node errors: ${JSON.stringify(node_errors).slice(0, 500)}`);
   }
 
-  console.log(`ComfyUI: prompt accepted — prompt_id: ${prompt_id}, polling for completion (timeout: ${MAX_POLL_TIME_MS / 1000}s)`);
+  console.log(`[comfyui] prompt accepted — prompt_id: ${prompt_id}, polling for completion (timeout: ${MAX_POLL_TIME_MS / 1000}s)`);
 
   // 2. Poll for completion
   const startTime = Date.now();
@@ -109,7 +109,7 @@ export async function executeComfyUIWorkflow(
           const running = queue.queue_running?.length ?? 0;
           const pending = queue.queue_pending?.length ?? 0;
           lastQueueEmpty = running === 0 && pending === 0;
-          console.log(`ComfyUI: queue status — ${running} running, ${pending} pending (${Math.round(elapsed / 1000)}s elapsed, prompt_id: ${prompt_id})`);
+          console.log(`[comfyui] queue status — ${running} running, ${pending} pending (${Math.round(elapsed / 1000)}s elapsed, prompt_id: ${prompt_id})`);
         }
       } catch { /* best effort */ }
       lastQueueLog = elapsed;
@@ -120,12 +120,12 @@ export async function executeComfyUIWorkflow(
     try {
       historyRes = await fetch(`${url}/history/${prompt_id}`, { signal: timeoutSignal(FETCH_TIMEOUT_MS, signal) });
     } catch (fetchErr) {
-      console.warn(`ComfyUI: history poll failed: ${fetchErr instanceof Error ? fetchErr.message : fetchErr}`);
+      console.warn(`[comfyui] history poll failed: ${fetchErr instanceof Error ? fetchErr.message : fetchErr}`);
       continue;
     }
     if (!historyRes.ok) {
       if (elapsed - lastLogTime > 30_000) {
-        console.warn(`ComfyUI: history/${prompt_id} returned ${historyRes.status} (${Math.round(elapsed / 1000)}s elapsed)`);
+        console.warn(`[comfyui] history/${prompt_id} returned ${historyRes.status} (${Math.round(elapsed / 1000)}s elapsed)`);
         lastLogTime = elapsed;
       }
       continue;
@@ -147,12 +147,12 @@ export async function executeComfyUIWorkflow(
             `after ${emptyQueueMissingCount} consecutive checks (${Math.round(elapsed / 1000)}s elapsed)`
           );
         }
-        console.warn(`ComfyUI: queue empty but prompt ${prompt_id} missing from history (${emptyQueueMissingCount}/${MAX_EMPTY_MISSING_CHECKS} before fail-fast, ${Math.round(elapsed / 1000)}s elapsed)`);
+        console.warn(`[comfyui] queue empty but prompt ${prompt_id} missing from history (${emptyQueueMissingCount}/${MAX_EMPTY_MISSING_CHECKS} before fail-fast, ${Math.round(elapsed / 1000)}s elapsed)`);
       } else {
         emptyQueueMissingCount = 0; // reset if queue has items (prompt is legitimately queued)
       }
       if (elapsed - lastLogTime > 60_000) {
-        console.log(`ComfyUI: prompt ${prompt_id} not in history yet (${Math.round(elapsed / 1000)}s elapsed, queued or running)`);
+        console.log(`[comfyui] prompt ${prompt_id} not in history yet (${Math.round(elapsed / 1000)}s elapsed, queued or running)`);
         lastLogTime = elapsed;
       }
       continue;
@@ -160,7 +160,7 @@ export async function executeComfyUIWorkflow(
     if (!entry.outputs) {
       if (elapsed - lastLogTime > 60_000) {
         const status = (entry as Record<string, unknown>).status;
-        console.log(`ComfyUI: prompt ${prompt_id} in history but no outputs yet (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
+        console.log(`[comfyui] prompt ${prompt_id} in history but no outputs yet (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
         lastLogTime = elapsed;
       }
       continue;
@@ -198,7 +198,7 @@ export async function executeComfyUIWorkflow(
       }
       // Still in progress — log periodically
       if (elapsed - lastLogTime > 60_000) {
-        console.log(`ComfyUI: prompt ${prompt_id} has ${outputNodeIds.length} output nodes but 0 files (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
+        console.log(`[comfyui] prompt ${prompt_id} has ${outputNodeIds.length} output nodes but 0 files (${Math.round(elapsed / 1000)}s elapsed, status: ${JSON.stringify(status)?.slice(0, 200)})`);
         lastLogTime = elapsed;
       }
       continue;
@@ -242,7 +242,7 @@ export async function executeComfyUIWorkflow(
     }
 
     const totalElapsed = Date.now() - startTime;
-    console.log(`ComfyUI: prompt ${prompt_id} completed — ${outputFiles.length}/${totalFiles} file(s) downloaded in ${Math.round(totalElapsed / 1000)}s`);
+    console.log(`[comfyui] prompt ${prompt_id} completed — ${outputFiles.length}/${totalFiles} file(s) downloaded in ${Math.round(totalElapsed / 1000)}s`);
 
     if (outputFiles.length === 0 && totalFiles > 0) {
       throw new Error(

@@ -7,10 +7,11 @@
  * and manually submitted commits (has commit SHAs + user description).
  */
 
-import { instantiateLlm, generate } from "../llm";
+import { generate } from "../llm";
+import type { LlmSession } from "../llm-dispatch";
 import { writeMemory, readMemory } from "./persistent-memory";
 import { getDiffBetween, fetchOrigin } from "../git-helpers";
-import type { Db, ForemanTask, Machine, Project } from "../db";
+import type { Db, ForemanTask, Project } from "../db";
 
 const EXTRACTION_PROMPT = `You are reviewing a completed coding task to extract knowledge worth remembering for future work on this project.
 
@@ -79,12 +80,15 @@ function parseExtractions(text: string): Extraction[] {
 /**
  * Extract knowledge from a completed foreman task.
  * Uses the task's run output (tool calls) and git diff as source material.
+ *
+ * The caller provides an open LlmSession (typically opened via
+ * withLightLlmSession or withLightOrLogicalLlmSession in the director scheduler).
  */
 export async function extractTaskKnowledge(
   db: Db,
   task: ForemanTask,
   project: Project,
-  machineInfo: { machine: Machine; modelId: string },
+  session: LlmSession,
 ): Promise<void> {
   // Build context from the task
   const contextParts: string[] = [
@@ -121,32 +125,29 @@ export async function extractTaskKnowledge(
     } catch { /* skip */ }
   }
 
-  await runExtraction(db, project.workdir, contextParts.join("\n"), machineInfo);
+  await runExtraction(project.workdir, contextParts.join("\n"), session);
 }
 
 async function runExtraction(
-  _db: Db,
   projectWorkdir: string,
   context: string,
-  machineInfo: { machine: Machine; modelId: string },
+  session: LlmSession,
 ): Promise<void> {
-  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
-
   let extractions: Extraction[];
   try {
-    console.log(`Knowledge extraction: LLM thinking (${machineInfo.machine.name || machineInfo.machine.machine_type}) ...`);
-    const text = await generate(model, {
+    console.log(`[director:knowledge] LLM thinking (${session.machine.name || session.machine.machine_type}) ...`);
+    const text = await generate(session.llm, {
       system: EXTRACTION_PROMPT,
       prompt: context,
     });
     extractions = parseExtractions(text);
   } catch (err) {
-    console.warn("Knowledge extraction: LLM failed:", err instanceof Error ? err.message : String(err));
+    console.warn("[director:knowledge] LLM failed:", err instanceof Error ? err.message : String(err));
     return;
   }
 
   if (extractions.length === 0) {
-    console.log("Task knowledge extraction: nothing worth saving");
+    console.log("[director:knowledge] nothing worth saving");
     return;
   }
 
@@ -167,5 +168,5 @@ async function runExtraction(
     }
   }
 
-  console.log(`Task knowledge extraction: saved ${extractions.length} finding(s) to semantic memory`);
+  console.log(`[director:knowledge] saved ${extractions.length} finding(s) to semantic memory`);
 }

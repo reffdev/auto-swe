@@ -71,8 +71,9 @@ describe("verifyMilestone", () => {
     expect(result.issues.some(i => i.includes("Godot check failed"))).toBe(true);
   });
 
-  it("defers milestone verification when no machine available", async () => {
-    // No machines → can't verify → should signal deferral (not pass or hard fail)
+  it("returns a clear issue when the Director model slot is unconfigured", async () => {
+    // No Director slot configured → verifier should not crash, should surface
+    // a human-readable issue so the scheduler can mark the milestone failed.
     const project = db.getProject(projectId)!;
     const directive = db.createDirectorDirective({ project_id: projectId, directive: "test" });
 
@@ -81,9 +82,8 @@ describe("verifyMilestone", () => {
       directive.id,
       project,
     );
-    // Deferred — passed=false with sentinel issue so scheduler retries next tick
     expect(result.passed).toBe(false);
-    expect(result.issues).toContain("deferred:no-machine");
+    expect(result.issues.some(i => /not configured/i.test(i))).toBe(true);
   });
 
   it("returns issues array even on build success", async () => {

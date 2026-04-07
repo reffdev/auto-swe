@@ -7,13 +7,14 @@
  * 3. It doesn't compete with the planner for machine time
  */
 
-import { instantiateLlm, generate } from "../llm";
+import { generate } from "../llm";
+import { withLlmSession } from "../llm-dispatch";
+import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } from "../db";
 
 import { getConfig, serializeConfig, type ComfyUITaskConfig } from "../foreman/comfyui-config";
-import { selectPlannerMachine } from "../planner-llm";
 import { logEpisodic } from "./persistent-memory";
 
 import { nudgeForeman } from "../foreman/scheduler";
@@ -53,50 +54,66 @@ export async function createStyleExplorationTask(
 ): Promise<string | null> {
   const context = await gatherArtContext(db, directive, project);
 
-  // Get machine for the LLM call
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) {
-    console.error("Style exploration: no machine available for prompt generation");
-    return null;
-  }
-
-  console.log(`Style exploration: generating art prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
-
-  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
-
   // Gather previously used prompts to avoid repeats (important for FLUX.2 which is deterministic)
   const previousPrompts = collectPreviousPrompts(db, project.id);
   const avoidSection = previousPrompts.length > 0
     ? `\n\nIMPORTANT — These prompts have ALREADY been generated. Do NOT repeat or closely paraphrase any of them:\n${previousPrompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
     : "";
 
-  let stylePrompts: string[];
+  // Style prompt generation uses the Director model slot.
+  let directorModelId: string;
   try {
-    console.log("Style exploration: LLM generating prompts ...");
-    const text = (await generate(model, {
-      system: STYLE_PROMPT_SYSTEM,
-      prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
-    })).trim();
-    // Extract JSON array from response (may have markdown fences)
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.error(`Style exploration: LLM response is not a JSON array: ${text.slice(0, 200)}`);
-      return null;
-    }
-    const parsed = JSON.parse(jsonMatch[0]) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string")) {
-      console.error(`Style exploration: LLM returned invalid prompt array`);
-      return null;
-    }
-    stylePrompts = parsed.slice(0, 6) as string[];
-    // Pad to 6 if LLM returned fewer
-    while (stylePrompts.length < 6) {
-      stylePrompts.push(stylePrompts[stylePrompts.length - 1]);
-    }
-    console.log(`Style exploration: generated ${stylePrompts.length} prompts`);
+    directorModelId = getDirectorModelId(db);
   } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      console.error(`[director:style] ${err.message}`);
+      return null;
+    }
+    throw err;
+  }
+
+  let stylePrompts: string[] | null;
+  try {
+    stylePrompts = await withLlmSession(
+      db,
+      "director",
+      "style-exploration-prompts",
+      directorModelId,
+      async (session) => {
+        console.log(`[director:style] generating art prompt via ${session.machine.base_url} (model: ${session.providerModelId})`);
+        console.log("[director:style] LLM generating prompts ...");
+        const text = (await generate(session.llm, {
+          system: STYLE_PROMPT_SYSTEM,
+          prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
+        })).trim();
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) {
+          console.error(`[director:style] LLM response is not a JSON array: ${text.slice(0, 200)}`);
+          return null;
+        }
+        const parsed = JSON.parse(jsonMatch[0]) as unknown;
+        if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string")) {
+          console.error(`[director:style] LLM returned invalid prompt array`);
+          return null;
+        }
+        const result = parsed.slice(0, 6) as string[];
+        while (result.length < 6) result.push(result[result.length - 1]);
+        console.log(`[director:style] generated ${result.length} prompts`);
+        return result;
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    );
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      console.error(`[director:style] ${err.message}`);
+      return null;
+    }
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Style exploration: prompt generation FAILED: ${errMsg}`);
+    console.error(`[director:style] prompt generation FAILED: ${errMsg}`);
+    return null;
+  }
+  if (stylePrompts === null) {
+    console.error("[director:style] no machine available for prompt generation");
     return null;
   }
 
@@ -128,7 +145,7 @@ export async function createStyleExplorationTask(
     milestone_id: milestone.id,
   });
 
-  console.log(`Style exploration: created task ${task.id} for project "${project.name}"`);
+  console.log(`[director:style] created task ${task.id} for project "${project.name}"`);
   logEpisodic(project.workdir, "Created style exploration task", `${stylePrompts.length} style prompts generated`);
   nudgeForeman(db);
 
@@ -153,12 +170,12 @@ export async function queueContinuousExploration(
 
   // Check stop conditions
   if (isStyleLocked(project.workdir)) {
-    console.log("Continuous exploration: style already locked, stopping");
+    console.log("[director:continuous] style already locked, stopping");
     return;
   }
   const foremanConfig = db.getForemanConfig();
   if (!foremanConfig?.continuous_exploration) {
-    console.log("Continuous exploration: disabled, stopping");
+    console.log("[director:continuous] disabled, stopping");
     return;
   }
 
@@ -171,7 +188,7 @@ export async function queueContinuousExploration(
     const previousPrompts = collectPreviousPrompts(db, task.project_id);
     newPrompts = await generateFreshPrompts(db, project, task.directive_id, previousPrompts);
   } catch (err) {
-    console.warn(`Continuous exploration: prompt generation failed (${err instanceof Error ? err.message : err}), re-queuing with same prompts`);
+    console.warn(`[director:continuous] prompt generation failed (${err instanceof Error ? err.message : err}), re-queuing with same prompts`);
   }
 
   // Update config
@@ -192,7 +209,7 @@ export async function queueContinuousExploration(
     machine_id: null,
   });
   nudgeForeman(db);
-  console.log(`Continuous exploration: re-queued task${newPrompts ? ` with ${newPrompts.length} fresh prompts` : " with same prompts (new seeds)"}`);
+  console.log(`[director:continuous] re-queued task${newPrompts ? ` with ${newPrompts.length} fresh prompts` : " with same prompts (new seeds)"}`);
 }
 
 /**
@@ -210,30 +227,41 @@ async function generateFreshPrompts(
 
   const context = await gatherArtContext(db, directive, project);
 
-  const machineInfo = selectPlannerMachine(db, project);
-  if (!machineInfo) return null;
-
-  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
+  let directorModelId: string;
+  try {
+    directorModelId = getDirectorModelId(db);
+  } catch { return null; }
 
   const avoidSection = previousPrompts.length > 0
     ? `\n\nIMPORTANT — These prompts have ALREADY been generated. Do NOT repeat or closely paraphrase any of them:\n${previousPrompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
     : "";
 
-  console.log("Continuous exploration: LLM generating fresh prompts ...");
-  const text = (await generate(model, {
-    system: STYLE_PROMPT_SYSTEM,
-    prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
-  })).trim();
-
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) return null;
-
-  const parsed = JSON.parse(jsonMatch[0]) as unknown;
-  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string")) return null;
-
-  const result = (parsed as string[]).slice(0, 6);
-  while (result.length < 6) result.push(result[result.length - 1]);
-  return result;
+  try {
+    return await withLlmSession(
+      db,
+      "director",
+      "continuous-fresh-prompts",
+      directorModelId,
+      async (session) => {
+        console.log("[director:continuous] LLM generating fresh prompts ...");
+        const text = (await generate(session.llm, {
+          system: STYLE_PROMPT_SYSTEM,
+          prompt: `Generate 6 style exploration prompts for this project:\n\n${context}${avoidSection}`,
+        })).trim();
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (!jsonMatch) return null;
+        const parsed = JSON.parse(jsonMatch[0]) as unknown;
+        if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(p => typeof p === "string")) return null;
+        const result = (parsed as string[]).slice(0, 6);
+        while (result.length < 6) result.push(result[result.length - 1]);
+        return result;
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    );
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) return null;
+    throw err;
+  }
 }
 
 /**
@@ -337,25 +365,38 @@ export async function createFluxEnhanceTask(
   let varA = originalPrompt;
   let varB = originalPrompt;
 
-  const machineInfo = selectPlannerMachine(db, project);
-  if (machineInfo) {
-    try {
-      console.log("Enhance: LLM generating prompt variations ...");
-      const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
-      const text = (await generate(model, {
-        system: ENHANCE_VARIATION_PROMPT,
-        prompt: `Original prompt: ${originalPrompt}`,
-      })).trim();
+  let directorModelId: string | null = null;
+  try { directorModelId = getDirectorModelId(db); } catch { /* slot unconfigured — fall back to original */ }
 
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        const variations = JSON.parse(jsonMatch[0]) as string[];
-        if (variations[0]) varA = variations[0];
-        if (variations[1]) varB = variations[1];
-      }
-      console.log(`Enhance: generated 2 prompt variations`);
+  if (directorModelId) {
+    try {
+      await withLlmSession(
+        db,
+        "director",
+        "enhance-prompt-variations",
+        directorModelId,
+        async (session) => {
+          console.log("[director:enhance] LLM generating prompt variations ...");
+          const text = (await generate(session.llm, {
+            system: ENHANCE_VARIATION_PROMPT,
+            prompt: `Original prompt: ${originalPrompt}`,
+          })).trim();
+          const jsonMatch = text.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const variations = JSON.parse(jsonMatch[0]) as string[];
+            if (variations[0]) varA = variations[0];
+            if (variations[1]) varB = variations[1];
+          }
+          console.log(`[director:enhance] generated 2 prompt variations`);
+        },
+        { preferMachineId: getDirectorPreferredMachineId(db) },
+      );
     } catch (err) {
-      console.warn(`Enhance: prompt variation generation failed, using original:`, err instanceof Error ? err.message : err);
+      if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+        console.warn(`[director:enhance] ${err.message} — using original prompt`);
+      } else {
+        console.warn(`[director:enhance] prompt variation generation failed, using original:`, err instanceof Error ? err.message : err);
+      }
     }
   }
 
@@ -397,7 +438,7 @@ export async function createFluxEnhanceTask(
     milestone_id: milestone?.id,
   });
 
-  console.log(`Enhance: created task ${task.id} — 6 FLUX.2 img2img variations from ${sourceTask.id.slice(0, 8)}/${selectedIndex}`);
+  console.log(`[director:enhance] created task ${task.id} — 6 FLUX.2 img2img variations from ${sourceTask.id.slice(0, 8)}/${selectedIndex}`);
   nudgeForeman(db);
   return task.id;
 }

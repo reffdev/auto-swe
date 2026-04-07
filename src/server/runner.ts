@@ -6,10 +6,10 @@
  */
 
 import { type StepResult, type ToolSet } from "ai";
-import { instantiateLlm, stream as llmStream } from "./llm";
+import { stream as llmStream } from "./llm";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { withLlmSession, type LlmSession } from "./llm-dispatch";
 import {
-  resolveInferenceExecution,
   getForemanCodeModelId,
   ModelSlotUnconfiguredError,
   NoMachineHostsModelError,
@@ -29,7 +29,7 @@ import {
   authenticatedRemoteUrl,
   setRemoteUrl,
 } from "./git";
-import type { Db, Machine, Issue, Project } from "./db";
+import type { Db, Issue, Project } from "./db";
 
 export interface RunnerContext {
   db: Db;
@@ -46,11 +46,59 @@ export interface RunnerContext {
  */
 export async function executeIssue(
   ctx: RunnerContext,
-  machine: Machine,
   issue: Issue,
   project: Project,
   runId: string
 ): Promise<void> {
+  // Pipeline runs use the configured Foreman code slot.
+  let foremanCodeModelId: string;
+  try {
+    foremanCodeModelId = getForemanCodeModelId(ctx.db);
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError) {
+      ctx.db.updateRun(runId, { status: "fail", completed_at: new Date().toISOString() });
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      console.error(`[runner] ${issue.title}: ${err.message}`);
+      return;
+    }
+    throw err;
+  }
+
+  try {
+    const result = await withLlmSession(
+      ctx.db,
+      "pipeline",
+      `runner: ${issue.title.slice(0, 40)}`,
+      foremanCodeModelId,
+      async (session) => runIssueWithSession(ctx, issue, project, runId, session),
+    );
+    if (result === null) {
+      ctx.db.updateRun(runId, { status: "fail", completed_at: new Date().toISOString() });
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      console.warn(`[runner] ${issue.title}: no machine available`);
+    }
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      ctx.db.updateRun(runId, { status: "fail", completed_at: new Date().toISOString() });
+      ctx.db.updateIssue(issue.id, { status: "failed" });
+      console.error(`[runner] ${issue.title}: ${err.message}`);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function runIssueWithSession(
+  ctx: RunnerContext,
+  issue: Issue,
+  project: Project,
+  runId: string,
+  session: LlmSession,
+): Promise<"ok"> {
+  const machine = session.machine;
+  const modelId = session.providerModelId;
+  const effectiveContextLimit = session.effectiveContextLimit;
+
   const startTime = Date.now();
   const branch = makeBranchName(issue.id, issue.title);
   const worktreePath = makeWorktreePath(project.workdir, issue.id);
@@ -79,26 +127,7 @@ export async function executeIssue(
       throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
     }
 
-    // 2. Resolve model — pipeline runs use the configured Foreman code slot
-    let modelId: string;
-    let effectiveContextLimit: number | null = machine.context_limit;
-    try {
-      const requestedModelId = getForemanCodeModelId(ctx.db);
-      const exec = resolveInferenceExecution(ctx.db, requestedModelId, { preferMachineId: machine.id });
-      if (exec.machine.id !== machine.id) {
-        throw new Error(`Machine ${machine.id} does not host the configured Foreman code model (resolver picked ${exec.machine.id})`);
-      }
-      modelId = exec.providerModelId;
-      effectiveContextLimit = exec.effectiveContextLimit;
-    } catch (err) {
-      if (err instanceof ModelSlotUnconfiguredError ||
-          err instanceof NoMachineHostsModelError ||
-          err instanceof ModelNotFoundError) {
-        throw new Error(err.message);
-      }
-      throw err;
-    }
-    const model = instantiateLlm({ machine, providerModelId: modelId });
+    const model = session.llm;
 
     // 3. Create tools (use effective context limit from the resolved binding)
     const budget = new ContextBudget(effectiveContextLimit ?? undefined);
@@ -121,7 +150,7 @@ export async function executeIssue(
     // 5. Run agent with streaming
     // streamText keeps the HTTP connection alive via SSE, preventing
     // gateway/proxy timeouts for slow local models.
-    console.log(`Runner: starting agent for issue "${issue.title}" on ${machine.name || machine.base_url}`);
+    console.log(`[runner] starting agent for issue "${issue.title}" on ${machine.name || machine.base_url}`);
 
     let stepCount = 0;
     let totalPromptTokens = 0;
@@ -207,12 +236,12 @@ export async function executeIssue(
             duration_ms: stepDuration,
           });
         } catch (e) {
-          console.error("Runner: failed to log LLM request:", e);
+          console.error("[runner] failed to log LLM request:", e);
         }
 
         const runnerStepSec = stepDuration / 1000;
         const runnerStepTime = runnerStepSec >= 10 ? `${Math.round(runnerStepSec)}s` : `${runnerStepSec.toFixed(1)}s`;
-        console.log(`Runner: step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${runnerStepTime})`);
+        console.log(`[runner] step ${stepCount} (${toolCalls?.length ?? 0} tool calls, ${completionTok} tokens, ${runnerStepTime})`);
         stepStartTime = Date.now();
       }
     );
@@ -229,7 +258,7 @@ export async function executeIssue(
     });
     agentOutputSaved = true;
 
-    console.log(`Runner: agent finished in ${stepCount} steps`);
+    console.log(`[runner] agent finished in ${stepCount} steps`);
 
     // 6. Git operations
     const commitHash = await commitAll(worktreePath, `[auto-swe] ${issue.title}`);
@@ -271,17 +300,17 @@ export async function executeIssue(
         git_pr_url: pr.url,
         git_pr_number: pr.number,
       });
-      console.log(`Runner: issue "${issue.title}" → PR #${pr.number} (${pr.url})`);
+      console.log(`[runner] issue "${issue.title}" → PR #${pr.number} (${pr.url})`);
     } else {
       ctx.db.updateIssue(issue.id, {
         status: "awaiting_review",
       });
-      console.log(`Runner: issue "${issue.title}" → branch ${branch} pushed (no PR created)`);
+      console.log(`[runner] issue "${issue.title}" → branch ${branch} pushed (no PR created)`);
     }
   } catch (err) {
     const durationMs = Date.now() - startTime;
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Runner: issue "${issue.title}" failed:`, errorMsg);
+    console.error(`[runner] issue "${issue.title}" failed:`, errorMsg);
 
     const outputUpdate = agentOutputSaved
       ? { output: (ctx.db.getRun(runId)?.output ?? "") + `\n\n--- ERROR ---\n${errorMsg}` }
@@ -297,6 +326,7 @@ export async function executeIssue(
     await removeWorktree(project.workdir, worktreePath).catch(() => {});
     ctx.db.updateMachine(machine.id, { status: "idle", current_run_id: null });
   }
+  return "ok";
 }
 
 /**
@@ -320,7 +350,7 @@ async function runAgentWithTimeout(
   });
 
   const agentPromise = (async () => {
-    console.log("Runner: calling streamText...");
+    console.log("[runner] calling streamText...");
     const result = llmStream({
       model,
       system: systemPrompt,
@@ -331,17 +361,17 @@ async function runAgentWithTimeout(
     });
 
     // Consume the full text stream — this drives the multi-step loop
-    console.log("Runner: consuming stream...");
+    console.log("[runner] consuming stream...");
     let fullText = "";
     const reader = result.textStream;
     for await (const chunk of reader) {
       fullText += chunk;
     }
-    console.log(`Runner: stream complete, ${fullText.length} chars`);
+    console.log(`[runner] stream complete, ${fullText.length} chars`);
 
     // Wait for all steps to finalize (tool calls, etc.)
     const steps = await result.steps;
-    console.log(`Runner: ${steps.length} steps finalized`);
+    console.log(`[runner] ${steps.length} steps finalized`);
 
     return fullText || "(no output)";
   })();

@@ -29,6 +29,38 @@ import { handleStyleLock } from "./style-lock-handler";
 import { archiveCurrentAssets } from "../foreman/asset-archive";
 import { createStyleExplorationTask, queueContinuousExploration, createFluxEnhanceTask } from "./style-exploration";
 import { extractTaskKnowledge } from "./task-knowledge-extractor";
+import { withLightLlmSession, withLightOrLogicalLlmSession, type LlmSession } from "../llm-dispatch";
+import {
+  getDirectorModelId,
+  getDirectorPreferredMachineId,
+  resolveInferenceCandidates,
+  ModelSlotUnconfiguredError,
+  NoMachineHostsModelError,
+  ModelNotFoundError,
+} from "../models";
+import type { Machine } from "../db";
+
+/**
+ * Peek at which inference machine the Director slot would dispatch to right
+ * now, without acquiring a lease. Used solely for pre-reservation in the tick
+ * loop so the Foreman doesn't snipe the Director's preferred host. Returns
+ * null if the Director slot is unconfigured or no machine hosts the model.
+ */
+function peekDirectorMachine(db: Db): Machine | null {
+  try {
+    const modelId = getDirectorModelId(db);
+    const preferId = getDirectorPreferredMachineId(db);
+    const { candidates } = resolveInferenceCandidates(db, modelId, { preferMachineId: preferId });
+    return candidates[0]?.machine ?? null;
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError ||
+        err instanceof NoMachineHostsModelError ||
+        err instanceof ModelNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
+}
 import { getUnattributedCommits } from "./unattributed-commits";
 import { getConfig } from "../foreman/comfyui-config";
 
@@ -42,7 +74,6 @@ let lastPlanError: { timestamp: number; message: string } | null = null;
 // Re-export from isolated state module (no circular dep issues)
 export { isDirectorBusy, isDirectorPlanning } from "./director-state";
 import { isDirectorBusy, setDirectorReservedMachine, getDirectorReservedMachine, isDirectorPlanning, setDirectorPlanning } from "./director-state";
-import { selectPlannerMachine, selectLightMachine } from "../planner-llm";
 
 /** Consecutive zero-task plan attempts per milestone — backs off after 2. */
 const zeroTaskCounts = new Map<string, number>();
@@ -78,7 +109,7 @@ async function createAndMergePR(db: Db, task: ForemanTask, project: Project, mer
       if (pr) {
         prNumber = pr.number;
         db.updateForemanTask(task.id, { git_pr_url: pr.url, git_pr_number: pr.number });
-        console.log(`Director: created PR #${pr.number} for "${task.title}"`);
+        console.log(`[director] created PR #${pr.number} for "${task.title}"`);
       }
     }
 
@@ -86,20 +117,20 @@ async function createAndMergePR(db: Db, task: ForemanTask, project: Project, mer
     if (prNumber) {
       let merged = await mergePullRequest(project, prNumber, mergeMessage);
       if (!merged && task.git_worktree && task.git_branch) {
-        console.log(`Director: merge failed for PR #${prNumber}, attempting rebase for "${task.title}"`);
+        console.log(`[director] merge failed for PR #${prNumber}, attempting rebase for "${task.title}"`);
         const rebased = await rebaseAndPush(project.workdir, task.git_worktree, task.git_branch);
         if (rebased) {
           merged = await mergePullRequest(project, prNumber, mergeMessage);
         }
       }
       if (merged) {
-        console.log(`Director: merged PR #${prNumber} for "${task.title}"`);
+        console.log(`[director] merged PR #${prNumber} for "${task.title}"`);
       } else {
-        console.warn(`Director: failed to merge PR #${prNumber} for "${task.title}" — may need manual merge`);
+        console.warn(`[director] failed to merge PR #${prNumber} for "${task.title}" — may need manual merge`);
       }
     }
   } catch (err) {
-    console.warn(`Director: PR create/merge error for "${task.title}":`, err instanceof Error ? err.message : err);
+    console.warn(`[director] PR create/merge error for "${task.title}":`, err instanceof Error ? err.message : err);
   }
 }
 
@@ -120,11 +151,11 @@ async function ensureTaskPR(db: Db, task: ForemanTask, project: Project): Promis
     );
     if (pr) {
       db.updateForemanTask(task.id, { git_pr_url: pr.url, git_pr_number: pr.number });
-      console.log(`Director: created PR #${pr.number} for "${task.title}" (pending human review)`);
+      console.log(`[director] created PR #${pr.number} for "${task.title}" (pending human review)`);
       return pr.url;
     }
   } catch (err) {
-    console.warn(`Director: PR creation error for "${task.title}":`, err instanceof Error ? err.message : err);
+    console.warn(`[director] PR creation error for "${task.title}":`, err instanceof Error ? err.message : err);
   }
   return null;
 }
@@ -147,14 +178,14 @@ function ensureArtReviewGate(db: Db, directiveId: string, task: ForemanTask): vo
       : `Art task "${task.title}" is ready for review. Please check the generated asset.`,
     context: { type: task.type, task_id: task.id },
   });
-  console.log(`Director: ${isStyle ? "style exploration" : "art task"} "${task.title}" sent to human review`);
+  console.log(`[director] ${isStyle ? "style exploration" : "art task"} "${task.title}" sent to human review`);
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function startDirectorScheduler(db: Db): void {
   schedulerDb = db;
-  console.log("Director scheduler ready (event-driven)");
+  console.log("[director] scheduler ready (event-driven)");
 
   const config = db.getForemanConfig();
   if (config?.project_id) {
@@ -188,7 +219,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
     const failed = allStyleTasks.find((t: { status: string }) => t.status === "failed");
     if (failed) {
       db.updateForemanTask(failed.id, { status: "queued", retry_count: 0, error_message: null });
-      console.log("Director: re-queued failed style exploration task");
+      console.log("[director] re-queued failed style exploration task");
       nudgeForeman(db);
     }
     return;
@@ -207,20 +238,20 @@ export function ensureStyleExploration(db: Db, project: Project): void {
   if (!activeMilestone) return;
 
   // Reserve the inference machine while the LLM generates the style prompt
-  const machineInfo = selectPlannerMachine(db, project);
-  if (machineInfo) {
-    setDirectorReservedMachine(machineInfo.machine.id);
+  const reservedMachine = peekDirectorMachine(db);
+  if (reservedMachine) {
+    setDirectorReservedMachine(reservedMachine.id);
   }
-  console.log(`Director: art style not locked — creating style exploration task (reserved machine: ${machineInfo?.machine.name ?? "none"})`);
+  console.log(`[director] art style not locked — creating style exploration task (reserved machine: ${reservedMachine?.name ?? "none"})`);
 
   createStyleExplorationTask(db, activeDirective, project, activeMilestone).then(taskId => {
     if (taskId) {
-      console.log(`Director: style exploration task created: ${taskId}`);
+      console.log(`[director] style exploration task created: ${taskId}`);
     } else {
-      console.error("Director: style exploration task creation returned null — check logs above");
+      console.error("[director] style exploration task creation returned null — check logs above");
     }
   }).catch(err => {
-    console.error("Director: style exploration task creation FAILED:", err instanceof Error ? err.message : err);
+    console.error("[director] style exploration task creation FAILED:", err instanceof Error ? err.message : err);
   }).finally(() => {
     setDirectorReservedMachine(null);
     nudgeDirector(db);
@@ -255,11 +286,11 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
   archiveCurrentAssets(project.workdir, idle, attempt);
 
   // Generate fresh prompts and re-queue
-  console.log(`Director: continuous exploration — archived run ${attempt}, generating fresh prompts`);
+  console.log(`[director] continuous exploration — archived run ${attempt}, generating fresh prompts`);
   try {
     await queueContinuousExploration(db, idle);
   } catch (err) {
-    console.error("Director: continuous exploration failed:", err instanceof Error ? err.message : err);
+    console.error("[director] continuous exploration failed:", err instanceof Error ? err.message : err);
   }
 }
 
@@ -275,7 +306,7 @@ export function nudgeDirector(db?: Db): void {
   // Use queueMicrotask so Director always runs BEFORE the Foreman's setTimeout(0)
   queueMicrotask(() => {
     pendingNudge = false;
-    directorTick(d).catch(err => console.error("Director scheduler error:", err));
+    directorTick(d).catch(err => console.error("[director] scheduler error:", err));
   });
 }
 
@@ -297,9 +328,9 @@ async function directorTick(db: Db): Promise<void> {
     const firstDirective = directives[0];
     const firstProject = db.getProject(firstDirective.project_id);
     if (firstProject) {
-      const machineInfo = selectPlannerMachine(db, firstProject);
-      if (machineInfo) {
-        setDirectorReservedMachine(machineInfo.machine.id);
+      const reservedMachine = peekDirectorMachine(db);
+      if (reservedMachine) {
+        setDirectorReservedMachine(reservedMachine.id);
       }
     }
 
@@ -314,7 +345,7 @@ async function directorTick(db: Db): Promise<void> {
       const queued = tasks.filter(t => t.status === "queued").length;
       const completed = tasks.filter(t => t.status === "completed").length;
       const awaiting = tasks.filter(t => t.status === "awaiting_review").length;
-      console.log(`Director: tick — "${current.directive.slice(0, 50)}" [${current.status}] milestone: ${milestone?.title ?? "none"} (${completed}done ${running}run ${queued}q ${awaiting}rev)`);
+      console.log(`[director] tick — "${current.directive.slice(0, 50)}" [${current.status}] milestone: ${milestone?.title ?? "none"} (${completed}done ${running}run ${queued}q ${awaiting}rev)`);
 
       if (current.status === "active") {
         await processActiveDirective(db, current);
@@ -391,7 +422,7 @@ function checkForUnattributedCommits(db: Db, directive: DirectorDirective, proje
         commits: unattributed.slice(0, 5).map(c => `${c.sha.slice(0, 8)} ${c.message}`),
       },
     });
-    console.log(`Director: ${unattributed.length} unattributed commit(s) on main — notifying`);
+    console.log(`[director] ${unattributed.length} unattributed commit(s) on main — notifying`);
   }
 }
 
@@ -404,29 +435,56 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
   if (pending.length === 0) return;
 
   const task = pending[0];
-  // Prefer NPU for lightweight extraction work — no need to tie up the big model
-  const machineInfo = selectLightMachine(db) ?? selectPlannerMachine(db, project);
-  if (!machineInfo) {
-    console.log(`Knowledge extraction: no machine available, will retry next tick (${pending.length} task(s) pending)`);
-    return;
+  console.log(`[director:knowledge] processing "${task.title}"...`);
+
+  // Try the NPU light pathway first; fall back to the configured Director model
+  // if no NPU machine is available. Both paths hold a real lease (with
+  // colocation release + circuit breaker checks) for the duration of the
+  // extraction.
+  let directorModelId: string;
+  try {
+    directorModelId = getDirectorModelId(db);
+  } catch {
+    // No director model configured — try NPU only
+    directorModelId = "";
   }
 
-  console.log(`Knowledge extraction: processing "${task.title}"...`);
-  try {
-    // Timeout extraction to prevent blocking the Director tick
-    const extractionTimeout = AbortSignal.timeout(2 * 60 * 1000); // 2 min max
-    await Promise.race([
-      extractTaskKnowledge(db, task, project, machineInfo),
-      new Promise<never>((_, reject) => {
-        extractionTimeout.addEventListener("abort", () => reject(new Error("Knowledge extraction timed out (2min)")));
-      }),
-    ]);
-    db.updateForemanTask(task.id, { knowledge_extracted: 1 });
-    console.log(`Knowledge extraction: completed "${task.title}"`);
-  } catch (err) {
-    console.warn(`Knowledge extraction: failed "${task.title}":`, err instanceof Error ? err.message : err);
-    // Mark as extracted anyway to prevent infinite retry on permanent failures
-    db.updateForemanTask(task.id, { knowledge_extracted: 1 });
+  const dispatch = async (): Promise<"ok" | "no-machine" | "error"> => {
+    const runner = async (session: LlmSession): Promise<"ok" | "error"> => {
+      try {
+        const extractionTimeout = AbortSignal.timeout(2 * 60 * 1000);
+        await Promise.race([
+          extractTaskKnowledge(db, task, project, session),
+          new Promise<never>((_, reject) => {
+            extractionTimeout.addEventListener("abort", () => reject(new Error("Knowledge extraction timed out (2min)")));
+          }),
+        ]);
+        return "ok";
+      } catch (err) {
+        console.warn(`[director:knowledge] failed "${task.title}":`, err instanceof Error ? err.message : err);
+        return "error";
+      }
+    };
+
+    let result: "ok" | "error" | null;
+    if (directorModelId) {
+      result = await withLightOrLogicalLlmSession(db, "director", `knowledge: ${task.title.slice(0, 40)}`, directorModelId, runner);
+    } else {
+      result = await withLightLlmSession(db, "director", `knowledge: ${task.title.slice(0, 40)}`, runner);
+    }
+    if (result === null) return "no-machine";
+    return result;
+  };
+
+  const status = await dispatch();
+  if (status === "no-machine") {
+    console.log(`[director:knowledge] no machine available, will retry next tick (${pending.length} task(s) pending)`);
+    return;
+  }
+  // Mark as extracted regardless of ok/error to prevent infinite retry on permanent failures
+  db.updateForemanTask(task.id, { knowledge_extracted: 1 });
+  if (status === "ok") {
+    console.log(`[director:knowledge] completed "${task.title}"`);
   }
 }
 
@@ -437,7 +495,7 @@ async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project,
     try { await removeWorktree(project.workdir, task.git_worktree); } catch { /* best effort */ }
     db.updateForemanTask(task.id, { git_worktree: null });
   }
-  console.log(`Director: completed task "${task.title}" (confidence: ${confidence})`);
+  console.log(`[director] completed task "${task.title}" (confidence: ${confidence})`);
   logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${confidence}`);
   if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
   nudgeForeman(db);
@@ -472,7 +530,7 @@ async function escalateForHumanReview(
     db.updateForemanTask(task.id, { status: "awaiting_review" });
   }
 
-  console.log(`Director: escalated task "${task.title}" for human review${prUrl ? ` (PR: ${prUrl})` : ""}`);
+  console.log(`[director] escalated task "${task.title}" for human review${prUrl ? ` (PR: ${prUrl})` : ""}`);
 }
 
 // ─── Step 1: Verify tasks awaiting review ───────────────────────────────────
@@ -498,17 +556,17 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
 
   const task = codeTask;
   try {
-    console.log(`Director: verifying "${task.title}" ...`);
+    console.log(`[director] verifying "${task.title}" ...`);
     const verifyStart = Date.now();
     const result = await verifyTask(db, task, project);
 
     // Deferred = no machine available right now, retry next tick
     if (result.reasoning === "deferred") {
-      console.log(`Director: verification of "${task.title}" deferred — no machine available, will retry`);
+      console.log(`[director] verification of "${task.title}" deferred — no machine available, will retry`);
       return;
     }
 
-    console.log(`Director: verified "${task.title}" → ${result.verdict} (${result.confidence}, ${Math.round((Date.now() - verifyStart) / 1000)}s)`);
+    console.log(`[director] verified "${task.title}" → ${result.verdict} (${result.confidence}, ${Math.round((Date.now() - verifyStart) / 1000)}s)`);
 
     // Persist verification result so the frontend can display it
     db.updateForemanTask(task.id, {
@@ -532,7 +590,7 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
       }
     } else if (result.verdict === "fail") {
       db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
-      console.log(`Director: task "${task.title}" failed verification: ${result.issues.join("; ")}`);
+      console.log(`[director] task "${task.title}" failed verification: ${result.issues.join("; ")}`);
       logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
     } else {
       // confidence === 0 is a hard signal that the verifier did NOT actually
@@ -550,7 +608,7 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
       }
     }
   } catch (err) {
-    console.error(`Director: verification error for task ${task.id}:`, err);
+    console.error(`[director] verification error for task ${task.id}:`, err);
     const existing = db.getDirectorReviews(directive.id).filter(r => r.task_id === task.id && r.status === "pending");
     if (existing.length === 0) {
       const prUrl = await ensureTaskPR(db, task, project);
@@ -568,7 +626,7 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
       if (task.status !== "awaiting_review") {
         db.updateForemanTask(task.id, { status: "awaiting_review" });
       }
-      console.log(`Director: escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
+      console.log(`[director] escalated "${task.title}" after verification error${prUrl ? ` (PR: ${prUrl})` : ""}`);
     }
   }
 }
@@ -588,7 +646,7 @@ async function handleFailedTasks(db: Db, directive: DirectorDirective): Promise<
         context: { task_title: task.title, task_description: task.description, error: task.error_message, attempts: runs.length },
         options: ["Retry with different approach", "Skip this task", "Provide guidance"],
       });
-      console.log(`Director: escalated failed task "${task.title}" for human guidance`);
+      console.log(`[director] escalated failed task "${task.title}" for human guidance`);
     }
   }
 }
@@ -602,7 +660,7 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
   const milestones = db.getDirectorMilestones(directive.id);
   const stuckVerifying = milestones.find(m => m.status === "verifying");
   if (stuckVerifying) {
-    console.warn(`Director: milestone "${stuckVerifying.title}" stuck in verifying — resetting to active`);
+    console.warn(`[director] milestone "${stuckVerifying.title}" stuck in verifying — resetting to active`);
     db.updateDirectorMilestone(stuckVerifying.id, { status: "active" });
   }
 
@@ -637,7 +695,7 @@ async function completeMilestone(
   taskCount: number,
 ): Promise<void> {
   db.updateDirectorMilestone(milestone.id, { status: "verifying" });
-  console.log(`Director: verifying milestone "${milestone.title}" (${taskCount} tasks) ...`);
+  console.log(`[director] verifying milestone "${milestone.title}" (${taskCount} tasks) ...`);
   const msVerifyStart = Date.now();
 
   let verification: { passed: boolean; issues: string[] };
@@ -647,22 +705,22 @@ async function completeMilestone(
     // Deferred = no machine available, reset to active and retry next tick
     if (verification.issues.length === 1 && verification.issues[0] === "deferred:no-machine") {
       db.updateDirectorMilestone(milestone.id, { status: "active" });
-      console.log(`Director: milestone "${milestone.title}" verification deferred — no machine, will retry`);
+      console.log(`[director] milestone "${milestone.title}" verification deferred — no machine, will retry`);
       return;
     }
 
-    console.log(`Director: milestone "${milestone.title}" verification → ${verification.passed ? "passed" : "failed"} (${Math.round((Date.now() - msVerifyStart) / 1000)}s)`);
+    console.log(`[director] milestone "${milestone.title}" verification → ${verification.passed ? "passed" : "failed"} (${Math.round((Date.now() - msVerifyStart) / 1000)}s)`);
   } catch (err) {
     // Reset to active so the Director can retry — never leave stuck in "verifying"
     db.updateDirectorMilestone(milestone.id, { status: "active" });
-    console.error(`Director: milestone "${milestone.title}" verification threw — reset to active:`, err instanceof Error ? err.message : err);
+    console.error(`[director] milestone "${milestone.title}" verification threw — reset to active:`, err instanceof Error ? err.message : err);
     return;
   }
 
   if (verification.passed) {
     zeroTaskCounts.delete(milestone.id);
     db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString() });
-    console.log(`Director: milestone "${milestone.title}" completed`);
+    console.log(`[director] milestone "${milestone.title}" completed`);
     logEpisodic(project.workdir, `Milestone completed: "${milestone.title}"`, `Tasks: ${taskCount}`);
 
     if (shouldEscalate(directive.autonomy_level, "milestone_complete")) {
@@ -686,12 +744,12 @@ async function completeMilestone(
       }
     } else {
       db.updateDirectorDirective(directive.id, { status: "completed", completed_at: new Date().toISOString() });
-      console.log(`Director: directive "${directive.directive}" completed!`);
+      console.log(`[director] directive "${directive.directive}" completed!`);
       logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
     }
   } else {
     db.updateDirectorMilestone(milestone.id, { status: "active" });
-    console.log(`Director: milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
+    console.log(`[director] milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
     logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
     await planTasks(db, directive, project, milestone, "corrective", verification.issues);
   }
@@ -706,7 +764,7 @@ async function planTasks(
   try {
     await planNextTasks(db, directive, project, milestone, undefined, verificationIssues);
   } catch (err) {
-    console.error(`Director: ${reason} planning failed:`, err instanceof Error ? err.message : err);
+    console.error(`[director] ${reason} planning failed:`, err instanceof Error ? err.message : err);
   }
 }
 
@@ -725,13 +783,13 @@ async function topUpIfIdle(
   const idleTypes = getIdleMachineTypes(db, directive.id, milestone.id);
   if (idleTypes.length === 0) return;
 
-  console.log(`Director: machine type(s) idle: ${idleTypes.join(", ")} — requesting top-up tasks`);
+  console.log(`[director] machine type(s) idle: ${idleTypes.join(", ")} — requesting top-up tasks`);
   setDirectorPlanning(true);
   try {
     const created = await planNextTasks(db, directive, project, milestone, idleTypes);
     if (created === 0) {
       zeroTaskCounts.set(milestone.id, zeroCount + 1);
-      console.log(`Director: planner generated 0 tasks (${zeroCount + 1}/${ZERO_TASK_BACKOFF_LIMIT} before backing off)`);
+      console.log(`[director] planner generated 0 tasks (${zeroCount + 1}/${ZERO_TASK_BACKOFF_LIMIT} before backing off)`);
     } else if (created > 0) {
       zeroTaskCounts.set(milestone.id, 0);
     }
@@ -741,7 +799,7 @@ async function topUpIfIdle(
     const now = Date.now();
     if (!lastPlanError || lastPlanError.message !== msg || now - lastPlanError.timestamp >= 60_000) {
       lastPlanError = { timestamp: now, message: msg };
-      console.error(`Director: planning error:`, msg);
+      console.error(`[director] planning error:`, msg);
     }
     // Count errors toward backoff to prevent tight error loops
     zeroTaskCounts.set(milestone.id, zeroCount + 1);
@@ -761,7 +819,7 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
     try {
       result = processReviewResponse(review);
     } catch (err) {
-      console.error(`Director: failed to process review ${review.id}:`, err instanceof Error ? err.message : err);
+      console.error(`[director] failed to process review ${review.id}:`, err instanceof Error ? err.message : err);
       db.updateDirectorReview(review.id, { status: "processed" });
       acted = true;
       continue;
@@ -836,7 +894,7 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
             const runs = db.getForemanRunsForTask(task.id);
             const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
             archiveCurrentAssets(project.workdir, task, attempt);
-            console.log(`Director: archived style exploration run ${attempt}, re-queuing with same prompts`);
+            console.log(`[director] archived style exploration run ${attempt}, re-queuing with same prompts`);
           }
           db.updateForemanTask(review.task_id, {
             status: "queued", retry_count: 0, error_message: null, next_retry_at: null, machine_id: null,
@@ -851,7 +909,7 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
           try {
             handleStyleLock(db, directive, project, review.task_id, review.id, result.context);
           } catch (err) {
-            console.error("Director: style lock failed:", err instanceof Error ? err.message : err);
+            console.error("[director] style lock failed:", err instanceof Error ? err.message : err);
             db.updateForemanTask(review.task_id, {
               status: "queued", retry_count: 0,
               error_message: `Style lock failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -868,14 +926,14 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
             try {
               await createFluxEnhanceTask(db, task, project, directive, result.context);
             } catch (err) {
-              console.error("Director: enhance task creation failed:", err instanceof Error ? err.message : err);
+              console.error("[director] enhance task creation failed:", err instanceof Error ? err.message : err);
             }
           }
         }
         break;
       }
     } } catch (err) {
-      console.error(`Director: error handling review ${review.id} action "${result.action}":`, err instanceof Error ? err.message : err);
+      console.error(`[director] error handling review ${review.id} action "${result.action}":`, err instanceof Error ? err.message : err);
     }
   }
 
@@ -893,7 +951,7 @@ async function processPausedDirective(db: Db, directive: DirectorDirective): Pro
   // Always unpause — directives should never stay paused. Review gates are async/informational.
   db.updateDirectorDirective(directive.id, { status: "active" });
   saveProgress(db, directive);
-  console.log("Director: directive resumed (paused directives auto-resume)");
+  console.log("[director] directive resumed (paused directives auto-resume)");
 }
 
 // ─── Idle machine detection ─────────────────────────────────────────────────

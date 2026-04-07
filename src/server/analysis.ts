@@ -6,15 +6,13 @@
  */
 
 import type { ToolSet } from "ai";
-import type { Db, Machine, Project, AnalysisConfig } from "./db";
-import { acquireLease, releaseLease } from "./machine-manager";
+import type { Db, Project, AnalysisConfig } from "./db";
 import { ANALYSIS_LENSES, constructAnalysisScoutPrompt, constructAnalysisGroupPrompt } from "./prompts/analysis";
 import { makeReadOnlyTools } from "./tools/filesystem";
 import { makeBuildCheckTools, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./tools/build-check";
 import { runStage } from "./pipeline/run-stage";
-import { instantiateLlm } from "./llm";
+import { withLlmSession, type LlmSession } from "./llm-dispatch";
 import {
-  resolveInferenceExecution,
   getDirectorModelId,
   getDirectorPreferredMachineId,
   ModelSlotUnconfiguredError,
@@ -96,182 +94,193 @@ export function getActiveAnalysisCount(): number {
 
 // ─── Execute multi-stage analysis ───────────────────────────────────────────
 
+/**
+ * Run a multi-stage analysis. Opens its OWN session via withLlmSession (Director
+ * slot) and holds the lease for the entire scout → per-group → merge flow.
+ * Callers should NOT acquire a lease themselves — just call this and await.
+ */
 export async function executeAnalysis(
   db: Db,
-  machine: Machine,
   project: Project,
   config: AnalysisConfig,
 ): Promise<void> {
   const lens = ANALYSIS_LENSES[config.lens_key];
   if (!lens) {
-    console.error(`Analysis: unknown lens "${config.lens_key}"`);
+    console.error(`[analysis] unknown lens "${config.lens_key}"`);
     return;
   }
 
-  const abortController = new AbortController();
-  activeAnalyses.set(config.id, abortController);
-
-  const run = db.createAnalysisRun({
-    project_id: project.id,
-    config_id: config.id,
-    lens_key: config.lens_key,
-    machine_id: machine.id,
-  });
-
-  // Analysis runs use the configured Director model slot.
-  let modelId: string;
+  // Director slot supplies the analysis model.
+  let directorModelId: string;
   try {
-    const requestedModelId = getDirectorModelId(db);
-    const exec = resolveInferenceExecution(db, requestedModelId, {
-      preferMachineId: getDirectorPreferredMachineId(db) ?? machine.id,
-    });
-    if (exec.machine.id !== machine.id) {
-      throw new Error(`Machine ${machine.id} does not host the configured Director model (resolver picked ${exec.machine.id})`);
-    }
-    modelId = exec.providerModelId;
+    directorModelId = getDirectorModelId(db);
   } catch (err) {
-    if (err instanceof ModelSlotUnconfiguredError ||
-        err instanceof NoMachineHostsModelError ||
-        err instanceof ModelNotFoundError) {
-      console.error(`Analysis: ${err.message}`);
-      db.updateAnalysisRun(run.id, { status: "fail", completed_at: new Date().toISOString() });
-      activeAnalyses.delete(config.id);
+    if (err instanceof ModelSlotUnconfiguredError) {
+      console.error(`[analysis] ${err.message}`);
       return;
     }
     throw err;
   }
 
-  console.log(`Analysis: starting "${lens.name}" for project "${project.name}" (machine: ${machine.name || machine.id})`);
-  db.updateAnalysisRun(run.id, { status: "running", started_at: new Date().toISOString() });
+  const abortController = new AbortController();
+  activeAnalyses.set(config.id, abortController);
 
+  type AnalysisRun = ReturnType<typeof db.createAnalysisRun>;
+  // eslint-disable-next-line prefer-const -- mutated inside closure; TS narrowing is brittle here
+  let run: AnalysisRun | null = null;
   try {
-    const model = instantiateLlm({ machine, providerModelId: modelId });
-
-    // ── Phase 1: Static pre-scan ──
-    const scanResult = await runStaticScan(project.workdir);
-    const scanJson = JSON.stringify(scanResult, null, 2);
-    console.log(`Analysis: static scan complete (${Math.round(scanJson.length / 1024)}KB)`);
-
-    // ── Phase 2: Scout — identify file groups ──
-    const scoutPrompts = constructAnalysisScoutPrompt({
-      workingDir: project.workdir,
-      lens,
-      scanData: scanJson,
-    });
-
-    const scoutOutput = await runStage({
+    const result = await withLlmSession(
       db,
-      runId: "",  // skip pipeline run updates — analysis uses analysis_runs table
-      issueId: `analysis:${config.id}`,
-      stageName: `analysis:${config.lens_key}:scout`,
-      model,
-      modelId,
-      systemPrompt: scoutPrompts.system,
-      userPrompt: scoutPrompts.user,
-      tools: {
-        ...makeReadOnlyTools(project.workdir),
-        ...makeAnalysisGroupsTool(),
-      } as ToolSet,
-      abortSignal: abortController.signal,
-      contextLimit: machine.context_limit ?? undefined,
-      worktreePath: project.workdir,
-      onStepsUpdate: (stepsJson) => {
-        try { db.updateAnalysisRun(run.id, { output: stepsJson }); } catch { /* non-critical */ }
-      },
-    });
+      "analysis",
+      `${config.lens_key}: ${project.name}`,
+      directorModelId,
+      async (session: LlmSession) => {
+        // Create the run row now that we know which machine got the lease
+        run = db.createAnalysisRun({
+          project_id: project.id,
+          config_id: config.id,
+          lens_key: config.lens_key,
+          machine_id: session.machine.id,
+        });
+        console.log(`[analysis] starting "${lens.name}" for project "${project.name}" (machine: ${session.machine.name || session.machine.id})`);
+        db.updateAnalysisRun(run.id, { status: "running", started_at: new Date().toISOString() });
 
-    const groups = parseGroups(scoutOutput);
-    if (groups.length === 0) {
-      console.log(`Analysis: scout produced no groups — skipping`);
-      db.updateAnalysisRun(run.id, {
-        status: "pass",
-        findings: "[]",
-        summary: JSON.stringify(summarize([])),
-        completed_at: new Date().toISOString(),
-      });
-      return;
-    }
+        // ── Phase 1: Static pre-scan ──
+        const scanResult = await runStaticScan(project.workdir);
+        const scanJson = JSON.stringify(scanResult, null, 2);
+        console.log(`[analysis] static scan complete (${Math.round(scanJson.length / 1024)}KB)`);
 
-    console.log(`Analysis: scout identified ${groups.length} groups: ${groups.map(g => g.name).join(", ")}`);
+        // ── Phase 2: Scout — identify file groups ──
+        const scoutPrompts = constructAnalysisScoutPrompt({
+          workingDir: project.workdir,
+          lens,
+          scanData: scanJson,
+        });
 
-    // ── Phase 3: Analyze each group ──
-    const allFindings: Finding[] = [];
-
-    for (const group of groups) {
-      if (abortController.signal.aborted) break;
-
-      console.log(`Analysis: analyzing group "${group.name}" (${group.files.length} files)`);
-
-      const groupPrompts = constructAnalysisGroupPrompt({
-        workingDir: project.workdir,
-        lens,
-        groupName: group.name,
-        groupFocus: group.focus,
-        files: group.files,
-      });
-
-      try {
-        const groupOutput = await runStage({
+        const scoutOutput = await runStage({
           db,
-          runId: "",
+          runId: "",  // skip pipeline run updates — analysis uses analysis_runs table
           issueId: `analysis:${config.id}`,
-          stageName: `analysis:${config.lens_key}:${group.name}`,
-          model,
-          modelId,
-          systemPrompt: groupPrompts.system,
-          userPrompt: groupPrompts.user,
+          stageName: `analysis:${config.lens_key}:scout`,
+          model: session.llm,
+          modelId: session.providerModelId,
+          systemPrompt: scoutPrompts.system,
+          userPrompt: scoutPrompts.user,
           tools: {
             ...makeReadOnlyTools(project.workdir),
-            ...makeBuildCheckTools(project.workdir, {
-              buildCommand: project.build_command,
-              testCommand: project.test_command,
-            }),
-            ...makeAnalysisFindingsTool(),
+            ...makeAnalysisGroupsTool(),
           } as ToolSet,
           abortSignal: abortController.signal,
-          contextLimit: machine.context_limit ?? undefined,
+          contextLimit: session.effectiveContextLimit ?? undefined,
           worktreePath: project.workdir,
           onStepsUpdate: (stepsJson) => {
-            try { db.updateAnalysisRun(run.id, { output: stepsJson }); } catch { /* non-critical */ }
+            try { db.updateAnalysisRun(run!.id, { output: stepsJson }); } catch { /* non-critical */ }
           },
         });
 
-        const groupFindings = parseFindings(groupOutput);
-        console.log(`Analysis: group "${group.name}" — ${groupFindings.length} findings`);
-        allFindings.push(...groupFindings);
-      } catch (groupErr) {
-        console.error(`Analysis: group "${group.name}" failed:`, groupErr instanceof Error ? groupErr.message : groupErr);
-        // Continue with other groups
-      }
+        const groups = parseGroups(scoutOutput);
+        if (groups.length === 0) {
+          console.log(`[analysis] scout produced no groups — skipping`);
+          db.updateAnalysisRun(run.id, {
+            status: "pass",
+            findings: "[]",
+            summary: JSON.stringify(summarize([])),
+            completed_at: new Date().toISOString(),
+          });
+          return "ok" as const;
+        }
+
+        console.log(`[analysis] scout identified ${groups.length} groups: ${groups.map(g => g.name).join(", ")}`);
+
+        // ── Phase 3: Analyze each group ──
+        const allFindings: Finding[] = [];
+
+        for (const group of groups) {
+          if (abortController.signal.aborted) break;
+          console.log(`[analysis] analyzing group "${group.name}" (${group.files.length} files)`);
+
+          const groupPrompts = constructAnalysisGroupPrompt({
+            workingDir: project.workdir,
+            lens,
+            groupName: group.name,
+            groupFocus: group.focus,
+            files: group.files,
+          });
+
+          try {
+            const groupOutput = await runStage({
+              db,
+              runId: "",
+              issueId: `analysis:${config.id}`,
+              stageName: `analysis:${config.lens_key}:${group.name}`,
+              model: session.llm,
+              modelId: session.providerModelId,
+              systemPrompt: groupPrompts.system,
+              userPrompt: groupPrompts.user,
+              tools: {
+                ...makeReadOnlyTools(project.workdir),
+                ...makeBuildCheckTools(project.workdir, {
+                  buildCommand: project.build_command,
+                  testCommand: project.test_command,
+                }),
+                ...makeAnalysisFindingsTool(),
+              } as ToolSet,
+              abortSignal: abortController.signal,
+              contextLimit: session.effectiveContextLimit ?? undefined,
+              worktreePath: project.workdir,
+              onStepsUpdate: (stepsJson) => {
+                try { db.updateAnalysisRun(run!.id, { output: stepsJson }); } catch { /* non-critical */ }
+              },
+            });
+
+            const groupFindings = parseFindings(groupOutput);
+            console.log(`[analysis] group "${group.name}" — ${groupFindings.length} findings`);
+            allFindings.push(...groupFindings);
+          } catch (groupErr) {
+            console.error(`[analysis] group "${group.name}" failed:`, groupErr instanceof Error ? groupErr.message : groupErr);
+          }
+        }
+
+        // ── Phase 4: Merge and store ──
+        const seen = new Set<string>();
+        const deduped = allFindings.filter(f => {
+          const key = `${f.file}:${f.line}:${f.title}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        const summary = summarize(deduped);
+        console.log(`[analysis] "${lens.name}" complete — ${summary.total} findings (${summary.critical} critical, ${summary.high} high, ${summary.medium} medium, ${summary.low} low)`);
+
+        db.updateAnalysisRun(run.id, {
+          status: "pass",
+          findings: JSON.stringify(deduped),
+          summary: JSON.stringify(summary),
+          completed_at: new Date().toISOString(),
+        });
+        return "ok" as const;
+      },
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    );
+
+    if (result === null) {
+      console.warn(`[analysis] no machine available for "${lens.name}" — will retry on next tick`);
     }
-
-    // ── Phase 4: Merge and store ──
-    // Deduplicate findings (same file + line + title)
-    const seen = new Set<string>();
-    const deduped = allFindings.filter(f => {
-      const key = `${f.file}:${f.line}:${f.title}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    const summary = summarize(deduped);
-    console.log(`Analysis: "${lens.name}" complete — ${summary.total} findings (${summary.critical} critical, ${summary.high} high, ${summary.medium} medium, ${summary.low} low)`);
-
-    db.updateAnalysisRun(run.id, {
-      status: "pass",
-      findings: JSON.stringify(deduped),
-      summary: JSON.stringify(summary),
-      completed_at: new Date().toISOString(),
-    });
-
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`Analysis: "${lens.name}" failed:`, msg);
-    db.updateAnalysisRun(run.id, {
-      status: "fail",
-      completed_at: new Date().toISOString(),
-    });
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      console.error(`[analysis] ${msg}`);
+    } else {
+      console.error(`[analysis] "${lens.name}" failed:`, msg);
+    }
+    const r = run as AnalysisRun | null;
+    if (r) {
+      db.updateAnalysisRun(r.id, {
+        status: "fail",
+        completed_at: new Date().toISOString(),
+      });
+    }
   } finally {
     activeAnalyses.delete(config.id);
     db.updateAnalysisConfig(config.id, {
@@ -295,24 +304,21 @@ async function schedulerTick(db: Db): Promise<void> {
   if (due.length === 0) return;
 
   const config = due[0];
-  const leaseResult = acquireLease(db, "analysis", config.lens_key, { machineType: "inference" });
-  if (!leaseResult) return;
-
   const project = db.getProject(config.project_id);
-  if (!project) { releaseLease(leaseResult.lease.id); return; }
+  if (!project) return;
 
-  if (activeAnalyses.has(config.id)) { releaseLease(leaseResult.lease.id); return; }
+  if (activeAnalyses.has(config.id)) return;
 
-  executeAnalysis(db, leaseResult.machine, project, config)
-    .catch(err => { console.error(`Analysis scheduler error:`, err); })
-    .finally(() => releaseLease(leaseResult.lease.id));
+  // executeAnalysis owns its own lease via withLlmSession
+  executeAnalysis(db, project, config)
+    .catch(err => { console.error(`[analysis]`, err); });
 }
 
 export function startAnalysisScheduler(db: Db): void {
   if (schedulerInterval) return;
-  console.log("Analysis: scheduler started (checking every 60s)");
+  console.log("[analysis] scheduler started (checking every 60s)");
   schedulerInterval = setInterval(() => {
-    schedulerTick(db).catch(err => console.error("Analysis scheduler tick error:", err));
+    schedulerTick(db).catch(err => console.error("[analysis] scheduler tick error:", err));
   }, SCHEDULER_INTERVAL_MS);
 }
 

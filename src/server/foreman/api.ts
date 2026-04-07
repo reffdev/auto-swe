@@ -168,7 +168,7 @@ export function createForemanRouter(db: Db): Router {
 
     // Append feedback and re-queue immediately — no LLM call, no waiting
     // The Director/planner will see the feedback when it next processes this task
-    console.log(`Foreman reject: task ${task.id} (${task.type}) with feedback: "${feedback.slice(0, 100)}"${preserveAssets ? " [preserve]" : ""}`);
+    console.log(`[foreman:reject] task ${task.id} (${task.type}) with feedback: "${feedback.slice(0, 100)}"${preserveAssets ? " [preserve]" : ""}`);
 
     // Archive current assets if user wants to preserve them across retries
     if (preserveAssets && isComfyUITaskType(task.type)) {
@@ -181,7 +181,7 @@ export function createForemanRouter(db: Db): Router {
         const attempt = latestRun?.attempt ?? 1;
         const archived = archiveCurrentAssets(project.workdir, task, attempt);
         if (archived.length > 0) {
-          console.log(`Foreman reject: archived ${archived.length} asset(s) to run_${attempt}/`);
+          console.log(`[foreman:reject] archived ${archived.length} asset(s) to run_${attempt}/`);
         }
       }
     }
@@ -206,11 +206,11 @@ export function createForemanRouter(db: Db): Router {
       // Background: revise prompt then queue
       void processArtFeedback(db, task.description, feedback).then(revised => {
         db.updateForemanTask(task.id, { status: "queued", description: revised, error_message: `Rejected: ${feedback}` });
-        console.log(`Foreman reject: prompt revised, task ${task.id} now queued`);
+        console.log(`[foreman:reject] prompt revised, task ${task.id} now queued`);
         nudgeForeman(db);
       }).catch(err => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`Foreman reject: LLM revision FAILED for task ${task.id}: ${errMsg}`);
+        console.error(`[foreman:reject] LLM revision FAILED for task ${task.id}: ${errMsg}`);
         db.updateForemanTask(task.id, { status: "failed", error_message: `Prompt revision failed: ${errMsg}` });
       });
     } else {
@@ -239,7 +239,7 @@ export function createForemanRouter(db: Db): Router {
       verification_result: null,
     });
     nudgeDirector(db);
-    console.log(`Foreman: requeued verification for "${task.title}"`);
+    console.log(`[foreman] requeued verification for "${task.title}"`);
     res.json(db.getForemanTask(task.id));
   });
 

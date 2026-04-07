@@ -30,7 +30,7 @@ export async function bootstrapComfyUI(
   // 1. Health check
   const healthy = await checkComfyUIHealth(comfyuiBaseUrl);
   if (!healthy) {
-    console.warn(`ComfyUI at ${comfyuiBaseUrl} is not reachable — skipping bootstrap`);
+    console.warn(`[comfyui:bootstrap] at ${comfyuiBaseUrl} is not reachable — skipping bootstrap`);
     return null;
   }
 
@@ -39,11 +39,11 @@ export async function bootstrapComfyUI(
   try {
     models = await listAvailableModels(comfyuiBaseUrl);
   } catch (err) {
-    console.warn("Failed to query ComfyUI models:", err);
+    console.warn("[comfyui:bootstrap] failed to query models:", err);
     return null;
   }
 
-  console.log(`ComfyUI bootstrap: found ${models.checkpoints.length} checkpoints, ${models.loras.length} LoRAs`);
+  console.log(`[comfyui:bootstrap] found ${models.checkpoints.length} checkpoints, ${models.loras.length} LoRAs`);
 
   // 3. Build manifest based on what's available
   const manifest = buildManifestFromModels(models);
@@ -56,7 +56,7 @@ export async function bootstrapComfyUI(
 
   const manifestPath = resolve(workflowDir, "manifest.json");
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  console.log(`ComfyUI bootstrap: wrote manifest to ${manifestPath}`);
+  console.log(`[comfyui:bootstrap] wrote manifest to ${manifestPath}`);
 
   return manifest;
 }

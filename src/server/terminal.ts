@@ -25,7 +25,7 @@ export async function initPty(): Promise<boolean> {
     pty = await import("node-pty");
     return true;
   } catch (err) {
-    console.warn("Terminal: node-pty not available — terminal feature disabled.", err instanceof Error ? err.message : "");
+    console.warn("[terminal] node-pty not available — terminal feature disabled.", err instanceof Error ? err.message : "");
     return false;
   }
 }
@@ -61,7 +61,7 @@ function appendToBuffer(session: PtySession, chunk: string): void {
 }
 
 function killSession(session: PtySession, reason: string): void {
-  console.log(`Terminal: killing session for project ${session.projectId} (${reason})`);
+  console.log(`[terminal] killing session for project ${session.projectId} (${reason})`);
   try { session.ptyProcess.kill(); } catch { /* already dead */ }
   if (session.ws && session.ws.readyState === WebSocket.OPEN) {
     try { session.ws.close(); } catch { /* ignore */ }
@@ -77,7 +77,7 @@ function killSession(session: PtySession, reason: string): void {
 export function shutdownTerminalSessions(): void {
   const count = sessions.size;
   if (count === 0) return;
-  console.log(`Terminal: shutting down ${count} session(s)`);
+  console.log(`[terminal] shutting down ${count} session(s)`);
   for (const session of sessions.values()) {
     try { session.ptyProcess.kill(); } catch { /* ignore */ }
     if (session.ws && session.ws.readyState === WebSocket.OPEN) {
@@ -146,7 +146,7 @@ export function attachTerminalServer(server: Server, db: Db): void {
       // Reattach to existing session
       // If a previous WebSocket is still attached, detach it (last connect wins).
       if (session.ws && session.ws.readyState === WebSocket.OPEN) {
-        console.log(`Terminal: replacing existing client on project ${projectId}`);
+        console.log(`[terminal] replacing existing client on project ${projectId}`);
         try {
           session.ws.send(JSON.stringify({ type: "error", data: "Session attached to another client" }));
           session.ws.close();
@@ -159,7 +159,7 @@ export function attachTerminalServer(server: Server, db: Db): void {
         session.cols = cols;
         session.rows = rows;
       } catch { /* PTY may have died */ }
-      console.log(`Terminal: reattaching to session for project ${projectId} (buffer: ${session.buffer.length} bytes)`);
+      console.log(`[terminal] reattaching to session for project ${projectId} (buffer: ${session.buffer.length} bytes)`);
       // Send the accumulated buffer so the client can replay history
       ws.send(JSON.stringify({ type: "buffer", data: session.buffer }));
     } else {
@@ -173,7 +173,7 @@ export function attachTerminalServer(server: Server, db: Db): void {
       const project = db.getProject(projectId);
       const cwd = project ? project.workdir : process.cwd();
 
-      console.log(`Terminal: new session in ${cwd} (${cols}x${rows}) [${sessions.size + 1}/${MAX_SESSIONS}]`);
+      console.log(`[terminal] new session in ${cwd} (${cols}x${rows}) [${sessions.size + 1}/${MAX_SESSIONS}]`);
 
       const shell = process.platform === "win32" ? "powershell.exe" : "bash";
       const args = process.platform === "win32"
@@ -211,7 +211,7 @@ export function attachTerminalServer(server: Server, db: Db): void {
 
       ptyProcess.onExit(({ exitCode }) => {
         if (!session) return;
-        console.log(`Terminal: PTY exited for project ${projectId} (code ${exitCode})`);
+        console.log(`[terminal] PTY exited for project ${projectId} (code ${exitCode})`);
         if (session.ws && session.ws.readyState === WebSocket.OPEN) {
           session.ws.send(JSON.stringify({ type: "exit", code: exitCode }));
           try { session.ws.close(); } catch { /* ignore */ }
@@ -258,12 +258,12 @@ export function attachTerminalServer(server: Server, db: Db): void {
       const s = sessions.get(projectId);
       if (s && s.ws === ws) {
         s.ws = null;
-        console.log(`Terminal: client detached from session ${projectId} (PTY still running, ${sessions.size} active sessions)`);
+        console.log(`[terminal] client detached from session ${projectId} (PTY still running, ${sessions.size} active sessions)`);
       }
     });
 
     ws.on("error", (err) => {
-      console.warn(`Terminal: WebSocket error for project ${projectId}:`, err.message);
+      console.warn(`[terminal] WebSocket error for project ${projectId}:`, err.message);
       const s = sessions.get(projectId);
       if (s && s.ws === ws) {
         s.ws = null;

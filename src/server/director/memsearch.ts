@@ -132,7 +132,7 @@ async function doIndex(projectWorkdir: string): Promise<boolean> {
 
     proc.on("close", (code) => {
       if (code !== 0 && stderr) {
-        console.warn(`MemSearch index failed (code ${code}): ${stderr.slice(0, 200)}`);
+        console.warn(`[memsearch] index failed (code ${code}): ${stderr.slice(0, 200)}`);
       }
       resolve(code === 0);
     });
@@ -175,11 +175,11 @@ export async function searchMemories(
     if (!result.locked) return result.results;
     if (attempt < SEARCH_MAX_RETRIES) {
       const delay = SEARCH_RETRY_BASE_MS * Math.pow(2, attempt);
-      console.warn(`MemSearch: DB locked, retrying in ${delay}ms (attempt ${attempt + 1}/${SEARCH_MAX_RETRIES})`);
+      console.warn(`[memsearch] DB locked, retrying in ${delay}ms (attempt ${attempt + 1}/${SEARCH_MAX_RETRIES})`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
-  console.warn(`MemSearch: gave up after ${SEARCH_MAX_RETRIES} retries — DB stayed locked`);
+  console.warn(`[memsearch] gave up after ${SEARCH_MAX_RETRIES} retries — DB stayed locked`);
   return [];
 }
 
@@ -210,7 +210,7 @@ async function doSearch(
         // Detect Milvus Lite lock contention so the caller can retry.
         const locked = /opened by another program|database is locked|file has been opened/i.test(stderr);
         if (!locked && stderr) {
-          console.warn(`MemSearch search failed: ${stderr.slice(0, 200)}`);
+          console.warn(`[memsearch] search failed: ${stderr.slice(0, 200)}`);
         }
         resolve({ results: [], locked });
         return;

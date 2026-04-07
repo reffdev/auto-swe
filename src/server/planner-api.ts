@@ -4,7 +4,9 @@
 
 import { Router } from "express";
 import type { Db } from "./db";
-import { selectPlannerMachine, generatePlannerResponse, getActiveStream, isGenerating } from "./planner-llm";
+import { generatePlannerResponse, getActiveStream, isGenerating } from "./planner-llm";
+import { withLlmSession } from "./llm-dispatch";
+import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError } from "./models";
 
 // ─── Issue proposal parsing ──────────────────────────────────────────────────
 
@@ -147,22 +149,37 @@ export function createPlannerRouter(db: Db): Router {
     if (!project) {
       return res.status(500).json({ error: "Project not found" });
     }
-    const selected = selectPlannerMachine(db, project);
-    if (!selected) {
-      return res.status(503).json({ error: "No enabled machines available" });
+
+    // Interactive issue planner uses the Director model slot.
+    let directorModelId: string;
+    try {
+      directorModelId = getDirectorModelId(db);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError) {
+        return res.status(409).json({ error: err.message });
+      }
+      throw err;
     }
 
-    // Trigger async LLM response (don't await)
+    // Fire-and-forget: open a session, run the LLM call inside it, release on
+    // completion. The session lifetime spans the entire async response — we
+    // don't await it here so the route returns 202 immediately.
     const allMessages = db.getPlannerMessages(conversation.id);
-    generatePlannerResponse({
+    void withLlmSession(
       db,
-      conversationId: conversation.id,
-      machine: selected.machine,
-      modelId: selected.modelId,
-      projectName: project.name,
-      messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
-    }).catch(err => {
-      console.error("Planner response generation failed:", err);
+      "director",
+      `planner conversation: ${conversation.id.slice(0, 8)}`,
+      directorModelId,
+      async (session) => generatePlannerResponse({
+        db,
+        conversationId: conversation.id,
+        session,
+        projectName: project.name,
+        messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+      }),
+      { preferMachineId: getDirectorPreferredMachineId(db) },
+    ).catch(err => {
+      console.error("[planner] response generation failed:", err);
     });
 
     // Return 202 immediately

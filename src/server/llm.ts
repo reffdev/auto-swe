@@ -41,11 +41,19 @@ export interface LlmExecution {
 }
 
 // ─── Model warm-up ────────────────────────────────────────────────────────
+//
+// INTERNAL: This function is an implementation detail of llm-dispatch.ts.
+// Do NOT call it directly from consumers — use withLlmSession() /
+// withLightLlmSession() instead. It's exported only so llm-dispatch can
+// import it. Future cleanup: move this file's contents into llm-dispatch.
 
 /**
  * Ensure a model is loaded and ready on the machine before sending LLM requests.
  * Calls llama-swap's /upstream/:model endpoint which blocks until the model is ready.
  * For non-llama-swap machines (ComfyUI, NPU, cloud APIs), this is a no-op.
+ *
+ * Colocated GPU release happens earlier in acquireLease(); this function only
+ * handles the warm-up step.
  */
 export async function warmUpLlm(execution: LlmExecution): Promise<void> {
   const { machine, providerModelId: modelId } = execution;
@@ -65,20 +73,20 @@ export async function warmUpLlm(execution: LlmExecution): Promise<void> {
   const upstreamUrl = `${baseOrigin}/upstream/${encodeURIComponent(modelId)}`;
 
   try {
-    console.log(`LLM: warming up "${modelId}" on ${machine.name || machine.id} ...`);
+    console.log(`[llm] warming up "${modelId}" on ${machine.name || machine.id} ...`);
     const start = Date.now();
     const res = await fetch(upstreamUrl, {
       signal: AbortSignal.timeout(5 * 60 * 1000), // 5 min max for model load
     });
     const elapsed = Math.round((Date.now() - start) / 1000);
     if (res.ok) {
-      console.log(`LLM: model "${modelId}" ready on ${machine.name || machine.id} (${elapsed}s)`);
+      console.log(`[llm] model "${modelId}" ready on ${machine.name || machine.id} (${elapsed}s)`);
     } else {
-      console.warn(`LLM: warm-up returned ${res.status} for "${modelId}" on ${machine.name || machine.id} — proceeding anyway`);
+      console.warn(`[llm] warm-up returned ${res.status} for "${modelId}" on ${machine.name || machine.id} — proceeding anyway`);
     }
   } catch (err) {
     // Non-fatal — the model may still load when the actual request hits
-    console.warn(`LLM: warm-up failed for "${modelId}" on ${machine.name || machine.id}: ${err instanceof Error ? err.message : err}`);
+    console.warn(`[llm] warm-up failed for "${modelId}" on ${machine.name || machine.id}: ${err instanceof Error ? err.message : err}`);
   }
 }
 
@@ -133,7 +141,7 @@ export async function generate(model: LlmModel, opts: GenerateOptions): Promise<
     abortSignal: opts.abortSignal,
     maxRetries: MAX_AI_SDK_RETRIES,
     onError: ({ error }) => {
-      console.error("LLM generate error:", error instanceof Error ? error.message : error);
+      console.error("[llm] generate error:", error instanceof Error ? error.message : error);
     },
   });
   // Must consume the stream for .text to resolve
@@ -206,9 +214,9 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
         fs.mkdirSync(dumpDir, { recursive: true });
         const fname = `llm-${machine.name || machine.id}-${Date.now()}.json`;
         fs.writeFileSync(path.join(dumpDir, fname), (init as RequestInit).body as string);
-        console.log(`LLM debug: dumped request body to ${path.join(dumpDir, fname)}`);
+        console.log(`[llm:debug] dumped request body to ${path.join(dumpDir, fname)}`);
       } catch (err) {
-        console.warn("LLM debug dump failed:", err instanceof Error ? err.message : err);
+        console.warn("[llm:debug] dump failed:", err instanceof Error ? err.message : err);
       }
     }
 
@@ -234,19 +242,19 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
         lastErr = err;
         if (attempt >= MAX_SERVER_RETRIES) {
           breaker.recordFailure();
-          console.warn(`LLM: machine ${machine.name || machine.id} circuit breaker → ${breaker.getState()} (consecutive connection failures)`);
+          console.warn(`[llm] machine ${machine.name || machine.id} circuit breaker → ${breaker.getState()} (consecutive connection failures)`);
           throw err;
         }
         const delay = (attempt + 1) * 10_000;
         const bodyLen = typeof (init as RequestInit)?.body === "string" ? ((init as RequestInit).body as string).length : "?";
         const cause = err instanceof TypeError && (err as any).cause ? ` cause=${(err as any).cause?.message ?? (err as any).cause}` : "";
-        console.log(`LLM: connection failed — ${err instanceof Error ? err.message : err}${cause} — retry ${attempt + 2}/${MAX_SERVER_RETRIES + 1} in ${delay / 1000}s (url=${url}, body=${bodyLen} chars)`);
+        console.log(`[llm] connection failed — ${err instanceof Error ? err.message : err}${cause} — retry ${attempt + 2}/${MAX_SERVER_RETRIES + 1} in ${delay / 1000}s (url=${url}, body=${bodyLen} chars)`);
         await sleep(delay);
         continue;
       }
       if (res.status < 500 || attempt >= MAX_SERVER_RETRIES) break;
       const delay = (attempt + 1) * 5_000;
-      console.log(`LLM: server returned ${res.status} — retry ${attempt + 2}/${MAX_SERVER_RETRIES + 1} in ${delay / 1000}s`);
+      console.log(`[llm] server returned ${res.status} — retry ${attempt + 2}/${MAX_SERVER_RETRIES + 1} in ${delay / 1000}s`);
       await sleep(delay);
     }
 
@@ -258,7 +266,7 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
     // Persistent 5xx after exhausting retries → trip the breaker
     if (res.status >= 500) {
       breaker.recordFailure();
-      console.warn(`LLM: machine ${machine.name || machine.id} circuit breaker → ${breaker.getState()} (persistent ${res.status})`);
+      console.warn(`[llm] machine ${machine.name || machine.id} circuit breaker → ${breaker.getState()} (persistent ${res.status})`);
     } else if (res.status < 400) {
       // 2xx/3xx → upstream is healthy, reset the breaker
       breaker.recordSuccess();
@@ -297,7 +305,7 @@ function watchStream(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Arra
       if (done) return;
       done = true;
       const elapsed = Math.round((Date.now() - lastChunkTime) / 1000);
-      console.log(`LLM: stream inactive for ${elapsed}s — aborting`);
+      console.log(`[llm] stream inactive for ${elapsed}s — aborting`);
       void reader.cancel("stream inactivity timeout");
       try { ctrl?.error(new Error(`LLM stream timed out — no data for ${elapsed}s`)); } catch { /* closed */ }
     }, INACTIVITY_TIMEOUT_MS);

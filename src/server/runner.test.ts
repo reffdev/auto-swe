@@ -8,6 +8,7 @@
 
 import { Db } from "./db";
 import { executeIssue } from "./runner";
+import { createLogicalModel, createBinding } from "./models";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -39,8 +40,10 @@ function setup() {
   const machine = db.createMachine({
     name: "test",
     base_url: "http://127.0.0.1:1/v1", // immediately refused
-    model_id: "test-model",
   });
+  const model = createLogicalModel(db, { name: "Test Model", slug: "test-model" });
+  createBinding(db, { machine_id: machine.id, model_id: model.id, provider_id: "test-model" });
+  db.upsertForemanConfig({ foreman_code_model_id: model.id });
   const project = db.createProject({ name: "test", workdir: testDir });
   const issue = db.createIssue({ project_id: project.id, title: "Test issue" });
   const run = db.createRun({ issue_id: issue.id });
@@ -53,7 +56,7 @@ describe("executeIssue state transitions", () => {
 
     await executeIssue(
       { db, agentTimeoutMs: 3_000 },
-      machine, issue, project, run.id
+      issue, project, run.id
     );
 
     const updatedMachine = db.getMachine(machine.id)!;
@@ -73,7 +76,7 @@ describe("executeIssue state transitions", () => {
     const { machine, project, issue, run } = setup();
     await executeIssue(
       { db, agentTimeoutMs: 3_000 },
-      machine, issue, project, run.id
+      issue, project, run.id
     );
 
     const updated = db.getIssue(issue.id)!;
@@ -85,7 +88,7 @@ describe("executeIssue state transitions", () => {
     const { machine, project, issue, run } = setup();
     await executeIssue(
       { db, agentTimeoutMs: 3_000 },
-      machine, issue, project, run.id
+      issue, project, run.id
     );
 
     const updated = db.getRun(run.id)!;
@@ -98,7 +101,7 @@ describe("executeIssue state transitions", () => {
     const { machine, project, issue, run } = setup();
     await executeIssue(
       { db, agentTimeoutMs: 3_000 },
-      machine, issue, project, run.id
+      issue, project, run.id
     );
 
     const worktrees = execSync("git worktree list", { cwd: testDir, encoding: "utf-8" });

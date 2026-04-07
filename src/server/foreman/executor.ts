@@ -7,16 +7,17 @@
 
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import type { Db, Machine, Project, ForemanTask } from "../db";
+import type { Db, Project, ForemanTask } from "../db";
 import { runStage, StageStepLimitError, StageWallTimeoutError } from "../pipeline/run-stage";
 import { withProjectLock } from "../pipeline/index";
-import { instantiateLlm, warmUpLlm } from "../llm";
-import { resolveInferenceExecution, getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
+import { withLlmSession, type LlmSession } from "../llm-dispatch";
+import { getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
+import { acquireLease, releaseLease } from "../machine-manager";
+import { isComfyUITaskType } from "./task-types";
 import { createSubmitGuard } from "./submit-guard";
 import {
   makeWorktreePath,
   ensureWorkdir,
-  resetToOrigin,
   setupWorktree,
   removeWorktree,
   commitAll,
@@ -29,7 +30,6 @@ import { nudgeDirector } from "../director/scheduler";
 import { executeComfyUITask } from "./comfyui-executor";
 import { initTaskRun, completeTaskRun, failTaskRun, cleanupTaskRun } from "./task-lifecycle";
 import { getMemoryContext, formatMemoryContext } from "../director/memory-context";
-import { prepareColocatedMachine } from "../machine-manager";
 
 // ─── Active task tracking ────────────────────────────────────────────────────
 
@@ -61,51 +61,123 @@ export function unregisterActiveTask(taskId: string): void {
 
 // ─── Executor ────────────────────────────────────────────────────────────────
 
+/**
+ * Top-level entry point for running a foreman task. Dispatches to the right
+ * sub-executor based on task type:
+ *
+ *   ComfyUI tasks (art/music/sfx/style_exploration) → executeComfyUITask
+ *     ComfyUI dispatch is by machine type, not logical model. The ComfyUI
+ *     machine lease is acquired internally there with its own colocation
+ *     release.
+ *
+ *   Inference tasks (code/review/content) → runInferenceTask, which opens a
+ *     withLlmSession on the configured logical model and runs the agent loop
+ *     inside the session callback. The session owns the lease, the colocation
+ *     release, the warmup, and the AI SDK provider.
+ */
 export async function executeForemanTask(
   ctx: { db: Db },
-  machine: Machine,
   task: ForemanTask,
   project: Project,
 ): Promise<void> {
-  // Release colocated GPU resources before starting (e.g., unload ComfyUI models for inference)
-  await prepareColocatedMachine(ctx.db, machine);
-
-  // Dispatch to ComfyUI executor for generation tasks
-  if (machine.machine_type === "comfyui") {
-    return executeComfyUITask(ctx, machine, task, project);
+  if (isComfyUITaskType(task.type)) {
+    // ComfyUI dispatch path. The ComfyUI executor manages its own lease/release.
+    return executeComfyUIDispatch(ctx, task, project);
   }
+  return runInferenceTask(ctx, task, project);
+}
 
+/**
+ * Open a lease on a ComfyUI machine and dispatch the task to the ComfyUI
+ * executor. Lease release happens automatically via acquireLease's internal
+ * colocation handling.
+ */
+async function executeComfyUIDispatch(
+  ctx: { db: Db },
+  task: ForemanTask,
+  project: Project,
+): Promise<void> {
   const { db } = ctx;
-  // Resolve the binding for this task on the chosen machine. The scheduler
-  // already picked `machine` based on which inference machines host the task's
-  // configured logical model (foreman_tasks.model_id override or
-  // foreman_config.foreman_code_model_id default), so we just look up the
-  // binding here to get the provider string + effective context limit.
-  let modelId: string;
-  let effectiveContextLimit: number | null = machine.context_limit;
+  const lease = await acquireLease(db, "foreman", task.title, { machineType: "comfyui" });
+  if (!lease) {
+    db.updateForemanTask(task.id, { status: "queued", machine_id: null });
+    return;
+  }
   try {
-    const requestedModelId = task.model_id ?? getForemanCodeModelId(db);
-    const exec = resolveInferenceExecution(db, requestedModelId, { preferMachineId: machine.id });
-    if (exec.machine.id !== machine.id) {
-      // Should never happen — scheduler dispatched to a machine that doesn't host the model
-      throw new Error(`Machine ${machine.id} does not host model ${requestedModelId} (resolver chose ${exec.machine.id})`);
-    }
-    modelId = exec.providerModelId;
-    effectiveContextLimit = exec.effectiveContextLimit;
+    return await executeComfyUITask(ctx, lease.machine, task, project);
+  } finally {
+    releaseLease(lease.lease.id);
+  }
+}
+
+/**
+ * Inference task body. Resolves the logical model the task wants, opens a
+ * withLlmSession, and runs the entire executor flow inside the session
+ * callback. The session manages the lease, colocation release, warmup, and
+ * SDK provider — the body just consumes session.llm.
+ */
+async function runInferenceTask(
+  ctx: { db: Db },
+  task: ForemanTask,
+  project: Project,
+): Promise<void> {
+  const { db } = ctx;
+
+  // Resolve which logical model this task wants
+  let modelIdToUse: string;
+  try {
+    modelIdToUse = task.model_id ?? getForemanCodeModelId(db);
   } catch (err) {
-    if (err instanceof ModelSlotUnconfiguredError ||
-        err instanceof NoMachineHostsModelError ||
-        err instanceof ModelNotFoundError) {
-      // Mark the task failed with a clear, actionable message
-      db.updateForemanTask(task.id, {
-        status: "failed",
-        error_message: err.message,
-      });
-      console.error(`Foreman executor: ${task.title}: ${err.message}`);
+    if (err instanceof ModelSlotUnconfiguredError) {
+      db.updateForemanTask(task.id, { status: "failed", error_message: err.message });
+      console.error(`[foreman:executor] ${task.title}: ${err.message}`);
       return;
     }
     throw err;
   }
+
+  let result: "ok" | "deferred";
+  try {
+    const sessionResult = await withLlmSession(
+      db,
+      "foreman",
+      task.title,
+      modelIdToUse,
+      async (session) => runInferenceTaskWithSession(ctx, task, project, session),
+    );
+    result = sessionResult ?? "deferred";
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      db.updateForemanTask(task.id, { status: "failed", error_message: err.message });
+      console.error(`[foreman:executor] ${task.title}: ${err.message}`);
+      return;
+    }
+    throw err;
+  }
+
+  if (result === "deferred") {
+    // No machine had capacity right now. Reset to queued so the next nudge picks it up.
+    db.updateForemanTask(task.id, { status: "queued", machine_id: null });
+    console.log(`[foreman:executor] ${task.title}: no machine available, re-queued for next dispatch`);
+  }
+}
+
+/**
+ * The actual executor body — runs INSIDE an open LlmSession. All the
+ * worktree setup, prompt construction, runStage, commit/push, and
+ * cleanup logic lives here.
+ */
+async function runInferenceTaskWithSession(
+  ctx: { db: Db },
+  task: ForemanTask,
+  project: Project,
+  session: LlmSession,
+): Promise<"ok"> {
+  const { db } = ctx;
+  const machine = session.machine;
+  const modelId = session.providerModelId;
+  const effectiveContextLimit = session.effectiveContextLimit;
+
   const run = initTaskRun(db, task, machine, modelId);
 
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
@@ -262,22 +334,14 @@ export async function executeForemanTask(
       rebaseResetContext,
     });
 
-    console.log(`[executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars) — directive=${directiveText?.length ?? 0}, designDoc=${designDoc?.length ?? 0}, milestone=${milestoneContext?.length ?? 0}, brief=${memoryContext.brief?.length ?? 0}, retrievedConventions=${memoryContext.retrievedConventions.length}, searchUsed=${memoryContext.searchUsed} — warming up model...`);
-    // Ensure the model is loaded before sending requests
-    const execution = { machine, providerModelId: modelId };
-    await warmUpLlm(execution);
-
-    // Create model provider
-    const model = instantiateLlm(execution);
-
-    console.log(`[executor] ${task.title}: model created, entering runStage...`);
+    console.log(`[foreman:executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars) — directive=${directiveText?.length ?? 0}, designDoc=${designDoc?.length ?? 0}, milestone=${milestoneContext?.length ?? 0}, brief=${memoryContext.brief?.length ?? 0}, retrievedConventions=${memoryContext.retrievedConventions.length}, searchUsed=${memoryContext.searchUsed} — entering runStage`);
     // Run the LLM agent — pass runId="" to skip runs table updates, use onStepsUpdate for foreman_runs
     const result = await runStage({
       db,
       runId: "",  // skip runs table — we update foreman_runs directly
       issueId: `foreman:${task.id}`,
       stageName: `foreman:${task.title}`,
-      model,
+      model: session.llm,
       modelId,
       systemPrompt,
       userPrompt,
@@ -335,7 +399,7 @@ export async function executeForemanTask(
       if (!task.directive_id) {
         try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
       }
-      return;
+      return "ok";
     }
 
     // ─── Normal happy path ───────────────────────────────────────────────
@@ -365,6 +429,7 @@ export async function executeForemanTask(
       try { await removeWorktree(project.workdir, worktreePath); } catch { /* best effort */ }
     }
 
+    return "ok";
   } catch (err) {
     // ─── Fresh-context retry paths ───────────────────────────────────────
     // Three failure modes that all share the same recovery: discard the
@@ -375,19 +440,20 @@ export async function executeForemanTask(
     //   StageWallTimeoutError — wall-clock budget exhausted (likely upstream
     //                            stuck or 502 storm)
     if (err instanceof StageStepLimitError || err instanceof StageWallTimeoutError) {
-      console.warn(`[executor] ${task.title}: ${err.message}`);
+      console.warn(`[foreman:executor] ${task.title}: ${err.message}`);
       try {
         await withProjectLock(project.id, async () => {
           await removeWorktree(project.workdir, worktreePath);
         });
-        console.log(`[executor] ${task.title}: discarded worktree for fresh-context retry`);
+        console.log(`[foreman:executor] ${task.title}: discarded worktree for fresh-context retry`);
       } catch (rmErr) {
-        console.warn(`[executor] ${task.title}: failed to discard worktree during fresh-context retry: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`);
+        console.warn(`[foreman:executor] ${task.title}: failed to discard worktree during fresh-context retry: ${rmErr instanceof Error ? rmErr.message : String(rmErr)}`);
       }
       failTaskRun(run, err.message);
     } else {
       failTaskRun(run, err instanceof Error ? err.message : String(err));
     }
+    return "ok";
   } finally {
     cleanupTaskRun(task.id);
   }

@@ -67,7 +67,7 @@ export function handleStyleLock(
   const runLabel = parsed.run ? ` (run ${parsed.run})` : "";
   addKeyDecision(db, directive, `Art style locked from variation ${selectedIndex + 1}${runLabel}`);
   logEpisodic(project.workdir, "Art style locked", `Selected variation ${selectedIndex + 1}${runLabel} from "${task.title}"`);
-  console.log(`Director: art style locked from variation ${selectedIndex + 1}${runLabel}`);
+  console.log(`[director] art style locked from variation ${selectedIndex + 1}${runLabel}`);
 
   db.updateForemanTask(taskId, { status: "completed", completed_at: new Date().toISOString() });
 }
