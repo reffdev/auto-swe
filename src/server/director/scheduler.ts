@@ -67,7 +67,11 @@ import { getConfig } from "../foreman/comfyui-config";
 // ─── Module state ────────────────────────────────────────────────────────────
 
 let schedulerDb: Db | null = null;
-let pendingNudge = false;
+/** Someone has asked for a tick that hasn't actually run yet. Cleared at the
+ *  start of runTick; re-set by nudges arriving during the tick so the finally
+ *  block knows to re-queue. */
+let tickRequested = false;
+/** A tick is currently executing (between runTick entry and its finally). */
 let processing = false;
 let lastPlanError: { timestamp: number; message: string } | null = null;
 
@@ -185,7 +189,7 @@ function ensureArtReviewGate(db: Db, directiveId: string, task: ForemanTask): vo
 
 export function startDirectorScheduler(db: Db): void {
   schedulerDb = db;
-  console.log("[director] scheduler ready (event-driven)");
+  console.log("[director] scheduler ready");
 
   const config = db.getForemanConfig();
   if (config?.project_id) {
@@ -296,21 +300,35 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
 
 /**
  * Signal the Director that something changed.
- * Debounced — rapid-fire nudges collapse into one tick.
+ *
+ * Single rule: if a tick has already been requested, there is nothing to do —
+ * either it is queued on the microtask, or a currently-running tick will
+ * re-queue itself from its finally block because `tickRequested` is set.
+ * Otherwise, mark a request and (if no tick is running) queue one now.
  */
 export function nudgeDirector(db?: Db): void {
   const d = db ?? schedulerDb;
   if (!d) return;
-  if (pendingNudge) return;
-  pendingNudge = true;
+  if (tickRequested) return;
+  tickRequested = true;
+  if (processing) return;
   // Use queueMicrotask so Director always runs BEFORE the Foreman's setTimeout(0)
-  queueMicrotask(() => {
-    pendingNudge = false;
-    directorTick(d).catch(err => console.error("[director] scheduler error:", err));
-  });
+  queueMicrotask(() => runDirectorTick(d));
 }
 
 // ─── Director Tick ──────────────────────────────────────────────────────────
+
+async function runDirectorTick(db: Db): Promise<void> {
+  // Consume the request BEFORE running the body — any nudge that arrives
+  // while the body is executing will set tickRequested back to true, and the
+  // finally block will re-queue.
+  tickRequested = false;
+  try {
+    await directorTick(db);
+  } catch (err) {
+    console.error("[director] scheduler error:", err);
+  }
+}
 
 async function directorTick(db: Db): Promise<void> {
   const config = db.getForemanConfig();
@@ -357,6 +375,12 @@ async function directorTick(db: Db): Promise<void> {
     setDirectorReservedMachine(null);
     processing = false;
     nudgeForeman(db);
+    // If anything nudged us while we were running, tickRequested is now true.
+    // Queue another tick so work that arrived mid-flight (e.g. a review
+    // response) isn't stranded.
+    if (tickRequested) {
+      queueMicrotask(() => runDirectorTick(db));
+    }
   }
 }
 

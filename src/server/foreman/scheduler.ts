@@ -69,7 +69,7 @@ export function notifyCapacityChange(machineType?: string): void {
 /** Register the DB instance so nudge() can be called without passing it. */
 export function startForemanScheduler(db: Db): void {
   schedulerDb = db;
-  console.log("[foreman] scheduler ready (event-driven)");
+  console.log("[foreman] scheduler ready");
   // Don't nudge here — the orchestrator controls when the first dispatch happens.
   // Auto-bootstrap ComfyUI if a machine exists but no manifest is set up
   tryComfyUIBootstrap(db);
