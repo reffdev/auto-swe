@@ -48,9 +48,45 @@ export interface LlmExecution {
 // import it. Future cleanup: move this file's contents into llm-dispatch.
 
 /**
+ * Warm-up retry budgets. Read at call time so tests can override them per-case.
+ * Production defaults: 5 min total budget, 5 min per-attempt fetch timeout,
+ * exponential backoff starting at 2s capped at 30s.
+ */
+function getWarmupBudgets(): {
+  total: number;
+  perAttempt: number;
+  backoffInitial: number;
+  backoffMax: number;
+} {
+  return {
+    total: parseInt(process.env.SWE_WARMUP_BUDGET_MS ?? "", 10) || 5 * 60 * 1000,
+    perAttempt: parseInt(process.env.SWE_WARMUP_ATTEMPT_TIMEOUT_MS ?? "", 10) || 5 * 60 * 1000,
+    backoffInitial: parseInt(process.env.SWE_WARMUP_BACKOFF_INITIAL_MS ?? "", 10) || 2_000,
+    backoffMax: 30_000,
+  };
+}
+
+/**
  * Ensure a model is loaded and ready on the machine before sending LLM requests.
  * Calls llama-swap's /upstream/:model endpoint which blocks until the model is ready.
  * For non-llama-swap machines (ComfyUI, NPU, cloud APIs), this is a no-op.
+ *
+ * Retries on 5xx and connection errors with exponential backoff. A 502 from
+ * llama-swap typically means the model is mid-load (or mid-swap-out from a
+ * previous binding) — retrying the warm-up endpoint until it returns 200 is
+ * dramatically better than barreling into the actual LLM call against a model
+ * that isn't ready yet (which would produce another 502 inside streamText's
+ * own retry loop, costing real prompt tokens and time).
+ *
+ * 4xx errors are NOT retried — they typically indicate a config error
+ * (404 = model not found in llama-swap, 401 = bad auth) where retrying won't
+ * help. Those still log a warning and fall through, since the actual LLM call
+ * will surface the same error with more context.
+ *
+ * The total wall budget caps the loop at WARMUP_TOTAL_BUDGET_MS so we never
+ * block forever. After exhausting the budget the function falls through with
+ * a warning — the actual LLM request will retry independently and either
+ * succeed or surface a real error.
  *
  * Colocated GPU release happens earlier in acquireLease(); this function only
  * handles the warm-up step.
@@ -71,22 +107,61 @@ export async function warmUpLlm(execution: LlmExecution): Promise<void> {
   }
 
   const upstreamUrl = `${baseOrigin}/upstream/${encodeURIComponent(modelId)}`;
+  const machineLabel = machine.name || machine.id;
+  const budgets = getWarmupBudgets();
+  const deadline = Date.now() + budgets.total;
+  const overallStart = Date.now();
 
-  try {
-    console.log(`[llm] warming up "${modelId}" on ${machine.name || machine.id} ...`);
-    const start = Date.now();
-    const res = await fetch(upstreamUrl, {
-      signal: AbortSignal.timeout(5 * 60 * 1000), // 5 min max for model load
-    });
-    const elapsed = Math.round((Date.now() - start) / 1000);
-    if (res.ok) {
-      console.log(`[llm] model "${modelId}" ready on ${machine.name || machine.id} (${elapsed}s)`);
-    } else {
-      console.warn(`[llm] warm-up returned ${res.status} for "${modelId}" on ${machine.name || machine.id} — proceeding anyway`);
+  console.log(`[llm] warming up "${modelId}" on ${machineLabel} ...`);
+  let attempt = 0;
+  let backoff = budgets.backoffInitial;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    attempt++;
+    let res: Response | null = null;
+    let networkErr: unknown = null;
+
+    try {
+      res = await fetch(upstreamUrl, {
+        signal: AbortSignal.timeout(budgets.perAttempt),
+      });
+    } catch (err) {
+      networkErr = err;
     }
-  } catch (err) {
-    // Non-fatal — the model may still load when the actual request hits
-    console.warn(`[llm] warm-up failed for "${modelId}" on ${machine.name || machine.id}: ${err instanceof Error ? err.message : err}`);
+
+    if (res?.ok) {
+      const elapsed = Math.round((Date.now() - overallStart) / 1000);
+      const attemptSuffix = attempt > 1 ? ` after ${attempt} attempts` : "";
+      console.log(`[llm] model "${modelId}" ready on ${machineLabel} (${elapsed}s${attemptSuffix})`);
+      return;
+    }
+
+    // 4xx → not retryable. Log and fall through; the real LLM call will
+    // either work (very rare for 4xx-on-warmup-then-OK-on-real-call) or
+    // produce a more useful error.
+    if (res && res.status >= 400 && res.status < 500) {
+      console.warn(`[llm] warm-up returned ${res.status} for "${modelId}" on ${machineLabel} — not retryable, proceeding anyway`);
+      return;
+    }
+
+    // 5xx or network error → retryable. Check the wall budget before
+    // sleeping; if we're out of time, fall through.
+    const reason = res
+      ? `HTTP ${res.status}`
+      : networkErr instanceof Error
+        ? networkErr.message
+        : String(networkErr);
+
+    if (Date.now() + backoff >= deadline) {
+      const elapsed = Math.round((Date.now() - overallStart) / 1000);
+      console.warn(`[llm] warm-up gave up for "${modelId}" on ${machineLabel} after ${attempt} attempts (${elapsed}s, last: ${reason}) — proceeding anyway`);
+      return;
+    }
+
+    console.log(`[llm] warm-up attempt ${attempt} for "${modelId}" on ${machineLabel} failed (${reason}) — retrying in ${Math.round(backoff / 1000)}s`);
+    await new Promise(r => setTimeout(r, backoff));
+    backoff = Math.min(backoff * 2, budgets.backoffMax);
   }
 }
 

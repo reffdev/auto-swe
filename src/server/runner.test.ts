@@ -17,6 +17,23 @@ import { execSync } from "child_process";
 // These tests wait for the abort timeout to fire
 jest.setTimeout(20_000);
 
+// The runner uses an unreachable fake machine (port 1, refused). Without
+// these overrides the warm-up retry loop would hold the test for 5 minutes
+// before falling through. Tiny budgets here force warm-up to give up after
+// one attempt, letting the agent timeout drive the test.
+const ORIGINAL_WARMUP_BUDGET = process.env.SWE_WARMUP_BUDGET_MS;
+const ORIGINAL_WARMUP_ATTEMPT = process.env.SWE_WARMUP_ATTEMPT_TIMEOUT_MS;
+beforeAll(() => {
+  process.env.SWE_WARMUP_BUDGET_MS = "100";
+  process.env.SWE_WARMUP_ATTEMPT_TIMEOUT_MS = "200";
+});
+afterAll(() => {
+  if (ORIGINAL_WARMUP_BUDGET === undefined) delete process.env.SWE_WARMUP_BUDGET_MS;
+  else process.env.SWE_WARMUP_BUDGET_MS = ORIGINAL_WARMUP_BUDGET;
+  if (ORIGINAL_WARMUP_ATTEMPT === undefined) delete process.env.SWE_WARMUP_ATTEMPT_TIMEOUT_MS;
+  else process.env.SWE_WARMUP_ATTEMPT_TIMEOUT_MS = ORIGINAL_WARMUP_ATTEMPT;
+});
+
 let db: Db;
 let testDir: string;
 
