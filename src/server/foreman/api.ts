@@ -3,7 +3,16 @@
  */
 
 import { Router } from "express";
-import { existsSync, readFileSync, readdirSync } from "fs";
+import {
+  readFile as fsReadFile,
+  readdir as fsReaddir,
+  stat as fsStat,
+} from "fs/promises";
+
+/** Async existence check — replaces existsSync. */
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
 import { resolve, extname } from "path";
 import type { Db } from "../db";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
@@ -53,7 +62,7 @@ export function createForemanRouter(db: Db): Router {
   });
 
   /** Get target file contents and git diff for a task — used by human review */
-  router.get("/tasks/:id/files", (req, res) => {
+  router.get("/tasks/:id/files", async (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
@@ -62,9 +71,9 @@ export function createForemanRouter(db: Db): Router {
     const project = projectId ? db.getProject(projectId) : null;
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    const workdir = resolveTaskWorkdir(task, project);
-    const files = readTaskTargetFiles(workdir, task);
-    const diff = getTaskBranchDiff(workdir, task, project);
+    const workdir = await resolveTaskWorkdir(task, project);
+    const files = await readTaskTargetFiles(workdir, task);
+    const diff = await getTaskBranchDiff(workdir, task, project);
 
     res.json({ files, diff });
   });
@@ -179,7 +188,7 @@ export function createForemanRouter(db: Db): Router {
         const runs = db.getForemanRunsForTask(task.id);
         const latestRun = runs[runs.length - 1];
         const attempt = latestRun?.attempt ?? 1;
-        const archived = archiveCurrentAssets(project.workdir, task, attempt);
+        const archived = await archiveCurrentAssets(project.workdir, task, attempt);
         if (archived.length > 0) {
           console.log(`[foreman:reject] archived ${archived.length} asset(s) to run_${attempt}/`);
         }
@@ -287,13 +296,13 @@ export function createForemanRouter(db: Db): Router {
 
   // ─── YAML Sync ───────────────────────────────────────────────────────────
 
-  router.post("/sync", (_req, res) => {
+  router.post("/sync", async (_req, res) => {
     const config = db.getForemanConfig();
     if (!config?.project_id || !config.tasks_dir) {
       return res.status(400).json({ error: "Foreman config must have project_id and tasks_dir set" });
     }
 
-    const result = syncTasksFromDisk(db, config.tasks_dir, config.project_id);
+    const result = await syncTasksFromDisk(db, config.tasks_dir, config.project_id);
     nudgeForeman(db);
     res.json(result);
   });
@@ -341,7 +350,7 @@ export function createForemanRouter(db: Db): Router {
 
   // ─── Multi-Asset List (for style exploration) ──────────────────────────
 
-  router.get("/tasks/:id/assets", (req, res) => {
+  router.get("/tasks/:id/assets", async (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
@@ -359,11 +368,12 @@ export function createForemanRouter(db: Db): Router {
     const galleryDir = runParam ? styleExplorationRunDir(project.workdir, task.id, runParam) : galleryBase;
 
     try {
-      if (existsSync(galleryDir)) {
-        const files = readdirSync(galleryDir)
+      if (await pathExists(galleryDir)) {
+        const all = await fsReaddir(galleryDir);
+        const files = all
           .filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith("."))
           .sort(numericSort);
-        res.json({ files, basePath: styleExplorationRelPath(task.id, runParam ?? undefined), availableRuns: getAvailableRuns(galleryBase) });
+        res.json({ files, basePath: styleExplorationRelPath(task.id, runParam ?? undefined), availableRuns: await getAvailableRuns(galleryBase) });
         return;
       }
     } catch { /* fall through */ }
@@ -372,9 +382,10 @@ export function createForemanRouter(db: Db): Router {
     if (runParam) {
       const histDir = artHistoryRunDir(project.workdir, task.id, runParam);
       try {
-        if (existsSync(histDir)) {
-          const files = readdirSync(histDir).filter((f: string) => !f.startsWith(".")).sort();
-          res.json({ files, basePath: artHistoryRelPath(task.id, runParam), availableRuns: getAvailableRuns(artHistoryDir(project.workdir, task.id)) });
+        if (await pathExists(histDir)) {
+          const all = await fsReaddir(histDir);
+          const files = all.filter((f: string) => !f.startsWith(".")).sort();
+          res.json({ files, basePath: artHistoryRelPath(task.id, runParam), availableRuns: await getAvailableRuns(artHistoryDir(project.workdir, task.id)) });
           return;
         }
       } catch { /* fall through */ }
@@ -383,7 +394,7 @@ export function createForemanRouter(db: Db): Router {
     // Fall back to single asset
     const taskConfig = getConfigFn(task);
     const outputPath = taskConfig?.outputPath ?? extractTag(task.description, "output");
-    const availableRuns = getAvailableRuns(artHistoryDir(project.workdir, task.id));
+    const availableRuns = await getAvailableRuns(artHistoryDir(project.workdir, task.id));
     if (outputPath) {
       res.json({ files: [outputPath.split("/").pop()!], basePath: outputPath.replace(/\/[^/]+$/, ""), availableRuns });
     } else {
@@ -391,7 +402,7 @@ export function createForemanRouter(db: Db): Router {
     }
   });
 
-  router.get("/tasks/:id/asset/:index", (req, res) => {
+  router.get("/tasks/:id/asset/:index", async (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
@@ -408,12 +419,13 @@ export function createForemanRouter(db: Db): Router {
       : styleExplorationDir(project.workdir, task.id);
 
     try {
-      const files = readdirSync(galleryDir).filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort(numericSort);
+      const all = await fsReaddir(galleryDir);
+      const files = all.filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort(numericSort);
       const idx = parseInt(req.params.index, 10);
       if (idx < 0 || idx >= files.length) return res.status(404).json({ error: "Index out of range" });
 
       const filePath = resolve(galleryDir, files[idx]);
-      const buffer = readFileSync(filePath);
+      const buffer = await fsReadFile(filePath);
       res.setHeader("Content-Type", "image/png");
       res.send(buffer);
     } catch {
@@ -421,11 +433,12 @@ export function createForemanRouter(db: Db): Router {
       if (runParam) {
         try {
           const histDir = artHistoryRunDir(project.workdir, task.id, runParam);
-          const files = readdirSync(histDir).filter((f: string) => !f.startsWith(".")).sort();
+          const all = await fsReaddir(histDir);
+          const files = all.filter((f: string) => !f.startsWith(".")).sort();
           const idx = parseInt(req.params.index, 10);
           if (idx >= 0 && idx < files.length) {
             const filePath = resolve(histDir, files[idx]);
-            const buffer = readFileSync(filePath);
+            const buffer = await fsReadFile(filePath);
             const ext2 = extname(filePath).toLowerCase();
             res.setHeader("Content-Type", ext2 === ".jpg" || ext2 === ".jpeg" ? "image/jpeg" : "image/png");
             res.send(buffer);
@@ -439,7 +452,7 @@ export function createForemanRouter(db: Db): Router {
 
   // ─── Asset Preview ───────────────────────────────────────────────────────
 
-  router.get("/tasks/:id/asset", (req, res) => {
+  router.get("/tasks/:id/asset", async (req, res) => {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
@@ -456,11 +469,12 @@ export function createForemanRouter(db: Db): Router {
     if (runParam) {
       const historyDir = artHistoryRunDir(project.workdir, task.id, runParam);
       try {
-        if (existsSync(historyDir)) {
-          const files = readdirSync(historyDir).filter((f: string) => !f.startsWith("."));
+        if (await pathExists(historyDir)) {
+          const all = await fsReaddir(historyDir);
+          const files = all.filter((f: string) => !f.startsWith("."));
           if (files.length > 0) {
             const filePath = resolve(historyDir, files[0]);
-            const buffer = readFileSync(filePath);
+            const buffer = await fsReadFile(filePath);
             const ext = extname(filePath).toLowerCase();
             const mimeMap: Record<string, string> = {
               ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -494,7 +508,7 @@ export function createForemanRouter(db: Db): Router {
       // Security: allow paths within project workdir OR within worktree parent
       const worktreeParent = resolve(project.workdir, "../.orch-worktrees").replace(/\\/g, "/");
       if (!normalized.startsWith(normalizedWorkdir) && !normalized.startsWith(worktreeParent)) continue;
-      if (existsSync(candidate)) {
+      if (await pathExists(candidate)) {
         assetPath = candidate;
         break;
       }
@@ -512,7 +526,7 @@ export function createForemanRouter(db: Db): Router {
     };
     const contentType = mimeMap[ext] ?? "application/octet-stream";
     try {
-      const buffer = readFileSync(assetPath);
+      const buffer = await fsReadFile(assetPath);
       res.setHeader("Content-Type", contentType);
       res.send(buffer);
     } catch {

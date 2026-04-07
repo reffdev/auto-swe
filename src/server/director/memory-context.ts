@@ -61,7 +61,7 @@ export async function getMemoryContext(
   const topK = opts?.topK ?? 8;
 
   // 1. Project brief — always included if it exists
-  let brief = readProjectBrief(projectWorkdir);
+  let brief = await readProjectBrief(projectWorkdir);
   if (brief && brief.length > PROJECT_BRIEF_HARD_CAP) {
     brief = brief.slice(0, PROJECT_BRIEF_HARD_CAP) +
       `\n\n[... project brief truncated at ${PROJECT_BRIEF_HARD_CAP} chars — original was ${brief.length}. ` +
@@ -69,7 +69,7 @@ export async function getMemoryContext(
   }
 
   // 2. Convention filename index — always included
-  const allConventions = readConventions(projectWorkdir);
+  const allConventions = await readConventions(projectWorkdir);
   const conventionIndex = allConventions.length > 0
     ? allConventions
         .map(c => `- ${c.filename}`)

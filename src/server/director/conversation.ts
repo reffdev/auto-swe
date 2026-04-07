@@ -5,7 +5,7 @@
  * streamText → in-memory activeStreams → polling via GET /messages
  */
 
-import { readFileSync, existsSync } from "fs";
+import { readFile as fsReadFile } from "fs/promises";
 import { resolve } from "path";
 import { stream as llmStream } from "../llm";
 import type { LlmSession } from "../llm-dispatch";
@@ -72,9 +72,10 @@ export async function generateDirectorResponse(opts: {
       const docs: string[] = [];
       for (const p of docPaths) {
         const fullPath = resolve(project.workdir, p);
-        if (existsSync(fullPath)) {
-          docs.push(`## ${p}\n\n${readFileSync(fullPath, "utf-8")}`);
-        }
+        try {
+          const content = await fsReadFile(fullPath, "utf-8");
+          docs.push(`## ${p}\n\n${content}`);
+        } catch { /* missing is OK */ }
       }
       if (docs.length > 0) designDocsContent = docs.join("\n\n---\n\n");
     }

@@ -1,9 +1,17 @@
 /**
  * Asset archiving — copies current task assets into per-run subdirectories
  * so they survive rejection cycles and can be browsed across runs.
+ *
+ * All I/O is async to avoid blocking the event loop during reject/preserve
+ * flows or asset-browser endpoints.
  */
 
-import { existsSync, mkdirSync, copyFileSync, readdirSync } from "fs";
+import {
+  mkdir as fsMkdir,
+  copyFile as fsCopyFile,
+  readdir as fsReaddir,
+  stat as fsStat,
+} from "fs/promises";
 import { resolve, basename } from "path";
 import { extractTag } from "./task-types";
 import { getConfig } from "./comfyui-config";
@@ -19,27 +27,32 @@ function isAssetFile(filename: string): boolean {
   return dot >= 0 && ASSET_EXTS.has(filename.slice(dot).toLowerCase());
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
+
 /**
  * Archive current gallery assets (style_exploration) into a run-specific subdirectory.
  * Returns array of archived file paths relative to projectWorkdir.
  */
-export function archiveGalleryAssets(
+export async function archiveGalleryAssets(
   projectWorkdir: string,
   taskId: string,
   attempt: number,
-): string[] {
+): Promise<string[]> {
   const galleryDir = styleExplorationDir(projectWorkdir, taskId);
-  if (!existsSync(galleryDir)) return [];
+  if (!(await pathExists(galleryDir))) return [];
 
-  const files = readdirSync(galleryDir).filter(f => isAssetFile(f) && !f.startsWith("."));
+  const allFiles = await fsReaddir(galleryDir);
+  const files = allFiles.filter(f => isAssetFile(f) && !f.startsWith("."));
   if (files.length === 0) return [];
 
   const runDir = styleExplorationRunDir(projectWorkdir, taskId, attempt);
-  mkdirSync(runDir, { recursive: true });
+  await fsMkdir(runDir, { recursive: true });
 
   const archived: string[] = [];
   for (const file of files) {
-    copyFileSync(resolve(galleryDir, file), resolve(runDir, file));
+    await fsCopyFile(resolve(galleryDir, file), resolve(runDir, file));
     archived.push(resolve(runDir, file));
   }
 
@@ -50,21 +63,21 @@ export function archiveGalleryAssets(
  * Archive a single output file (art/music/sfx) into a run-specific history directory.
  * Returns array of archived file paths relative to projectWorkdir.
  */
-export function archiveSingleAsset(
+export async function archiveSingleAsset(
   projectWorkdir: string,
   taskId: string,
   outputPath: string,
   attempt: number,
-): string[] {
+): Promise<string[]> {
   const fullPath = resolve(projectWorkdir, outputPath);
-  if (!existsSync(fullPath)) return [];
+  if (!(await pathExists(fullPath))) return [];
 
   const filename = basename(fullPath);
   const histDir = artHistoryRunDir(projectWorkdir, taskId, attempt);
-  mkdirSync(histDir, { recursive: true });
+  await fsMkdir(histDir, { recursive: true });
 
   const dest = resolve(histDir, filename);
-  copyFileSync(fullPath, dest);
+  await fsCopyFile(fullPath, dest);
 
   return [dest];
 }
@@ -73,11 +86,11 @@ export function archiveSingleAsset(
  * Archive current assets for a task based on its type.
  * Called during reject-with-preserve before re-queuing.
  */
-export function archiveCurrentAssets(
+export async function archiveCurrentAssets(
   projectWorkdir: string,
   task: ForemanTask,
   attempt: number,
-): string[] {
+): Promise<string[]> {
   if (task.type === "style_exploration") {
     return archiveGalleryAssets(projectWorkdir, task.id, attempt);
   }
@@ -94,13 +107,13 @@ export function archiveCurrentAssets(
 /**
  * Scan for archived run subdirectories and return metadata about each.
  */
-export function getAvailableRuns(
+export async function getAvailableRuns(
   baseDir: string,
-): Array<{ attempt: number; fileCount: number }> {
-  if (!existsSync(baseDir)) return [];
+): Promise<Array<{ attempt: number; fileCount: number }>> {
+  if (!(await pathExists(baseDir))) return [];
 
   try {
-    const entries = readdirSync(baseDir, { withFileTypes: true });
+    const entries = await fsReaddir(baseDir, { withFileTypes: true });
     const runs: Array<{ attempt: number; fileCount: number }> = [];
 
     for (const entry of entries) {
@@ -109,7 +122,8 @@ export function getAvailableRuns(
       if (isNaN(attempt)) continue;
 
       const runDir = resolve(baseDir, entry.name);
-      const fileCount = readdirSync(runDir).filter(f => isAssetFile(f)).length;
+      const files = await fsReaddir(runDir);
+      const fileCount = files.filter(f => isAssetFile(f)).length;
       if (fileCount > 0) {
         runs.push({ attempt, fileCount });
       }

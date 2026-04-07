@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import { tool } from "ai";
-import { spawnSync } from "child_process";
+import { runProcess } from "../util/async-process";
 
 export function makePackageCheckTool(workdir: string) {
   return {
@@ -14,11 +14,8 @@ export function makePackageCheckTool(workdir: string) {
         name: z.string().describe("Package name, e.g. 'drizzle-orm', 'express', 'zod'"),
       }),
       execute: async ({ name }) => {
-        const result = spawnSync("npm", ["ls", name, "--depth=0", "--json"], {
-          cwd: workdir,
-          encoding: "utf-8",
-          timeout: 15_000,
-          shell: true,
+        const result = await runProcess("npm", ["ls", name, "--depth=0", "--json"], {
+          cwd: workdir, timeoutMs: 15_000, shell: true,
         });
 
         try {
@@ -29,11 +26,8 @@ export function makePackageCheckTool(workdir: string) {
 
         // Fallback: check node_modules directly
         try {
-          const pkgResult = spawnSync("node", ["-e", `console.log(require('${name}/package.json').version)`], {
-            cwd: workdir,
-            encoding: "utf-8",
-            timeout: 5_000,
-            shell: true,
+          const pkgResult = await runProcess("node", ["-e", `console.log(require('${name}/package.json').version)`], {
+            cwd: workdir, timeoutMs: 5_000, shell: true,
           });
           const ver = pkgResult.stdout?.trim();
           if (ver && pkgResult.status === 0) return `${name}@${ver}`;

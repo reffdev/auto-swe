@@ -11,19 +11,19 @@
 import { z } from "zod";
 import { tool } from "ai";
 import {
-  readFileSync,
-  writeFileSync,
-  readdirSync,
-  mkdirSync,
-  statSync,
-  appendFileSync,
-  unlinkSync,
-  renameSync,
-  realpathSync,
-} from "fs";
-import { spawnSync } from "child_process";
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+  readdir as fsReaddir,
+  mkdir as fsMkdir,
+  stat as fsStat,
+  appendFile as fsAppendFile,
+  unlink as fsUnlink,
+  rename as fsRename,
+  realpath as fsRealpath,
+} from "fs/promises";
 import { join, dirname, resolve, isAbsolute, sep, relative } from "path";
 import { ContextBudget } from "./context-budget";
+import { runProcess, runShellCommand } from "../util/async-process";
 
 // ─── Full tool set (read + write + run) ───────────────────────────────────────
 
@@ -157,7 +157,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        const content = normalizeEol(readFileSync(fullPath, "utf-8"));
+        const content = normalizeEol(await fsReadFile(fullPath, "utf-8"));
         const lines = content.split("\n");
 
         if (offset !== undefined || limit !== undefined) {
@@ -193,8 +193,8 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        mkdirSync(dirname(fullPath), { recursive: true });
-        writeFileSync(fullPath, content, "utf-8");
+        await fsMkdir(dirname(fullPath), { recursive: true });
+        await fsWriteFile(fullPath, content, "utf-8");
         resetFileReadCount(result.cleaned);
         trackSuccess();
         console.log(`[writeFile] ${result.cleaned} (${content.length} bytes)`);
@@ -231,7 +231,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const fullPath = join(resolvedWorkdir, result.cleaned);
         // Verify root path exists before scanning
         try {
-          const stat = statSync(fullPath);
+          const stat = await fsStat(fullPath);
           if (!stat.isDirectory()) {
             return trackResult(`"${path}" is a file, not a directory. Use readFile to read it.`);
           }
@@ -242,29 +242,29 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         }
         const lines: string[] = [];
         const visitedDirs = new Set<string>();
-        function scan(dir: string, prefix: string, depth: number) {
+        async function scan(dir: string, prefix: string, depth: number): Promise<void> {
           // Guard against symlink loops by tracking real paths
           let realDir: string;
           try {
-            realDir = realpathSync(dir);
+            realDir = await fsRealpath(dir);
           } catch {
             return; // Broken symlink — skip
           }
           if (visitedDirs.has(realDir)) return;
           visitedDirs.add(realDir);
 
-          const entries = readdirSync(dir, { withFileTypes: true });
+          const entries = await fsReaddir(dir, { withFileTypes: true });
           for (const e of entries) {
             if (e.name === "node_modules" || e.name === ".git") continue;
             lines.push(
               `${prefix}${e.isDirectory() ? "[dir]" : "[file]"} ${e.name}`
             );
             if (e.isDirectory() && depth < max_depth) {
-              scan(join(dir, e.name), prefix + "  ", depth + 1);
+              await scan(join(dir, e.name), prefix + "  ", depth + 1);
             }
           }
         }
-        scan(fullPath, "", 0);
+        await scan(fullPath, "", 0);
         if (lines.length > 500)
           return cap(
             lines.slice(0, 500).join("\n") +
@@ -308,11 +308,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
       }
       const loopMsg = loopGuard("runCommand", { command: command_to_run });
       if (loopMsg) return trackResult(loopMsg);
-      const result = spawnSync(command_to_run, {
+      const result = await runShellCommand(command_to_run, {
         cwd: resolvedWorkdir,
-        encoding: "utf-8",
-        timeout: 60_000,
-        shell: true,
+        timeoutMs: 60_000,
       });
       const out = [result.stdout, result.stderr]
         .filter(Boolean)
@@ -380,9 +378,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
       if (loopMsg) return trackResult(loopMsg);
 
       // Try ripgrep first, fall back to grep, then pure-JS fallback.
-      // All external commands use spawnSync with an args array (no shell)
+      // All external commands use runProcess with an args array (no shell)
       // to prevent command injection via pattern or glob values.
-      const tryRg = () => {
+      const tryRg = async (): Promise<string> => {
         const args = [
           files_only ? "--files-with-matches" : "--line-number",
           ...(!case_sensitive ? ["--ignore-case"] : []),
@@ -393,10 +391,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           pattern,
           ".",
         ];
-        const result = spawnSync("rg", args, {
+        const result = await runProcess("rg", args, {
           cwd: resolvedWorkdir,
-          encoding: "utf-8",
-          timeout: 30_000,
+          timeoutMs: 30_000,
         });
         if (result.error) throw { status: null, stderr: '', message: result.error.message };
         if (result.status !== 0) {
@@ -405,7 +402,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         return result.stdout;
       };
 
-      const tryGrep = () => {
+      const tryGrep = async (): Promise<string> => {
         const args = [
           "-r",
           files_only ? "-l" : "-n",
@@ -422,10 +419,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           pattern,
           ".",
         ];
-        const result = spawnSync("grep", args, {
+        const result = await runProcess("grep", args, {
           cwd: resolvedWorkdir,
-          encoding: "utf-8",
-          timeout: 30_000,
+          timeoutMs: 30_000,
         });
         if (result.error) throw { status: null, stderr: '', message: result.error.message };
         if (result.status !== 0 && result.status !== 1) {
@@ -435,7 +431,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
       };
 
       // Pure-JS fallback when neither rg nor grep is available (e.g. Windows)
-      const tryJsSearch = (): string => {
+      const tryJsSearch = async (): Promise<string> => {
         const SKIP = new Set([
           ".git",
           "node_modules",
@@ -467,11 +463,11 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const results: string[] = [];
         const maxResults = files_only ? 500 : 200;
 
-        function walk(dir: string) {
+        async function walk(dir: string): Promise<void> {
           if (results.length >= maxResults) return;
           let entries: { name: string; isDirectory(): boolean }[];
           try {
-            entries = readdirSync(dir, { withFileTypes: true }) as unknown as { name: string; isDirectory(): boolean }[];
+            entries = (await fsReaddir(dir, { withFileTypes: true })) as unknown as { name: string; isDirectory(): boolean }[];
           } catch {
             return;
           }
@@ -480,7 +476,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
             if (SKIP.has(e.name)) continue;
             const full = join(dir, e.name);
             if (e.isDirectory()) {
-              walk(full);
+              await walk(full);
               continue;
             }
             const rel =
@@ -488,7 +484,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
             if (globRe && !globRe.test(rel) && !globRe.test(e.name)) continue;
             let content: string;
             try {
-              content = normalizeEol(readFileSync(full, "utf-8"));
+              content = normalizeEol(await fsReadFile(full, "utf-8"));
             } catch {
               continue;
             }
@@ -516,7 +512,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           }
         }
 
-        walk(resolvedWorkdir);
+        await walk(resolvedWorkdir);
         return results.join("\n");
       };
 
@@ -534,7 +530,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
       try {
         let output: string;
         try {
-          output = tryRg();
+          output = await tryRg();
         } catch (rgErr: unknown) {
           const rgError = rgErr as {
             status?: number;
@@ -548,9 +544,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           )
             return "No matches found";
           try {
-            output = tryGrep();
+            output = await tryGrep();
           } catch {
-            output = tryJsSearch();
+            output = await tryJsSearch();
           }
         }
 
@@ -581,8 +577,8 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        const stat = statSync(fullPath);
-        const content = normalizeEol(readFileSync(fullPath, "utf-8"));
+        const stat = await fsStat(fullPath);
+        const content = normalizeEol(await fsReadFile(fullPath, "utf-8"));
         const lines = content.split("\n").length;
         return cap(`${result.cleaned}: ${stat.size} bytes, ${lines} lines, modified ${stat.mtime.toISOString()}`);
       } catch (e) {
@@ -597,10 +593,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
     parameters: z.object({}),
     execute: async () => {
       try {
-        const result = spawnSync("git", ["status", "--short"], {
+        const result = await runProcess("git", ["status", "--short"], {
           cwd: resolvedWorkdir,
-          encoding: "utf-8",
-          timeout: 10_000,
+          timeoutMs: 10_000,
         });
         const out = (result.stdout ?? "").trim();
         trackSuccess();
@@ -641,10 +636,9 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
           ...(staged ? ["--cached"] : []),
           ...(safeDiffPath ? ["--", safeDiffPath] : []),
         ];
-        const result = spawnSync("git", args, {
+        const result = await runProcess("git", args, {
           cwd: resolvedWorkdir,
-          encoding: "utf-8",
-          timeout: 15_000,
+          timeoutMs: 15_000,
         });
         const out = result.stdout ?? "";
         trackSuccess();
@@ -676,8 +670,8 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        mkdirSync(dirname(fullPath), { recursive: true });
-        appendFileSync(fullPath, content, "utf-8");
+        await fsMkdir(dirname(fullPath), { recursive: true });
+        await fsAppendFile(fullPath, content, "utf-8");
         resetFileReadCount(result.cleaned);
         trackSuccess();
         return `Appended ${content.length} bytes to ${result.cleaned}`;
@@ -697,7 +691,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        unlinkSync(fullPath);
+        await fsUnlink(fullPath);
         resetFileReadCount(result.cleaned);
         trackSuccess();
         return `Deleted ${result.cleaned}`;
@@ -721,8 +715,8 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         if (!toResult.ok) return trackResult(toResult.error);
         const fromFull = join(resolvedWorkdir, fromResult.cleaned);
         const toFull = join(resolvedWorkdir, toResult.cleaned);
-        mkdirSync(dirname(toFull), { recursive: true });
-        renameSync(fromFull, toFull);
+        await fsMkdir(dirname(toFull), { recursive: true });
+        await fsRename(fromFull, toFull);
         resetFileReadCount(fromResult.cleaned);
         resetFileReadCount(toResult.cleaned);
         trackSuccess();
@@ -750,7 +744,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
         const result = cleanPath(path);
         if (!result.ok) return trackResult(result.error);
         const fullPath = join(resolvedWorkdir, result.cleaned);
-        const content = normalizeEol(readFileSync(fullPath, "utf-8"));
+        const content = normalizeEol(await fsReadFile(fullPath, "utf-8"));
         let normalizedOldStr = normalizeEol(old_str);
         let normalizedNewStr = normalizeEol(new_str);
 
@@ -849,7 +843,7 @@ export function makeFilesystemTools(workdir: string, _budget?: ContextBudget) {
             `Error: string appears ${count} times in ${path} — make old_str more specific`
           );
         }
-        writeFileSync(fullPath, content.replace(searchStr, normalizedNewStr), "utf-8");
+        await fsWriteFile(fullPath, content.replace(searchStr, normalizedNewStr), "utf-8");
         resetFileReadCount(path);
         trackSuccess();
         console.log(`[replaceInFile] ${path}`);

@@ -5,9 +5,9 @@
  * Used by both the verifier (automated review) and the API (human review).
  */
 
-import { existsSync, readFileSync } from "fs";
+import { readFile as fsReadFile, stat as fsStat } from "fs/promises";
 import { resolve } from "path";
-import { spawnSync } from "child_process";
+import { runProcess } from "../util/async-process";
 import { fetchOrigin, getDiffBetween, getDiff } from "../git-helpers";
 import type { ForemanTask, Project } from "../db";
 
@@ -17,12 +17,16 @@ export interface TaskFileRead {
   content: string | null;
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
+
 /**
  * Resolve the working directory for a task.
  * Uses the worktree if it still exists, otherwise falls back to the project workdir.
  */
-export function resolveTaskWorkdir(task: ForemanTask, project: Project): string {
-  if (task.git_worktree && existsSync(task.git_worktree)) {
+export async function resolveTaskWorkdir(task: ForemanTask, project: Project): Promise<string> {
+  if (task.git_worktree && await pathExists(task.git_worktree)) {
     return task.git_worktree;
   }
   return project.workdir;
@@ -32,19 +36,19 @@ export function resolveTaskWorkdir(task: ForemanTask, project: Project): string 
  * Read the target files for a task from disk, falling back to `git show`
  * to read from the task branch when the worktree has been cleaned up.
  */
-export function readTaskTargetFiles(workdir: string, task: ForemanTask): TaskFileRead[] {
+export async function readTaskTargetFiles(workdir: string, task: ForemanTask): Promise<TaskFileRead[]> {
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
   const results: TaskFileRead[] = [];
 
   for (const f of targetFiles) {
     try {
       const fullPath = resolve(workdir, f);
-      if (existsSync(fullPath)) {
-        const content = readFileSync(fullPath, "utf-8");
+      if (await pathExists(fullPath)) {
+        const content = await fsReadFile(fullPath, "utf-8");
         results.push({ path: f, exists: true, content: content || "(empty file)" });
       } else if (task.git_branch) {
         // Worktree may be cleaned up — read from the task branch via git
-        const branchContent = readFileFromBranch(workdir, task.git_branch, f);
+        const branchContent = await readFileFromBranch(workdir, task.git_branch, f);
         if (branchContent !== null) {
           results.push({ path: f, exists: true, content: branchContent || "(empty file)" });
         } else {
@@ -65,12 +69,12 @@ export function readTaskTargetFiles(workdir: string, task: ForemanTask): TaskFil
  * Read a file from a git branch without checking it out.
  * Returns file content, empty string for empty files, or null if not found.
  */
-function readFileFromBranch(workdir: string, branch: string, filePath: string): string | null {
+async function readFileFromBranch(workdir: string, branch: string, filePath: string): Promise<string | null> {
   // Try origin/branch first (pushed), then local branch
   for (const ref of [`origin/${branch}`, branch]) {
     try {
-      const result = spawnSync("git", ["show", `${ref}:${filePath}`], {
-        cwd: workdir, encoding: "utf-8", timeout: 5_000, shell: false,
+      const result = await runProcess("git", ["show", `${ref}:${filePath}`], {
+        cwd: workdir, timeoutMs: 5_000,
       });
       if (result.status === 0) return result.stdout;
     } catch { /* try next ref */ }
@@ -82,20 +86,20 @@ function readFileFromBranch(workdir: string, branch: string, filePath: string): 
  * Get the git diff for a task's branch against the default branch.
  * Returns the stat + diff as a single string, or null if unavailable.
  */
-export function getTaskBranchDiff(workdir: string, task: ForemanTask, project: Project): string | null {
+export async function getTaskBranchDiff(workdir: string, task: ForemanTask, project: Project): Promise<string | null> {
   if (!task.git_branch) return null;
 
   try {
-    fetchOrigin(workdir);
+    await fetchOrigin(workdir);
     const isWorktree = workdir !== project.workdir;
     const base = `origin/${project.git_default_branch || "main"}`;
     const head = isWorktree ? "HEAD" : `origin/${task.git_branch}`;
-    const { stat, diff } = getDiffBetween(workdir, base, head);
+    const { stat, diff } = await getDiffBetween(workdir, base, head);
 
     let result = stat + "\n\n" + diff;
 
     if (isWorktree) {
-      const uncommitted = getDiff(workdir, "HEAD");
+      const uncommitted = await getDiff(workdir, "HEAD");
       if (uncommitted.trim()) {
         result += "\n\n--- uncommitted changes ---\n" + uncommitted;
       }
@@ -111,8 +115,8 @@ export function getTaskBranchDiff(workdir: string, task: ForemanTask, project: P
  * Read target files that aren't already visible in the diff.
  * Returns formatted markdown for supplemental context.
  */
-export function getSupplementalFileContents(workdir: string, task: ForemanTask, diff: string): string {
-  const files = readTaskTargetFiles(workdir, task);
+export async function getSupplementalFileContents(workdir: string, task: ForemanTask, diff: string): Promise<string> {
+  const files = await readTaskTargetFiles(workdir, task);
   const parts: string[] = [];
 
   for (const f of files) {

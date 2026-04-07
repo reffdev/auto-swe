@@ -2,9 +2,13 @@
  * Worktree cleanup — removes git worktrees from failed/completed tasks.
  */
 
-import { existsSync } from "fs";
+import { stat as fsStat } from "fs/promises";
 import type { Db } from "../db";
 import { removeWorktree } from "../git";
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
 
 /**
  * Clean up orphaned worktrees from failed tasks.
@@ -23,7 +27,7 @@ export async function cleanupWorktrees(db: Db): Promise<{ cleaned: number; error
   for (const task of tasks) {
     if (!task.git_worktree) continue;
     if (!terminalStates.has(task.status)) continue;
-    if (!existsSync(task.git_worktree)) {
+    if (!(await pathExists(task.git_worktree))) {
       // Worktree already gone — clear the field
       db.updateForemanTask(task.id, { git_worktree: null });
       continue;

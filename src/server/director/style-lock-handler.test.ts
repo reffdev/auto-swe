@@ -50,30 +50,30 @@ function createGallery(taskId: string, count: number) {
 }
 
 describe("handleStyleLock", () => {
-  it("locks style from selected variation", () => {
+  it("locks style from selected variation", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     createGallery(task.id, 6);
 
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [2] }),
     );
 
-    expect(isStyleLocked(projectDir)).toBe(true);
-    const config = getStyleLock(projectDir);
+    expect(await isStyleLocked(projectDir)).toBe(true);
+    const config = await getStyleLock(projectDir);
     expect(config!.ip_adapter_weight).toBe(0.6);
     expect(config!.prompt_style_prefix).toBe("");
     expect(config!.locked_by_review_id).toBe("review-1");
   });
 
-  it("completes the task on success", () => {
+  it("completes the task on success", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     createGallery(task.id, 6);
 
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [0] }),
@@ -84,24 +84,24 @@ describe("handleStyleLock", () => {
     expect(updated.completed_at).toBeTruthy();
   });
 
-  it("selects correct variation by index", () => {
+  it("selects correct variation by index", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     createGallery(task.id, 3);
 
     // Select variation 3 (index 2)
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [2] }),
     );
 
     // The reference image should be variation_3.png content
-    const refPath = getStyleReferencePath(projectDir);
+    const refPath = await getStyleReferencePath(projectDir);
     expect(readFileSync(refPath, "utf-8")).toBe("fake-image-3");
   });
 
-  it("handles run parameter for historical runs", () => {
+  it("handles run parameter for historical runs", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
 
@@ -110,59 +110,55 @@ describe("handleStyleLock", () => {
     mkdirSync(runDir, { recursive: true });
     writeFileSync(join(runDir, "variation_1.png"), "run2-image");
 
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [0], run: 2 }),
     );
 
-    expect(isStyleLocked(projectDir)).toBe(true);
+    expect(await isStyleLocked(projectDir)).toBe(true);
   });
 
-  it("falls back to first variation when selected index is out of range", () => {
+  it("falls back to first variation when selected index is out of range", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     createGallery(task.id, 2);
 
     // Select index 99 — should fall back to first
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [99] }),
     );
 
-    expect(isStyleLocked(projectDir)).toBe(true);
+    expect(await isStyleLocked(projectDir)).toBe(true);
   });
 
-  it("throws when task not found", () => {
+  it("throws when task not found", async () => {
     const directive = createDirective();
 
-    expect(() => {
-      handleStyleLock(
-        db, directive, { workdir: projectDir },
-        "nonexistent-task", "review-1",
-        JSON.stringify({ selected: [0] }),
-      );
-    }).toThrow("task nonexistent-task not found");
+    await expect(handleStyleLock(
+      db, directive, { workdir: projectDir },
+      "nonexistent-task", "review-1",
+      JSON.stringify({ selected: [0] }),
+    )).rejects.toThrow("task nonexistent-task not found");
   });
 
-  it("throws when no variation files exist", () => {
+  it("throws when no variation files exist", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     // Create empty gallery
     const galleryDir = styleExplorationDir(projectDir, task.id);
     mkdirSync(galleryDir, { recursive: true });
 
-    expect(() => {
-      handleStyleLock(
-        db, directive, { workdir: projectDir },
-        task.id, "review-1",
-        JSON.stringify({ selected: [0] }),
-      );
-    }).toThrow("no variation files found");
+    await expect(handleStyleLock(
+      db, directive, { workdir: projectDir },
+      task.id, "review-1",
+      JSON.stringify({ selected: [0] }),
+    )).rejects.toThrow("no variation files found");
   });
 
-  it("sorts files numerically not alphabetically", () => {
+  it("sorts files numerically not alphabetically", async () => {
     const directive = createDirective();
     const task = createStyleTask(directive.id);
     const galleryDir = styleExplorationDir(projectDir, task.id);
@@ -174,16 +170,16 @@ describe("handleStyleLock", () => {
     }
 
     // Select index 2 — should be variation_3 (numeric), not variation_10 (alphabetic)
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [2] }),
     );
 
-    expect(readFileSync(getStyleReferencePath(projectDir), "utf-8")).toBe("image-3");
+    expect(readFileSync((await getStyleReferencePath(projectDir))!, "utf-8")).toBe("image-3");
   });
 
-  it("extracts preset from task description", () => {
+  it("extracts preset from task description", async () => {
     const directive = createDirective();
     const task = db.createForemanTask({
       project_id: projectId,
@@ -195,13 +191,13 @@ describe("handleStyleLock", () => {
     });
     createGallery(task.id, 1);
 
-    handleStyleLock(
+    await handleStyleLock(
       db, directive, { workdir: projectDir },
       task.id, "review-1",
       JSON.stringify({ selected: [0] }),
     );
 
-    const config = getStyleLock(projectDir);
+    const config = await getStyleLock(projectDir);
     expect(config!.preset).toBe("background");
     // background preset uses sd_xl_base_1.0
     expect(config!.checkpoint).toBe("sd_xl_base_1.0.safetensors");

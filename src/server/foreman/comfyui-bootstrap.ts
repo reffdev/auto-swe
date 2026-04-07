@@ -7,7 +7,7 @@
  * no writing manifest.json by hand, no downloading template files.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
 import { resolve } from "path";
 import { checkComfyUIHealth, listAvailableModels } from "./comfyui-schema";
 import { PRESETS } from "./comfyui-workflows";
@@ -50,12 +50,10 @@ export async function bootstrapComfyUI(
 
   // 4. Write to project
   const workflowDir = getWorkflowDir(projectWorkdir);
-  if (!existsSync(workflowDir)) {
-    mkdirSync(workflowDir, { recursive: true });
-  }
+  await fsMkdir(workflowDir, { recursive: true });
 
   const manifestPath = resolve(workflowDir, "manifest.json");
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  await fsWriteFile(manifestPath, JSON.stringify(manifest, null, 2));
   console.log(`[comfyui:bootstrap] wrote manifest to ${manifestPath}`);
 
   return manifest;

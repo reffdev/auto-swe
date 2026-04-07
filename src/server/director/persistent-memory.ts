@@ -13,9 +13,21 @@
  *
  * The Director reads relevant memories before planning and writes new
  * memories after significant events (milestones, failures, decisions).
+ *
+ * All I/O is async — callers should `await` every function. This module was
+ * previously fully synchronous and was one of the biggest contributors to
+ * event-loop stalls during director ticks.
  */
 
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, statSync, copyFileSync, unlinkSync } from "fs";
+import {
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+  readdir as fsReaddir,
+  mkdir as fsMkdir,
+  stat as fsStat,
+  copyFile as fsCopyFile,
+  unlink as fsUnlink,
+} from "fs/promises";
 import { resolve } from "path";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -35,6 +47,12 @@ export interface MemoryEntry {
   content: string;
   /** File modification time */
   updatedAt: Date;
+}
+
+// ─── Small async fs helpers ─────────────────────────────────────────────────
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
 }
 
 // ─── Write hook (dependency inversion for indexing) ─────────────────────────
@@ -91,36 +109,34 @@ const ALL_DIRS = [
 const ensuredDirs = new Set<string>();
 
 /** Ensure the directory structure exists, seed ABOUT.md files, and prune old episodic logs. */
-export function ensureMemoryDirs(projectWorkdir: string): void {
+export async function ensureMemoryDirs(projectWorkdir: string): Promise<void> {
   if (ensuredDirs.has(projectWorkdir)) return;
   ensuredDirs.add(projectWorkdir);
   for (const [parent, child] of ALL_DIRS) {
     const dirPath = resolve(projectWorkdir, SWE_ROOT, parent, child);
-    if (!existsSync(dirPath)) {
-      mkdirSync(dirPath, { recursive: true });
-    }
+    await fsMkdir(dirPath, { recursive: true });
     const aboutPath = resolve(dirPath, "ABOUT.md");
-    if (!existsSync(aboutPath)) {
+    if (!(await pathExists(aboutPath))) {
       const content = ABOUT_CONTENT[child as keyof typeof ABOUT_CONTENT];
-      if (content) writeFileSync(aboutPath, content);
+      if (content) await fsWriteFile(aboutPath, content);
     }
   }
   // Seed conventions/ root with ABOUT.md so the convention category is documented
   const convAboutPath = resolve(projectWorkdir, SWE_ROOT, "conventions", "ABOUT.md");
-  if (!existsSync(convAboutPath)) {
-    writeFileSync(convAboutPath, ABOUT_CONTENT.conventions);
+  if (!(await pathExists(convAboutPath))) {
+    await fsWriteFile(convAboutPath, ABOUT_CONTENT.conventions);
   }
-  pruneEpisodicLogs(projectWorkdir);
-  ensureGitignore(projectWorkdir);
+  await pruneEpisodicLogs(projectWorkdir);
+  await ensureGitignore(projectWorkdir);
 }
 
 /** Add .swe/ to the project's .gitignore if not already present. */
-function ensureGitignore(projectWorkdir: string): void {
-  if (!existsSync(resolve(projectWorkdir, ".git"))) return;
+async function ensureGitignore(projectWorkdir: string): Promise<void> {
+  if (!(await pathExists(resolve(projectWorkdir, ".git")))) return;
   const gitignorePath = resolve(projectWorkdir, ".gitignore");
   let content = "";
-  if (existsSync(gitignorePath)) {
-    content = readFileSync(gitignorePath, "utf-8");
+  if (await pathExists(gitignorePath)) {
+    content = await fsReadFile(gitignorePath, "utf-8");
     // Check if already ignored (exact line match)
     const lines = content.split("\n").map(l => l.trim());
     if (lines.includes(".swe/") || lines.includes(".swe") || lines.includes("/.swe/") || lines.includes("/.swe")) {
@@ -129,7 +145,7 @@ function ensureGitignore(projectWorkdir: string): void {
   }
   // Append with a newline if file doesn't end with one
   const prefix = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
-  writeFileSync(gitignorePath, content + prefix + ".swe/\n");
+  await fsWriteFile(gitignorePath, content + prefix + ".swe/\n");
 }
 
 const PRUNE_DAYS = 30;
@@ -139,15 +155,16 @@ const PRUNE_DAYS = 30;
  * Before deleting, extracts patterns into semantic memory via LLM.
  * Creates a snapshot before deleting anything.
  */
-function pruneEpisodicLogs(projectWorkdir: string): void {
+async function pruneEpisodicLogs(projectWorkdir: string): Promise<void> {
   const episodicDir = categoryDir(projectWorkdir, "episodic");
-  if (!existsSync(episodicDir)) return;
+  if (!(await pathExists(episodicDir))) return;
 
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - PRUNE_DAYS);
   const cutoffStr = cutoff.toISOString().slice(0, 10);
 
-  const files = readdirSync(episodicDir)
+  const allFiles = await fsReaddir(episodicDir);
+  const files = allFiles
     .filter(f => f.endsWith(".md") && f !== "ABOUT.md")
     .filter(f => {
       const dateStr = f.replace(".md", "");
@@ -157,13 +174,13 @@ function pruneEpisodicLogs(projectWorkdir: string): void {
   if (files.length === 0) return;
 
   // Collect content from logs about to be pruned
-  const logContents = files.map(f => {
-    try { return readFileSync(resolve(episodicDir, f), "utf-8"); } catch { return ""; }
-  }).filter(Boolean);
+  const logContents = (await Promise.all(files.map(async f => {
+    try { return await fsReadFile(resolve(episodicDir, f), "utf-8"); } catch { return ""; }
+  }))).filter(Boolean);
 
   // Snapshot before pruning
   try {
-    createSnapshot(projectWorkdir, "pre-prune");
+    await createSnapshot(projectWorkdir, "pre-prune");
   } catch (err) {
     console.warn("[director:memory] failed to create pre-prune snapshot:", err);
   }
@@ -172,14 +189,14 @@ function pruneEpisodicLogs(projectWorkdir: string): void {
   if (logContents.length > 0) {
     extractAndPrune(projectWorkdir, episodicDir, files, logContents);
   } else {
-    deleteFiles(episodicDir, files);
+    await deleteFiles(episodicDir, files);
   }
 }
 
-function deleteFiles(dir: string, files: string[]): void {
-  for (const file of files) {
-    try { unlinkSync(resolve(dir, file)); } catch { /* best effort */ }
-  }
+async function deleteFiles(dir: string, files: string[]): Promise<void> {
+  await Promise.all(files.map(file =>
+    fsUnlink(resolve(dir, file)).catch(() => { /* best effort */ }),
+  ));
   console.log(`[director:memory] pruned ${files.length} episodic log(s) older than ${PRUNE_DAYS} days`);
 }
 
@@ -199,11 +216,11 @@ function extractAndPrune(
       .then(() => deleteFiles(episodicDir, files))
       .catch(err => {
         console.warn("[director:memory] episodic pattern extraction failed — pruning anyway:", err);
-        deleteFiles(episodicDir, files);
+        void deleteFiles(episodicDir, files);
       });
   }).catch(() => {
     // Module not available — prune without extraction
-    deleteFiles(episodicDir, files);
+    void deleteFiles(episodicDir, files);
   });
 }
 
@@ -416,23 +433,25 @@ net during active development. Keep at least the most recent 3 snapshots.
  * Read all memory entries from a category.
  * Returns files sorted by modification time (newest first).
  */
-export function readMemoryCategory(projectWorkdir: string, category: MemoryCategory): MemoryEntry[] {
+export async function readMemoryCategory(projectWorkdir: string, category: MemoryCategory): Promise<MemoryEntry[]> {
   const dirPath = categoryDir(projectWorkdir, category);
-  if (!existsSync(dirPath)) return [];
+  if (!(await pathExists(dirPath))) return [];
 
   try {
-    const files = readdirSync(dirPath).filter(f => f.endsWith(".md"));
-    return files
-      .map(filename => {
-        const filePath = resolve(dirPath, filename);
-        try {
-          const content = readFileSync(filePath, "utf-8");
-          const stat = statSync(filePath);
-          return { category, filename, content, updatedAt: stat.mtime };
-        } catch {
-          return null;
-        }
-      })
+    const files = (await fsReaddir(dirPath)).filter(f => f.endsWith(".md"));
+    const entries = await Promise.all(files.map(async filename => {
+      const filePath = resolve(dirPath, filename);
+      try {
+        const [content, stat] = await Promise.all([
+          fsReadFile(filePath, "utf-8"),
+          fsStat(filePath),
+        ]);
+        return { category, filename, content, updatedAt: stat.mtime } as MemoryEntry;
+      } catch {
+        return null;
+      }
+    }));
+    return entries
       .filter((e): e is MemoryEntry => e !== null)
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   } catch {
@@ -443,19 +462,19 @@ export function readMemoryCategory(projectWorkdir: string, category: MemoryCateg
 /**
  * Read all memories across all categories.
  */
-export function readAllMemories(projectWorkdir: string): MemoryEntry[] {
+export async function readAllMemories(projectWorkdir: string): Promise<MemoryEntry[]> {
   const categories: MemoryCategory[] = ["episodic", "semantic", "procedural"];
-  return categories.flatMap(cat => readMemoryCategory(projectWorkdir, cat));
+  const all = await Promise.all(categories.map(cat => readMemoryCategory(projectWorkdir, cat)));
+  return all.flat();
 }
 
 /**
  * Read a specific memory file.
  */
-export function readMemory(projectWorkdir: string, category: MemoryCategory, filename: string): string | null {
+export async function readMemory(projectWorkdir: string, category: MemoryCategory, filename: string): Promise<string | null> {
   const filePath = resolve(categoryDir(projectWorkdir, category), filename);
-  if (!existsSync(filePath)) return null;
   try {
-    return readFileSync(filePath, "utf-8");
+    return await fsReadFile(filePath, "utf-8");
   } catch {
     return null;
   }
@@ -467,25 +486,28 @@ export function readMemory(projectWorkdir: string, category: MemoryCategory, fil
 /** The single always-injected "project identity" file. Stored alongside conventions. */
 export const PROJECT_BRIEF_FILENAME = "PROJECT_BRIEF.md";
 
-export function readConventions(projectWorkdir: string): MemoryEntry[] {
+export async function readConventions(projectWorkdir: string): Promise<MemoryEntry[]> {
   const dirPath = resolve(projectWorkdir, SWE_ROOT, "conventions");
-  if (!existsSync(dirPath)) return [];
+  if (!(await pathExists(dirPath))) return [];
 
   try {
     // Exclude PROJECT_BRIEF.md (own dedicated read path) and ABOUT.md (category doc)
-    const files = readdirSync(dirPath).filter(f =>
+    const files = (await fsReaddir(dirPath)).filter(f =>
       f.endsWith(".md") && f !== PROJECT_BRIEF_FILENAME && f !== "ABOUT.md"
     );
-    return files.map(filename => {
+    const entries = await Promise.all(files.map(async filename => {
       const filePath = resolve(dirPath, filename);
       try {
-        const content = readFileSync(filePath, "utf-8");
-        const stat = statSync(filePath);
-        return { category: "procedural" as MemoryCategory, filename, content, updatedAt: stat.mtime };
+        const [content, stat] = await Promise.all([
+          fsReadFile(filePath, "utf-8"),
+          fsStat(filePath),
+        ]);
+        return { category: "procedural" as MemoryCategory, filename, content, updatedAt: stat.mtime } as MemoryEntry;
       } catch {
         return null;
       }
-    }).filter((e): e is MemoryEntry => e !== null);
+    }));
+    return entries.filter((e): e is MemoryEntry => e !== null);
   } catch {
     return [];
   }
@@ -495,11 +517,10 @@ export function readConventions(projectWorkdir: string): MemoryEntry[] {
  * Read the project brief — a single compact identity document always injected
  * into every agent context (Director and Foreman). Returns null if not yet created.
  */
-export function readProjectBrief(projectWorkdir: string): string | null {
+export async function readProjectBrief(projectWorkdir: string): Promise<string | null> {
   const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", PROJECT_BRIEF_FILENAME);
-  if (!existsSync(filePath)) return null;
   try {
-    return readFileSync(filePath, "utf-8");
+    return await fsReadFile(filePath, "utf-8");
   } catch {
     return null;
   }
@@ -509,22 +530,21 @@ export function readProjectBrief(projectWorkdir: string): string | null {
  * Write/replace the project brief. Always overwrites — the brief is meant to be
  * maintained in-place, not appended to.
  */
-export function writeProjectBrief(projectWorkdir: string, content: string): void {
-  ensureMemoryDirs(projectWorkdir);
+export async function writeProjectBrief(projectWorkdir: string, content: string): Promise<void> {
+  await ensureMemoryDirs(projectWorkdir);
   const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", PROJECT_BRIEF_FILENAME);
-  writeFileSync(filePath, content);
+  await fsWriteFile(filePath, content);
   fireWriteHook(projectWorkdir, "project_brief", PROJECT_BRIEF_FILENAME);
 }
 
 /**
  * Read a single convention file by name. Returns null if it doesn't exist.
  */
-export function readConvention(projectWorkdir: string, filename: string): string | null {
+export async function readConvention(projectWorkdir: string, filename: string): Promise<string | null> {
   const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
   const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", fname);
-  if (!existsSync(filePath)) return null;
   try {
-    return readFileSync(filePath, "utf-8");
+    return await fsReadFile(filePath, "utf-8");
   } catch {
     return null;
   }
@@ -538,20 +558,20 @@ export function readConvention(projectWorkdir: string, filename: string): string
  * The PROJECT_BRIEF.md and ABOUT.md filenames are reserved — use writeProjectBrief
  * for the brief; ABOUT.md is managed by the system.
  */
-export function writeConvention(
+export async function writeConvention(
   projectWorkdir: string,
   filename: string,
   content: string,
-): { created: boolean } {
+): Promise<{ created: boolean }> {
   const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
   if (fname === PROJECT_BRIEF_FILENAME || fname === "ABOUT.md") {
     throw new Error(`${fname} is reserved — use the appropriate dedicated function`);
   }
-  ensureMemoryDirs(projectWorkdir);
+  await ensureMemoryDirs(projectWorkdir);
   const dirPath = resolve(projectWorkdir, SWE_ROOT, "conventions");
   const filePath = resolve(dirPath, fname);
-  const created = !existsSync(filePath);
-  writeFileSync(filePath, content);
+  const created = !(await pathExists(filePath));
+  await fsWriteFile(filePath, content);
   fireWriteHook(projectWorkdir, "convention", fname);
   return { created };
 }
@@ -559,11 +579,11 @@ export function writeConvention(
 /**
  * Delete a convention file. Returns true if a file was actually deleted.
  */
-export function deleteConvention(projectWorkdir: string, filename: string): boolean {
+export async function deleteConvention(projectWorkdir: string, filename: string): Promise<boolean> {
   const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
   const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", fname);
-  if (!existsSync(filePath)) return false;
-  unlinkSync(filePath);
+  if (!(await pathExists(filePath))) return false;
+  await fsUnlink(filePath);
   fireWriteHook(projectWorkdir, "convention", fname);
   return true;
 }
@@ -573,31 +593,32 @@ export function deleteConvention(projectWorkdir: string, filename: string): bool
 /**
  * Write a memory entry. Creates the file if it doesn't exist, overwrites if it does.
  */
-export function writeMemory(
+export async function writeMemory(
   projectWorkdir: string,
   category: MemoryCategory,
   filename: string,
   content: string,
-): void {
-  ensureMemoryDirs(projectWorkdir);
+): Promise<void> {
+  await ensureMemoryDirs(projectWorkdir);
   const filePath = resolve(categoryDir(projectWorkdir, category), filename);
-  writeFileSync(filePath, content);
+  await fsWriteFile(filePath, content);
   fireWriteHook(projectWorkdir, category, filename);
 }
 
 /**
  * Append to an existing memory file (e.g., daily episodic log).
  */
-export function appendMemory(
+export async function appendMemory(
   projectWorkdir: string,
   category: MemoryCategory,
   filename: string,
   content: string,
-): void {
-  ensureMemoryDirs(projectWorkdir);
+): Promise<void> {
+  await ensureMemoryDirs(projectWorkdir);
   const filePath = resolve(categoryDir(projectWorkdir, category), filename);
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : "";
-  writeFileSync(filePath, existing + "\n" + content);
+  let existing = "";
+  try { existing = await fsReadFile(filePath, "utf-8"); } catch { /* file may not exist */ }
+  await fsWriteFile(filePath, existing + "\n" + content);
   fireWriteHook(projectWorkdir, category, filename);
 }
 
@@ -605,12 +626,30 @@ export function appendMemory(
 
 /**
  * Log an event to today's episodic log.
+ *
+ * Await the returned promise if you need the write to be observable (tests,
+ * code that immediately reads the log back). In hot paths where the write is
+ * pure telemetry you can `void`-discard it — errors are caught and logged
+ * internally by the caller's `.catch`, OR by this function swallowing ENOENT
+ * from the race with tempdir teardown.
  */
-export function logEpisodic(
+export async function logEpisodic(
   projectWorkdir: string,
   event: string,
   details?: string,
-): void {
+): Promise<void> {
+  try {
+    await logEpisodicAsync(projectWorkdir, event, details);
+  } catch (err) {
+    console.warn("[director:memory] logEpisodic failed:", err instanceof Error ? err.message : err);
+  }
+}
+
+export async function logEpisodicAsync(
+  projectWorkdir: string,
+  event: string,
+  details?: string,
+): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const filename = `${today}.md`;
   const timestamp = new Date().toISOString().slice(11, 19);
@@ -619,10 +658,10 @@ export function logEpisodic(
   if (details) entry += `\n  ${details}`;
 
   const filePath = resolve(categoryDir(projectWorkdir, "episodic"), filename);
-  if (!existsSync(filePath)) {
-    writeMemory(projectWorkdir, "episodic", filename, `# ${today}\n\n${entry}`);
+  if (!(await pathExists(filePath))) {
+    await writeMemory(projectWorkdir, "episodic", filename, `# ${today}\n\n${entry}`);
   } else {
-    appendMemory(projectWorkdir, "episodic", filename, entry);
+    await appendMemory(projectWorkdir, "episodic", filename, entry);
   }
 }
 
@@ -631,40 +670,43 @@ export function logEpisodic(
 /**
  * Create a snapshot of all current memories and conventions before a major change.
  */
-export function createSnapshot(projectWorkdir: string, label: string): string {
+export async function createSnapshot(projectWorkdir: string, label: string): Promise<string> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const snapshotDir = resolve(projectWorkdir, SWE_ROOT, "conventions", "snapshots", `${timestamp}_${label}`);
-  mkdirSync(snapshotDir, { recursive: true });
+  await fsMkdir(snapshotDir, { recursive: true });
 
   // Snapshot memory/
   for (const cat of ["episodic", "semantic"] as const) {
     const srcDir = categoryDir(projectWorkdir, cat);
-    if (!existsSync(srcDir)) continue;
+    if (!(await pathExists(srcDir))) continue;
     const destDir = resolve(snapshotDir, "memory", cat);
-    mkdirSync(destDir, { recursive: true });
-    for (const file of readdirSync(srcDir).filter(f => f.endsWith(".md"))) {
-      copyFileSync(resolve(srcDir, file), resolve(destDir, file));
-    }
+    await fsMkdir(destDir, { recursive: true });
+    const files = (await fsReaddir(srcDir)).filter(f => f.endsWith(".md"));
+    await Promise.all(files.map(file =>
+      fsCopyFile(resolve(srcDir, file), resolve(destDir, file)),
+    ));
   }
 
   // Snapshot conventions/procedural/
   const procDir = categoryDir(projectWorkdir, "procedural");
-  if (existsSync(procDir)) {
+  if (await pathExists(procDir)) {
     const destDir = resolve(snapshotDir, "procedural");
-    mkdirSync(destDir, { recursive: true });
-    for (const file of readdirSync(procDir).filter(f => f.endsWith(".md"))) {
-      copyFileSync(resolve(procDir, file), resolve(destDir, file));
-    }
+    await fsMkdir(destDir, { recursive: true });
+    const files = (await fsReaddir(procDir)).filter(f => f.endsWith(".md"));
+    await Promise.all(files.map(file =>
+      fsCopyFile(resolve(procDir, file), resolve(destDir, file)),
+    ));
   }
 
   // Snapshot top-level conventions/*.md
   const convDir = resolve(projectWorkdir, SWE_ROOT, "conventions");
-  if (existsSync(convDir)) {
+  if (await pathExists(convDir)) {
     const destConv = resolve(snapshotDir, "conventions");
-    mkdirSync(destConv, { recursive: true });
-    for (const file of readdirSync(convDir).filter(f => f.endsWith(".md"))) {
-      copyFileSync(resolve(convDir, file), resolve(destConv, file));
-    }
+    await fsMkdir(destConv, { recursive: true });
+    const files = (await fsReaddir(convDir)).filter(f => f.endsWith(".md"));
+    await Promise.all(files.map(file =>
+      fsCopyFile(resolve(convDir, file), resolve(destConv, file)),
+    ));
   }
 
   return snapshotDir;
@@ -677,10 +719,10 @@ export function createSnapshot(projectWorkdir: string, label: string): string {
  * Includes conventions, semantic knowledge, procedural guides, and recent episodic logs.
  * Caps total size to avoid blowing up the context.
  */
-export function assembleMemoryContext(
+export async function assembleMemoryContext(
   projectWorkdir: string,
   opts?: { maxEpisodicDays?: number; maxTotalChars?: number },
-): string {
+): Promise<string> {
   const maxDays = opts?.maxEpisodicDays ?? 7;
   const maxChars = opts?.maxTotalChars ?? 15_000;
 
@@ -698,17 +740,18 @@ export function assembleMemoryContext(
     }
   };
 
-  // Conventions (top-level markdown — highest priority)
-  addSection("Conventions", readConventions(projectWorkdir), maxChars);
+  // Read all categories in parallel
+  const [conventions, semantic, procedural, episodic] = await Promise.all([
+    readConventions(projectWorkdir),
+    readMemoryCategory(projectWorkdir, "semantic"),
+    readMemoryCategory(projectWorkdir, "procedural"),
+    readMemoryCategory(projectWorkdir, "episodic"),
+  ]);
 
-  // Semantic memories (stable knowledge)
-  addSection("Knowledge Base", readMemoryCategory(projectWorkdir, "semantic"), maxChars);
+  addSection("Conventions", conventions, maxChars);
+  addSection("Knowledge Base", semantic, maxChars);
+  addSection("Workflows & Processes", procedural, maxChars * 0.8);
 
-  // Procedural (workflows under conventions/procedural/)
-  addSection("Workflows & Processes", readMemoryCategory(projectWorkdir, "procedural"), maxChars * 0.8);
-
-  // Episodic (recent daily logs — most recent first)
-  const episodic = readMemoryCategory(projectWorkdir, "episodic");
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - maxDays);
   const recentEpisodic = episodic.filter(e => e.updatedAt >= cutoff);

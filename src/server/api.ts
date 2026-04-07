@@ -5,9 +5,20 @@
  */
 
 import { Router } from "express";
-import { existsSync, statSync, mkdirSync, readFileSync, readdirSync } from "fs";
+import { spawn } from "child_process";
+import {
+  stat as fsStat,
+  mkdir as fsMkdir,
+  readFile as fsReadFile,
+  readdir as fsReaddir,
+} from "fs/promises";
 import { resolve } from "path";
-import { spawnSync, spawn } from "child_process";
+import { runProcess } from "./util/async-process";
+
+/** Async existence check — replaces existsSync. Returns false on any error. */
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
 import type { Db } from "./db";
 import { getRecentLogs, onLogEntry } from "./console-log";
 import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type PipelineContext } from "./pipeline/index";
@@ -36,11 +47,16 @@ export interface ApiOptions {
   pipelineCtx?: PipelineContext;
 }
 
-// Compute version once at startup — cheap to serve, no git calls per request
-const STARTUP_COMMIT = (() => {
+// Probe the startup commit asynchronously at module load so /version can
+// return instantly without a per-request git call AND without blocking the
+// event loop at import time.
+let STARTUP_COMMIT = "unknown";
+void (async () => {
   try {
-    return spawnSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf-8", shell: true }).stdout?.trim() ?? "unknown";
-  } catch { return "unknown"; }
+    const result = await runProcess("git", ["rev-parse", "--short", "HEAD"], { timeoutMs: 5_000, shell: true });
+    const out = result.stdout?.trim();
+    if (out) STARTUP_COMMIT = out;
+  } catch { /* leave as "unknown" */ }
 })();
 const STARTUP_TIME = Date.now();
 
@@ -75,7 +91,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(db.getProjects());
   });
 
-  router.post("/projects", (req, res) => {
+  router.post("/projects", async (req, res) => {
     const { name, workdir, git_remote, git_server_token, git_default_branch } = req.body;
     if (!name || typeof name !== "string") {
       res.status(400).json({ error: "name is required" });
@@ -87,7 +103,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     if (workdir && typeof workdir === "string") {
       // Explicit workdir provided — validate it
       try {
-        const stat = statSync(workdir);
+        const stat = await fsStat(workdir);
         if (!stat.isDirectory()) {
           res.status(400).json({ error: "workdir is not a directory" });
           return;
@@ -96,7 +112,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         res.status(400).json({ error: "workdir does not exist" });
         return;
       }
-      if (!existsSync(`${workdir}/.git`)) {
+      if (!(await pathExists(`${workdir}/.git`))) {
         res.status(400).json({ error: "workdir is not a git repository (no .git found)" });
         return;
       }
@@ -109,9 +125,9 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       }
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
       const targetDir = resolve(PROJECTS_BASE, slug);
-      if (existsSync(targetDir)) {
+      if (await pathExists(targetDir)) {
         // Already exists — validate it's a git repo
-        if (!existsSync(`${targetDir}/.git`)) {
+        if (!(await pathExists(`${targetDir}/.git`))) {
           res.status(409).json({ error: `directory ${targetDir} already exists but is not a git repo` });
           return;
         }
@@ -119,14 +135,12 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       } else {
         // Clone the remote (use authenticated URL if token provided, so push works)
         try {
-          mkdirSync(PROJECTS_BASE, { recursive: true });
+          await fsMkdir(PROJECTS_BASE, { recursive: true });
           const cloneUrl = git_server_token
             ? authenticatedRemoteUrl(git_remote, git_server_token) ?? git_remote
             : git_remote;
-          const cloneResult = spawnSync("git", ["clone", cloneUrl, targetDir], {
-            encoding: "utf-8",
-            timeout: 120_000,
-            stdio: "pipe",
+          const cloneResult = await runProcess("git", ["clone", cloneUrl, targetDir], {
+            timeoutMs: 120_000,
             shell: true,
           });
           if (cloneResult.status !== 0) {
@@ -928,13 +942,12 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   // ─── Journal (system-level logs via journalctl) ──────────────────────────
 
-  router.get("/journal", (req, res) => {
+  router.get("/journal", async (req, res) => {
     const lines = parseInt(req.query.lines as string) || 200;
     const unit = "swe"; // hardcoded service name
     try {
-      const result = spawnSync("journalctl", ["-u", unit, "-n", String(Math.min(lines, 1000)), "--no-pager", "-o", "short-iso"], {
-        timeout: 5_000,
-        encoding: "utf-8",
+      const result = await runProcess("journalctl", ["-u", unit, "-n", String(Math.min(lines, 1000)), "--no-pager", "-o", "short-iso"], {
+        timeoutMs: 5_000,
       });
       const entries = (result.stdout ?? "").split("\n").filter(Boolean).map(line => {
         // Parse journalctl short-iso format: "2026-04-05T16:27:42+0000 hostname unit[pid]: message"
@@ -1021,13 +1034,18 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   // ─── Server info ────────────────────────────────────────────────────────
 
-  router.get("/server-info", (_req, res) => {
+  router.get("/server-info", async (_req, res) => {
     const cwd = process.cwd();
     try {
-      const commit = spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd, encoding: "utf-8", shell: true }).stdout?.trim() ?? "unknown";
-      const branch = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, encoding: "utf-8", shell: true }).stdout?.trim() ?? "unknown";
-      const dirty = spawnSync("git", ["status", "--porcelain"], { cwd, encoding: "utf-8", shell: true }).stdout?.trim();
-      res.json({ commit, branch, dirty: !!dirty, uptime: Math.round(process.uptime()) });
+      const [commitRes, branchRes, statusRes] = await Promise.all([
+        runProcess("git", ["rev-parse", "--short", "HEAD"], { cwd, timeoutMs: 5_000 }),
+        runProcess("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeoutMs: 5_000 }),
+        runProcess("git", ["status", "--porcelain"], { cwd, timeoutMs: 5_000 }),
+      ]);
+      const commit = commitRes.stdout?.trim() || "unknown";
+      const branch = branchRes.stdout?.trim() || "unknown";
+      const dirty = !!statusRes.stdout?.trim();
+      res.json({ commit, branch, dirty, uptime: Math.round(process.uptime()) });
     } catch {
       res.json({ commit: "unknown", branch: "unknown", dirty: false, uptime: Math.round(process.uptime()) });
     }
@@ -1210,16 +1228,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   const DOCS_ROOT = resolve(__dirname, "../../docs");
 
   /** List all markdown files under docs/, returning a tree structure */
-  router.get("/docs", (_req, res) => {
+  router.get("/docs", async (_req, res) => {
     interface DocEntry { path: string; name: string; type: "file" | "dir"; children?: DocEntry[] }
 
-    function scanDir(dir: string, rel: string): DocEntry[] {
-      if (!existsSync(dir)) return [];
+    async function scanDir(dir: string, rel: string): Promise<DocEntry[]> {
+      if (!(await pathExists(dir))) return [];
       const entries: DocEntry[] = [];
-      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const dirents = await fsReaddir(dir, { withFileTypes: true });
+      for (const ent of dirents) {
         const entRel = rel ? `${rel}/${ent.name}` : ent.name;
         if (ent.isDirectory()) {
-          entries.push({ path: entRel, name: ent.name, type: "dir", children: scanDir(resolve(dir, ent.name), entRel) });
+          entries.push({ path: entRel, name: ent.name, type: "dir", children: await scanDir(resolve(dir, ent.name), entRel) });
         } else if (ent.name.endsWith(".md")) {
           entries.push({ path: entRel, name: ent.name, type: "file" });
         }
@@ -1236,16 +1255,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const projectRoot = resolve(__dirname, "../..");
     const topLevelMd: DocEntry[] = [];
     for (const name of ["CLAUDE.md", "AGENTS.md", "MVP_PLAN.md"]) {
-      if (existsSync(resolve(projectRoot, name))) {
+      if (await pathExists(resolve(projectRoot, name))) {
         topLevelMd.push({ path: `../${name}`, name, type: "file" });
       }
     }
 
-    res.json({ tree: scanDir(DOCS_ROOT, ""), topLevel: topLevelMd });
+    res.json({ tree: await scanDir(DOCS_ROOT, ""), topLevel: topLevelMd });
   });
 
   /** Read a single markdown file from docs/ or top-level */
-  router.get("/docs/file", (req, res) => {
+  router.get("/docs/file", async (req, res) => {
     const filePath = req.query.path as string | undefined;
     if (!filePath) return res.status(400).json({ error: "path required" });
 
@@ -1272,11 +1291,15 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     if (!absPath.endsWith(".md")) {
       return res.status(400).json({ error: "only .md files" });
     }
-    if (!existsSync(absPath)) {
-      return res.status(404).json({ error: "not found" });
-    }
 
-    const content = readFileSync(absPath, "utf-8");
+    let content: string;
+    try {
+      content = await fsReadFile(absPath, "utf-8");
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === "ENOENT") return res.status(404).json({ error: "not found" });
+      return res.status(500).json({ error: "read failed" });
+    }
     res.json({ path: filePath, content });
   });
 

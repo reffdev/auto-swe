@@ -21,7 +21,7 @@ afterEach(() => {
 // ─── resolveScoutManifest ──────────────────────────────────────────────────
 
 describe("resolveScoutManifest", () => {
-  it("resolves a valid manifest to file list with line counts", () => {
+  it("resolves a valid manifest to file list with line counts", async () => {
     const manifest = JSON.stringify({
       files: [
         { path: "src/server/db.ts", reason: "needs new method" },
@@ -29,7 +29,7 @@ describe("resolveScoutManifest", () => {
       ],
       notes: "",
     });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     expect(result).toContain("src/server/db.ts");
     expect(result).toContain("6 lines"); // 5 lines + trailing newline = 6
     expect(result).toContain("needs new method");
@@ -38,48 +38,48 @@ describe("resolveScoutManifest", () => {
     expect(result).toContain("endpoint pattern");
   });
 
-  it("includes notes when present", () => {
+  it("includes notes when present", async () => {
     const manifest = JSON.stringify({
       files: [{ path: "package.json", reason: "deps" }],
       notes: "Watch out for the circular import",
     });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     expect(result).toContain("## Notes");
     expect(result).toContain("circular import");
   });
 
-  it("omits notes section when empty", () => {
+  it("omits notes section when empty", async () => {
     const manifest = JSON.stringify({
       files: [{ path: "package.json", reason: "deps" }],
       notes: "",
     });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     expect(result).not.toContain("## Notes");
   });
 
-  it("shows 'not found' for missing files", () => {
+  it("shows 'not found' for missing files", async () => {
     const manifest = JSON.stringify({
       files: [{ path: "nonexistent.ts", reason: "should exist" }],
       notes: "",
     });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     expect(result).toContain("nonexistent.ts");
     expect(result).toContain("not found");
   });
 
-  it("falls back to raw string for non-JSON input", () => {
+  it("falls back to raw string for non-JSON input", async () => {
     const raw = "This is a legacy text checkpoint with code blocks";
-    const result = resolveScoutManifest(workdir, raw);
+    const result = await resolveScoutManifest(workdir, raw);
     expect(result).toBe(raw);
   });
 
-  it("falls back to raw string for JSON without files array", () => {
+  it("falls back to raw string for JSON without files array", async () => {
     const json = JSON.stringify({ notes: "just notes, no files" });
-    const result = resolveScoutManifest(workdir, json);
+    const result = await resolveScoutManifest(workdir, json);
     expect(result).toBe(json);
   });
 
-  it("blocks path traversal attempts", () => {
+  it("blocks path traversal attempts", async () => {
     const manifest = JSON.stringify({
       files: [
         { path: "../../etc/passwd", reason: "malicious" },
@@ -87,22 +87,22 @@ describe("resolveScoutManifest", () => {
       ],
       notes: "",
     });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     // Should NOT contain the traversal path
     expect(result).not.toContain("etc/passwd");
     // Should still contain the legit file
     expect(result).toContain("src/server/db.ts");
   });
 
-  it("handles empty files array", () => {
+  it("handles empty files array", async () => {
     const manifest = JSON.stringify({ files: [], notes: "" });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     expect(result).toContain("Relevant Files");
     // No file entries, just the header
     expect(result).not.toContain("lines)");
   });
 
-  it("handles manifest with only invalid files", () => {
+  it("handles manifest with only invalid files", async () => {
     const manifest = JSON.stringify({
       files: [
         { path: "nope.ts", reason: "missing" },
@@ -110,7 +110,7 @@ describe("resolveScoutManifest", () => {
       ],
       notes: "",
     });
-    const result = resolveScoutManifest(workdir, manifest);
+    const result = await resolveScoutManifest(workdir, manifest);
     expect(result).toContain("not found");
     expect(result).toContain("nope.ts");
   });

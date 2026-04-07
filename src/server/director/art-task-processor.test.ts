@@ -73,123 +73,123 @@ describe("postProcessArtTasks", () => {
     try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
   });
 
-  it("passes code tasks through unchanged", () => {
+  it("passes code tasks through unchanged", async () => {
     const codeTask = makeTask({ type: "code", title: "Fix bug" });
-    const result = postProcessArtTasks([codeTask], projectDir);
+    const result = await postProcessArtTasks([codeTask], projectDir);
     expect(result).toHaveLength(1);
     expect(result[0]).toEqual(codeTask);
   });
 
-  it("injects ComfyUI tags into art tasks", () => {
-    const tasks = postProcessArtTasks([makeTask()], projectDir);
+  it("injects ComfyUI tags into art tasks", async () => {
+    const tasks = await postProcessArtTasks([makeTask()], projectDir);
     expect(tasks[0].description).toContain("[workflow: sprite_generator.json]");
     expect(tasks[0].description).toContain("[params:");
     expect(tasks[0].description).toContain("[output:");
   });
 
-  it("sets needs_human_review to true for art tasks", () => {
+  it("sets needs_human_review to true for art tasks", async () => {
     const task = makeTask({ needs_human_review: false });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].needs_human_review).toBe(true);
   });
 
-  it("does not double-process tasks that already have [workflow:]", () => {
+  it("does not double-process tasks that already have [workflow:]", async () => {
     const task = makeTask({
       description: "Already processed.\n[workflow: existing.json]\n[params: {}]\n[output: out.png]",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toBe(task.description);
   });
 
-  it("does not double-process tasks that already have [preset:]", () => {
+  it("does not double-process tasks that already have [preset:]", async () => {
     const task = makeTask({
       description: "Already processed.\n[preset: pixel_sprite]\n[prompt: fire]\n[output: out.png]",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toBe(task.description);
   });
 
-  it("uses [asset_type:] hint from description", () => {
+  it("uses [asset_type:] hint from description", async () => {
     const task = makeTask({
       title: "Create game icon",
       description: "Create a gem icon.\n[asset_type: icon]",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[workflow: sprite_generator.json]");
   });
 
-  it("uses [prompt:] hint from description", () => {
+  it("uses [prompt:] hint from description", async () => {
     const task = makeTask({
       description: "Create a sprite.\n[prompt: glowing fire symbol, pixel art, 64x64]",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     const paramsMatch = result[0].description.match(/\[params:\s*(\{.+?\})\]/);
     const params = JSON.parse(paramsMatch![1]);
     expect(params["6"].text).toBe("glowing fire symbol, pixel art, 64x64");
   });
 
-  it("uses [output_path:] hint from description", () => {
+  it("uses [output_path:] hint from description", async () => {
     const task = makeTask({
       description: "Create a sprite.\n[output_path: assets/sprites/custom.png]",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[output: assets/sprites/custom.png]");
   });
 
-  it("uses target_files[0] as output path when available", () => {
+  it("uses target_files[0] as output path when available", async () => {
     const task = makeTask({
       target_files: ["assets/sprites/from_target.png"],
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[output: assets/sprites/from_target.png]");
   });
 
-  it("falls back to preset when manifest lacks matching asset type", () => {
+  it("falls back to preset when manifest lacks matching asset type", async () => {
     const bgTask = makeTask({
       title: "Generate background forest scene",
       description: "A lush forest background.",
     });
     // No background workflow in test manifest, so falls back to preset
-    const result = postProcessArtTasks([bgTask], projectDir);
+    const result = await postProcessArtTasks([bgTask], projectDir);
     expect(result[0].description).toContain("[preset: flux_fast_background]");
     expect(result[0].description).toContain("[prompt:");
   });
 
-  it("infers sprite type by default for art tasks", () => {
+  it("infers sprite type by default for art tasks", async () => {
     const task = makeTask({
       title: "Create mysterious symbol",
       description: "A mysterious arcane symbol.",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[workflow: sprite_generator.json]");
   });
 
-  it("handles music task type", () => {
+  it("handles music task type", async () => {
     const task = makeTask({
       type: "music",
       title: "Create background music",
       description: "Ambient fantasy music loop.",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[workflow: audio_gen.json]");
     expect(result[0].description).toContain("[output:");
     expect(result[0].description).toMatch(/\.wav\]/);
   });
 
-  it("handles sfx task type", () => {
+  it("handles sfx task type", async () => {
     const task = makeTask({
       type: "sfx",
       title: "Create explosion sound",
       description: "A powerful explosion sound effect.",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[workflow: audio_gen.json]");
   });
 
-  it("uses presets when no manifest exists", () => {
+  it("uses presets when no manifest exists", async () => {
     const noManifestDir = makeTempProject();
     const task = makeTask();
-    const result = postProcessArtTasks([task], noManifestDir);
+    const result = await postProcessArtTasks([task], noManifestDir);
     // Should inject preset tags instead of manifest-based tags
     expect(result[0].description).toContain("[preset: flux_fast]");
     expect(result[0].description).toContain("[prompt:");
@@ -198,36 +198,36 @@ describe("postProcessArtTasks", () => {
     try { rmSync(noManifestDir, { recursive: true, force: true }); } catch {}
   });
 
-  it("generates slug from title for output filename", () => {
+  it("generates slug from title for output filename", async () => {
     const task = makeTask({
       title: "Generate Fire Symbol Sprite",
       description: "A fire sprite.",
     });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("fire_symbol_sprite");
   });
 
-  it("merges defaults into params", () => {
+  it("merges defaults into params", async () => {
     const task = makeTask();
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     const paramsMatch = result[0].description.match(/\[params:\s*(\{.+?\})\]/);
     const params = JSON.parse(paramsMatch![1]);
     expect(params["4"].ckpt_name).toBe("v1-5-pruned.safetensors");
   });
 
-  it("processes mixed task list — only modifies art tasks", () => {
+  it("processes mixed task list — only modifies art tasks", async () => {
     const tasks = [
       makeTask({ type: "code", title: "Fix bug", description: "Fix a bug" }),
       makeTask({ type: "art", title: "Create sprite", description: "A sprite" }),
       makeTask({ type: "review", title: "Review code", description: "Review" }),
     ];
-    const result = postProcessArtTasks(tasks, projectDir);
+    const result = await postProcessArtTasks(tasks, projectDir);
     expect(result[0].description).not.toContain("[workflow:");
     expect(result[1].description).toContain("[workflow:");
     expect(result[2].description).not.toContain("[workflow:");
   });
 
-  it("injects [style_lock: true] when style is locked", () => {
+  it("injects [style_lock: true] when style is locked", async () => {
     // Create a style lock
     const artDir = join(projectDir, ".swe", "art");
     mkdirSync(artDir, { recursive: true });
@@ -242,12 +242,12 @@ describe("postProcessArtTasks", () => {
     }));
 
     const task = makeTask({ type: "art", title: "Create fire icon", description: "A fire icon." });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).toContain("[style_lock: true]");
     expect(result[0].description).toContain("dark fantasy pixel art");
   });
 
-  it("does NOT inject style_lock for style_exploration tasks", () => {
+  it("does NOT inject style_lock for style_exploration tasks", async () => {
     const artDir = join(projectDir, ".swe", "art");
     mkdirSync(artDir, { recursive: true });
     writeFileSync(join(artDir, "style-lock.json"), JSON.stringify({
@@ -261,11 +261,11 @@ describe("postProcessArtTasks", () => {
     }));
 
     const task = makeTask({ type: "style_exploration", title: "Explore styles", description: "Explore." });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).not.toContain("[style_lock:");
   });
 
-  it("does NOT inject style_lock for music/sfx tasks", () => {
+  it("does NOT inject style_lock for music/sfx tasks", async () => {
     const artDir = join(projectDir, ".swe", "art");
     mkdirSync(artDir, { recursive: true });
     writeFileSync(join(artDir, "style-lock.json"), JSON.stringify({
@@ -279,7 +279,7 @@ describe("postProcessArtTasks", () => {
     }));
 
     const task = makeTask({ type: "music", title: "Create music", description: "Music." });
-    const result = postProcessArtTasks([task], projectDir);
+    const result = await postProcessArtTasks([task], projectDir);
     expect(result[0].description).not.toContain("[style_lock:");
   });
 });

@@ -12,7 +12,6 @@ import { type StepResult, type ToolSet, type CoreMessage } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generate, stream as llmStream } from "../llm";
 import { getStatus, getDiff } from "../git-helpers";
-import { spawnSync } from "child_process";
 import type { Db } from "../db";
 import { EXPAND_FILES_MARKER } from "./nodes";
 
@@ -143,10 +142,10 @@ This is mandatory. Produce the checkpoint now. Do not call any tools.`;
 
 // ─── Git context capture for compaction ──────────────────────────────────────
 
-function captureGitDiff(worktreePath: string): string {
+async function captureGitDiff(worktreePath: string): Promise<string> {
   try {
-    const statusOut = getStatus(worktreePath) || "(no changes)";
-    const diffOut = getDiff(worktreePath);
+    const statusOut = (await getStatus(worktreePath)) || "(no changes)";
+    const diffOut = await getDiff(worktreePath);
     return `## Current worktree state\n\n### Modified files:\n\`\`\`\n${statusOut}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${diffOut}\n\`\`\``;
   } catch {
     return "";
@@ -554,7 +553,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
           console.log(`[pipeline ${stageName}]: checkpoint produced (${checkpoint.length} chars)`);
 
           // Capture git state
-          const gitDiff = worktreePath ? captureGitDiff(worktreePath) : "";
+          const gitDiff = worktreePath ? await captureGitDiff(worktreePath) : "";
 
           // Build fresh user prompt with checkpoint context
           const loopWarning = loopTriggeredCompaction

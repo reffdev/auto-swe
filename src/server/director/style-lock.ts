@@ -7,7 +7,14 @@
  * Storage: .swe/art/style-lock.json + .swe/art/style-reference.png
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, copyFileSync } from "fs";
+import {
+  readFile as fsReadFile,
+  writeFile as fsWriteFile,
+  mkdir as fsMkdir,
+  unlink as fsUnlink,
+  copyFile as fsCopyFile,
+  stat as fsStat,
+} from "fs/promises";
 import { resolve } from "path";
 
 export interface PostProcessConfig {
@@ -46,36 +53,39 @@ function artDir(projectWorkdir: string): string {
   return resolve(projectWorkdir, SWE_ART_DIR);
 }
 
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
+
 /**
  * Lock the art style for a project.
  * Copies the reference image and writes the config.
  */
-export function lockStyle(
+export async function lockStyle(
   projectWorkdir: string,
   config: StyleLockConfig,
   sourceImagePath: string,
-): void {
+): Promise<void> {
   const dir = artDir(projectWorkdir);
-  mkdirSync(dir, { recursive: true });
+  await fsMkdir(dir, { recursive: true });
 
   // Copy reference image
   const refDest = resolve(dir, STYLE_REFERENCE_FILE);
-  copyFileSync(sourceImagePath, refDest);
+  await fsCopyFile(sourceImagePath, refDest);
   config.reference_image = `${SWE_ART_DIR}/${STYLE_REFERENCE_FILE}`;
 
   // Write config
-  writeFileSync(resolve(dir, STYLE_LOCK_FILE), JSON.stringify(config, null, 2));
+  await fsWriteFile(resolve(dir, STYLE_LOCK_FILE), JSON.stringify(config, null, 2));
   console.log(`[director:style-lock] locked for ${projectWorkdir} (preset: ${config.preset}, checkpoint: ${config.checkpoint})`);
 }
 
 /**
  * Read the style lock config. Returns null if not locked.
  */
-export function getStyleLock(projectWorkdir: string): StyleLockConfig | null {
+export async function getStyleLock(projectWorkdir: string): Promise<StyleLockConfig | null> {
   const lockPath = resolve(artDir(projectWorkdir), STYLE_LOCK_FILE);
-  if (!existsSync(lockPath)) return null;
   try {
-    return JSON.parse(readFileSync(lockPath, "utf-8")) as StyleLockConfig;
+    return JSON.parse(await fsReadFile(lockPath, "utf-8")) as StyleLockConfig;
   } catch {
     return null;
   }
@@ -84,26 +94,26 @@ export function getStyleLock(projectWorkdir: string): StyleLockConfig | null {
 /**
  * Check if the art style is locked for a project.
  */
-export function isStyleLocked(projectWorkdir: string): boolean {
-  return existsSync(resolve(artDir(projectWorkdir), STYLE_LOCK_FILE));
+export async function isStyleLocked(projectWorkdir: string): Promise<boolean> {
+  return pathExists(resolve(artDir(projectWorkdir), STYLE_LOCK_FILE));
 }
 
 /**
  * Get the absolute path to the style reference image.
  */
-export function getStyleReferencePath(projectWorkdir: string): string | null {
+export async function getStyleReferencePath(projectWorkdir: string): Promise<string | null> {
   const refPath = resolve(artDir(projectWorkdir), STYLE_REFERENCE_FILE);
-  return existsSync(refPath) ? refPath : null;
+  return (await pathExists(refPath)) ? refPath : null;
 }
 
 /**
  * Remove the style lock (for re-exploration).
  */
-export function unlockStyle(projectWorkdir: string): void {
+export async function unlockStyle(projectWorkdir: string): Promise<void> {
   const dir = artDir(projectWorkdir);
   const lockPath = resolve(dir, STYLE_LOCK_FILE);
   const refPath = resolve(dir, STYLE_REFERENCE_FILE);
-  try { unlinkSync(lockPath); } catch { /* doesn't exist */ }
-  try { unlinkSync(refPath); } catch { /* doesn't exist */ }
+  try { await fsUnlink(lockPath); } catch { /* doesn't exist */ }
+  try { await fsUnlink(refPath); } catch { /* doesn't exist */ }
   console.log(`[director:style-lock] unlocked for ${projectWorkdir}`);
 }

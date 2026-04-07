@@ -5,10 +5,10 @@
  * Tools: madge (dependency graph), ts-morph (code metrics), git log (churn)
  */
 
-import { spawnSync } from "child_process";
+import { runProcess } from "./util/async-process";
+import { readFile as fsReadFile, readdir as fsReaddir } from "fs/promises";
 import { getChurnLog } from "./git-helpers";
 import { resolve, relative } from "path";
-import { readdirSync, readFileSync } from "fs";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -58,25 +58,18 @@ export interface StaticScanResult {
 
 // ─── Dependency Graph (madge) ───────────────────────────────────────────────
 
-function scanDependencyGraph(workdir: string): DepGraph {
+async function scanDependencyGraph(workdir: string): Promise<DepGraph> {
   try {
-    const result = spawnSync("npx", ["madge", "--json", "--ts-config", "tsconfig.json", "src"], {
-      cwd: workdir,
-      encoding: "utf-8",
-      timeout: 30_000,
-      shell: true,
-    });
+    const [result, circResult] = await Promise.all([
+      runProcess("npx", ["madge", "--json", "--ts-config", "tsconfig.json", "src"], {
+        cwd: workdir, timeoutMs: 30_000, shell: true,
+      }),
+      runProcess("npx", ["madge", "--circular", "--json", "--ts-config", "tsconfig.json", "src"], {
+        cwd: workdir, timeoutMs: 30_000, shell: true,
+      }),
+    ]);
     const files = result.stdout ? JSON.parse(result.stdout) as Record<string, string[]> : {};
-
-    // Also get circular deps
-    const circResult = spawnSync("npx", ["madge", "--circular", "--json", "--ts-config", "tsconfig.json", "src"], {
-      cwd: workdir,
-      encoding: "utf-8",
-      timeout: 30_000,
-      shell: true,
-    });
     const circular = circResult.stdout ? JSON.parse(circResult.stdout) as string[][] : [];
-
     return { files, circular };
   } catch (err) {
     console.error("[analysis:static-scan] madge failed:", err);
@@ -86,24 +79,25 @@ function scanDependencyGraph(workdir: string): DepGraph {
 
 // ─── Code Metrics (lightweight — no ts-morph, just file scanning) ───────────
 
-function scanCodeMetrics(workdir: string): FileMetrics[] {
+async function scanCodeMetrics(workdir: string): Promise<FileMetrics[]> {
   const metrics: FileMetrics[] = [];
   // Start from src/ if it exists, otherwise the workdir itself
   const srcDir = resolve(workdir, "src");
-  const startDir = readdirSync(workdir).includes("src") ? srcDir : workdir;
+  const rootEntries = await fsReaddir(workdir);
+  const startDir = rootEntries.includes("src") ? srcDir : workdir;
 
-  function walk(dir: string) {
+  async function walk(dir: string): Promise<void> {
     try {
-      const entries = readdirSync(dir, { withFileTypes: true });
+      const entries = await fsReaddir(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
         const fullPath = resolve(dir, entry.name);
         if (entry.isDirectory()) {
-          walk(fullPath);
+          await walk(fullPath);
         } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
           if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".test.tsx")) continue;
           try {
-            const content = readFileSync(fullPath, "utf-8");
+            const content = await fsReadFile(fullPath, "utf-8");
             const relPath = relative(workdir, fullPath).replace(/\\/g, "/");
             const lines = content.split("\n").length;
 
@@ -138,15 +132,15 @@ function scanCodeMetrics(workdir: string): FileMetrics[] {
     } catch { /* skip unreadable dirs */ }
   }
 
-  walk(startDir);
+  await walk(startDir);
   return metrics;
 }
 
 // ─── Git Churn ──────────────────────────────────────────────────────────────
 
-function scanGitChurn(workdir: string): GitChurnEntry[] {
+async function scanGitChurn(workdir: string): Promise<GitChurnEntry[]> {
   try {
-    const output = getChurnLog(workdir, 90);
+    const output = await getChurnLog(workdir, 90);
     if (!output) return [];
     const result = { stdout: output };
 
@@ -218,9 +212,9 @@ export async function runStaticScan(workdir: string): Promise<StaticScanResult> 
   console.log("[analysis] running static pre-scan...");
   const start = Date.now();
 
-  const depGraph = scanDependencyGraph(workdir);
-  const metrics = scanCodeMetrics(workdir);
-  const churn = scanGitChurn(workdir);
+  const depGraph = await scanDependencyGraph(workdir);
+  const metrics = await scanCodeMetrics(workdir);
+  const churn = await scanGitChurn(workdir);
   const deadExports = findDeadExports(metrics, depGraph);
 
   const totalFunctions = metrics.reduce((sum, f) => sum + f.functions.length, 0);

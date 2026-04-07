@@ -63,7 +63,7 @@ export async function planNextTasks(
     includeTaskSummaries: true,
     maxRecentTasks: 10,
   });
-  const workflowManifest = loadWorkflowManifest(project.workdir);
+  const workflowManifest = await loadWorkflowManifest(project.workdir);
   const workflowSummary = workflowManifest ? summarizeManifestForPrompt(workflowManifest) : null;
 
   const { system, user } = buildPlanningPrompt({
@@ -170,7 +170,7 @@ export async function planNextTasks(
     }
   }
 
-  const parsedTasks = postProcessArtTasks(rawTasks, project.workdir);
+  const parsedTasks = await postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
     const rawCount = parseNextTasks(resultText).length;
@@ -257,7 +257,7 @@ export async function planNextTasks(
 
     if (decision.action === "drop") {
       console.warn(`[director:planner] dropping duplicate task — ${decision.reason}`);
-      logEpisodic(project.workdir, `Planner generated a duplicate of already-done work: ${decision.reason}`, "");
+      await logEpisodic(project.workdir, `Planner generated a duplicate of already-done work: ${decision.reason}`, "");
       batchMap.set(i + 1, null);
       droppedDuplicates++;
       continue;
@@ -396,7 +396,7 @@ export async function planNextTasks(
     }
     console.log(`[director:planner] created ${created} task(s) in ${totalTime}s — ${createdTitles.join(", ")}`);
     const taskTypes = parsedTasks.map(t => t.type).join(", ");
-    logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
+    await logEpisodic(project.workdir, `Planned ${created} task(s) for "${milestone.title}"`, `Types: ${taskTypes}${idleMachineTypes?.length ? ` (top-up for idle: ${idleMachineTypes.join(", ")})` : ""}`);
     nudgeForeman(db);
   } else {
     const skipped = rawTasks.length;

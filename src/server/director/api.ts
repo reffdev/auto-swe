@@ -3,7 +3,7 @@
  */
 
 import { Router } from "express";
-import { spawnSync } from "child_process";
+import { runProcess } from "../util/async-process";
 import type { Db } from "../db";
 import { getUnattributedCommits } from "./unattributed-commits";
 import { generateDirectorResponse, getDirectorStream, isDirectorGenerating } from "./conversation";
@@ -374,14 +374,14 @@ export function createDirectorRouter(db: Db): Router {
 
   // ─── Manual Commits ─────────────────────────────────────────────────────
 
-  router.get("/unattributed-commits", (req, res) => {
+  router.get("/unattributed-commits", async (req, res) => {
     const { project_id } = req.query as { project_id?: string };
     if (!project_id) return res.status(400).json({ error: "project_id required" });
 
     const project = db.getProject(project_id);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    const commits = getUnattributedCommits(db, project);
+    const commits = await getUnattributedCommits(db, project);
     res.json({ commits });
   });
 
@@ -389,7 +389,7 @@ export function createDirectorRouter(db: Db): Router {
    * Submit manual commits as a completed task.
    * Creates a foreman task with status=completed, linking the commit SHAs.
    */
-  router.post("/submit-commits", (req, res) => {
+  router.post("/submit-commits", async (req, res) => {
     const { project_id, title, description, commit_shas, directive_id, milestone_id } = req.body as {
       project_id: string;
       title: string;
@@ -410,8 +410,8 @@ export function createDirectorRouter(db: Db): Router {
     let diffSummary = "";
     try {
       for (const sha of commit_shas) {
-        const diff = spawnSync("git", ["show", "--stat", sha], {
-          cwd: project.workdir, encoding: "utf-8", timeout: 10_000,
+        const diff = await runProcess("git", ["show", "--stat", sha], {
+          cwd: project.workdir, timeoutMs: 10_000,
         });
         if (diff.status === 0) diffSummary += diff.stdout + "\n";
       }
@@ -445,8 +445,8 @@ export function createDirectorRouter(db: Db): Router {
     // Use the earliest commit's date as completed_at for chronological ordering
     let completedAt = new Date().toISOString();
     try {
-      const dateResult = spawnSync("git", ["show", "-s", "--format=%aI", commit_shas[commit_shas.length - 1]], {
-        cwd: project.workdir, encoding: "utf-8", timeout: 5_000,
+      const dateResult = await runProcess("git", ["show", "-s", "--format=%aI", commit_shas[commit_shas.length - 1]], {
+        cwd: project.workdir, timeoutMs: 5_000,
       });
       if (dateResult.status === 0 && dateResult.stdout.trim()) {
         completedAt = new Date(dateResult.stdout.trim()).toISOString();

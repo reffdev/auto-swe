@@ -7,7 +7,7 @@
  * - Project memory: CLAUDE.md, design doc, git history (read from disk)
  */
 
-import { readFileSync, existsSync } from "fs";
+import { readFile as fsReadFile } from "fs/promises";
 import { resolve } from "path";
 import type { Db, DirectorDirective, Project } from "../db";
 import { gatherProjectContext } from "../pipeline/nodes";
@@ -103,14 +103,14 @@ export async function assembleDirectorContext(
   const maxRecentTasks = opts?.maxRecentTasks ?? 10;
 
   // 1. Project CLAUDE.md
-  const claudeMd = tryReadFile(resolve(project.workdir, "CLAUDE.md"));
+  const claudeMd = await tryReadFile(resolve(project.workdir, "CLAUDE.md"));
   if (claudeMd) {
     parts.push("# Project Rules (CLAUDE.md)\n\n" + claudeMd);
   }
 
   // 2. Generated design doc
   if (directive.design_doc_path) {
-    const designDoc = tryReadFile(resolve(project.workdir, directive.design_doc_path));
+    const designDoc = await tryReadFile(resolve(project.workdir, directive.design_doc_path));
     if (designDoc) {
       parts.push("# Design Document\n\n" + designDoc);
     }
@@ -120,7 +120,7 @@ export async function assembleDirectorContext(
   if (directive.design_docs) {
     const docPaths: string[] = JSON.parse(directive.design_docs);
     for (const docPath of docPaths) {
-      const content = tryReadFile(resolve(project.workdir, docPath));
+      const content = await tryReadFile(resolve(project.workdir, docPath));
       if (content) {
         parts.push(`# Reference: ${docPath}\n\n` + content);
       }
@@ -194,7 +194,7 @@ export async function assembleDirectorContext(
   }
 
   // 7. Art style status
-  const styleLock = getStyleLock(project.workdir);
+  const styleLock = await getStyleLock(project.workdir);
   if (styleLock) {
     parts.push(`# Art Style (LOCKED)\n\nPreset: ${styleLock.preset}\nCheckpoint: ${styleLock.checkpoint}\nStyle prefix: "${styleLock.prompt_style_prefix}"\nIP-Adapter: ${styleLock.ip_adapter_model} @ ${styleLock.ip_adapter_weight}\nLocked: ${styleLock.locked_at}`);
   } else {
@@ -231,7 +231,7 @@ export async function assembleDirectorContext(
 
   // 8. Project filesystem state (directory listing, key files)
   try {
-    const projectState = gatherProjectContext(project.workdir);
+    const projectState = await gatherProjectContext(project.workdir);
     if (projectState.context) {
       parts.push("# Project Filesystem State\n\n" + projectState.context);
     }
@@ -278,10 +278,9 @@ function buildMemorySearchQuery(
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
-function tryReadFile(path: string): string | null {
+async function tryReadFile(path: string): Promise<string | null> {
   try {
-    if (!existsSync(path)) return null;
-    return readFileSync(path, "utf-8");
+    return await fsReadFile(path, "utf-8");
   } catch {
     return null;
   }

@@ -56,14 +56,14 @@ export async function postProcessImage(
     await pipeline.png().toFile(tempPath);
 
     // Replace original
-    const { renameSync } = await import("fs");
-    renameSync(tempPath, imagePath);
+    const { rename: fsRename } = await import("fs/promises");
+    await fsRename(tempPath, imagePath);
 
     return true;
   } catch (err) {
     console.warn(`[foreman:post-process] failed for ${imagePath}:`, err instanceof Error ? err.message : err);
     // Clean up temp file if it was created
-    try { const { unlinkSync } = await import("fs"); unlinkSync(imagePath + ".tmp"); } catch { /* doesn't exist */ }
+    try { const { unlink: fsUnlink } = await import("fs/promises"); await fsUnlink(imagePath + ".tmp"); } catch { /* doesn't exist */ }
     return false;
   }
 }

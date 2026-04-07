@@ -10,8 +10,9 @@
  * Docs: https://github.com/zilliztech/memsearch
  */
 
-import { spawn, spawnSync } from "child_process";
+import { spawn } from "child_process";
 import { resolve } from "path";
+import { runProcess } from "../util/async-process";
 
 const SEARCH_TIMEOUT_MS = 10_000;
 
@@ -27,14 +28,20 @@ export interface SearchResult {
 
 let memsearchAvailable: boolean | null = null;
 
-/** Check if memsearch CLI is installed. Cached after first check. */
-export function isMemsearchAvailable(): boolean {
-  if (memsearchAvailable !== null) return memsearchAvailable;
+/**
+ * Eagerly probe whether the `memsearch` CLI is installed.
+ *
+ * Started at module load (see `void probeMemsearch()` below). Once the probe
+ * resolves, `isMemsearchAvailable()` — which is called from many sync contexts
+ * (tick loops, tool dispatch) — returns the cached boolean immediately without
+ * blocking on an async check.
+ *
+ * The probe itself uses the async subprocess helper so startup doesn't block
+ * the event loop.
+ */
+async function probeMemsearch(): Promise<void> {
   try {
-    const result = spawnSync("memsearch", ["--version"], {
-      encoding: "utf-8",
-      timeout: 5000,
-    });
+    const result = await runProcess("memsearch", ["--version"], { timeoutMs: 5_000 });
     memsearchAvailable = result.status === 0;
   } catch {
     memsearchAvailable = false;
@@ -42,7 +49,16 @@ export function isMemsearchAvailable(): boolean {
   if (!memsearchAvailable) {
     console.log("MemSearch not installed — semantic memory search disabled. Install with: pip install \"memsearch[onnx]\"");
   }
-  return memsearchAvailable;
+}
+void probeMemsearch();
+
+/**
+ * Sync check for memsearch availability. Returns false until the probe
+ * completes (first few ms of startup). This is intentional — we prefer to
+ * briefly report "unavailable" during startup over blocking the event loop.
+ */
+export function isMemsearchAvailable(): boolean {
+  return memsearchAvailable === true;
 }
 
 // ─── Memory Paths ───────────────────────────────────────────────────────────
@@ -118,7 +134,7 @@ async function doIndex(projectWorkdir: string): Promise<boolean> {
 
   // Ensure dirs exist before indexing
   const { ensureMemoryDirs } = await import("./persistent-memory");
-  ensureMemoryDirs(projectWorkdir);
+  await ensureMemoryDirs(projectWorkdir);
 
   const paths = getMemoryPaths(projectWorkdir);
 
@@ -328,8 +344,8 @@ export function makeMemoryTools(projectWorkdir: string) {
         content: z.string().describe("Full markdown content of the project brief (replaces existing)"),
       }),
       execute: async ({ content }) => {
-        const previous = readProjectBrief(projectWorkdir);
-        writeProjectBrief(projectWorkdir, content);
+        const previous = await readProjectBrief(projectWorkdir);
+        await writeProjectBrief(projectWorkdir, content);
         const action = previous ? "Updated" : "Created";
         const warning = content.length > 3000
           ? ` ⚠️ Brief is ${content.length} chars — consider trimming to under 3000 for context efficiency.`
@@ -358,8 +374,8 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-        const existing = readMemory(projectWorkdir, "semantic", fname);
-        writeMemory(projectWorkdir, "semantic", fname, content);
+        const existing = await readMemory(projectWorkdir, "semantic", fname);
+        await writeMemory(projectWorkdir, "semantic", fname, content);
         return existing
           ? `Updated semantic memory: ${fname}`
           : `Created semantic memory: ${fname}`;
@@ -395,7 +411,7 @@ export function makeMemoryTools(projectWorkdir: string) {
           return `Use updateProjectBrief to maintain ${PROJECT_BRIEF_FILENAME}, not writeConvention.`;
         }
         try {
-          const result = writeConvention(projectWorkdir, fname, content);
+          const result = await writeConvention(projectWorkdir, fname, content);
           return result.created
             ? `Created convention: ${fname}`
             : `Updated convention: ${fname}`;
@@ -419,8 +435,8 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-        const existing = readMemory(projectWorkdir, "procedural", fname);
-        writeMemory(projectWorkdir, "procedural", fname, content);
+        const existing = await readMemory(projectWorkdir, "procedural", fname);
+        await writeMemory(projectWorkdir, "procedural", fname, content);
         return existing
           ? `Updated procedure: ${fname}`
           : `Created procedure: ${fname}`;
@@ -438,7 +454,7 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ category }) => {
         if (category === "convention") {
-          const entries = readConventions(projectWorkdir);
+          const entries = await readConventions(projectWorkdir);
           if (entries.length === 0) {
             return "No convention files. (PROJECT_BRIEF.md is managed separately via updateProjectBrief.)";
           }
@@ -446,7 +462,7 @@ export function makeMemoryTools(projectWorkdir: string) {
             .map(e => `- **${e.filename}** (updated: ${e.updatedAt.toISOString().slice(0, 10)})`)
             .join("\n");
         }
-        const entries = readMemoryCategory(projectWorkdir, category as MemoryCategory);
+        const entries = await readMemoryCategory(projectWorkdir, category as MemoryCategory);
         if (entries.length === 0) {
           return `No files in ${category} memory.`;
         }
@@ -469,13 +485,13 @@ export function makeMemoryTools(projectWorkdir: string) {
         if (category === "convention") {
           const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
           if (fname === PROJECT_BRIEF_FILENAME) {
-            const brief = readProjectBrief(projectWorkdir);
+            const brief = await readProjectBrief(projectWorkdir);
             return brief ?? `${PROJECT_BRIEF_FILENAME} does not exist yet.`;
           }
-          const content = readConvention(projectWorkdir, fname);
+          const content = await readConvention(projectWorkdir, fname);
           return content ?? `File not found: convention/${fname}`;
         }
-        const content = readMemory(projectWorkdir, category as MemoryCategory, filename);
+        const content = await readMemory(projectWorkdir, category as MemoryCategory, filename);
         if (!content) {
           return `File not found: ${category}/${filename}`;
         }
@@ -498,8 +514,8 @@ export function makeMemoryTools(projectWorkdir: string) {
       execute: async ({ category, filename, old_text, new_text }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         const content = category === "convention"
-          ? readConvention(projectWorkdir, fname)
-          : readMemory(projectWorkdir, category as MemoryCategory, fname);
+          ? await readConvention(projectWorkdir, fname)
+          : await readMemory(projectWorkdir, category as MemoryCategory, fname);
 
         if (!content) {
           return `File not found: ${category}/${fname}`;
@@ -510,9 +526,9 @@ export function makeMemoryTools(projectWorkdir: string) {
 
         const updated = content.replace(old_text, new_text);
         if (category === "convention") {
-          writeConvention(projectWorkdir, fname, updated);
+          await writeConvention(projectWorkdir, fname, updated);
         } else {
-          writeMemory(projectWorkdir, category as MemoryCategory, fname, updated);
+          await writeMemory(projectWorkdir, category as MemoryCategory, fname, updated);
         }
         return `Edited ${category}/${fname}`;
       },
@@ -529,21 +545,23 @@ export function makeMemoryTools(projectWorkdir: string) {
       execute: async ({ category, filename }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         const { createSnapshot } = await import("./persistent-memory");
-        createSnapshot(projectWorkdir, `pre-delete-${fname.replace(".md", "")}`);
+        await createSnapshot(projectWorkdir, `pre-delete-${fname.replace(".md", "")}`);
 
         if (category === "convention") {
-          const deleted = deleteConvention(projectWorkdir, fname);
+          const deleted = await deleteConvention(projectWorkdir, fname);
           return deleted
             ? `Deleted convention/${fname} (snapshot created)`
             : `File not found: convention/${fname}`;
         }
 
-        const fs = await import("fs");
+        const { unlink: fsUnlink, stat: fsStat } = await import("fs/promises");
         const filePath = resolve(categoryDir(projectWorkdir, category as MemoryCategory), fname);
-        if (!fs.existsSync(filePath)) {
+        try {
+          await fsStat(filePath);
+        } catch {
           return `File not found: ${category}/${fname}`;
         }
-        fs.unlinkSync(filePath);
+        await fsUnlink(filePath);
         return `Deleted ${category}/${fname} (snapshot created)`;
       },
     }),

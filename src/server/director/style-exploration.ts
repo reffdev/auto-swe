@@ -10,7 +10,7 @@
 import { generate } from "../llm";
 import { withLlmSession } from "../llm-dispatch";
 import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
-import { readFileSync, existsSync } from "fs";
+import { readFile as fsReadFile } from "fs/promises";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } from "../db";
 
@@ -146,7 +146,7 @@ export async function createStyleExplorationTask(
   });
 
   console.log(`[director:style] created task ${task.id} for project "${project.name}"`);
-  logEpisodic(project.workdir, "Created style exploration task", `${stylePrompts.length} style prompts generated`);
+  await logEpisodic(project.workdir, "Created style exploration task", `${stylePrompts.length} style prompts generated`);
   nudgeForeman(db);
 
   return task.id;
@@ -169,7 +169,7 @@ export async function queueContinuousExploration(
   if (!project) return;
 
   // Check stop conditions
-  if (isStyleLocked(project.workdir)) {
+  if (await isStyleLocked(project.workdir)) {
     console.log("[director:continuous] style already locked, stopping");
     return;
   }
@@ -278,12 +278,12 @@ async function gatherArtContext(db: Db, directive: DirectorDirective, project: P
 
   // Design docs — may contain art direction, theme, mood references
   if (directive.design_doc_path) {
-    try { parts.push(readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8")); } catch { /* skip */ }
+    try { parts.push(await fsReadFile(resolve(project.workdir, directive.design_doc_path), "utf-8")); } catch { /* skip */ }
   }
   if (directive.design_docs) {
     try {
       for (const p of JSON.parse(directive.design_docs) as string[]) {
-        try { parts.push(readFileSync(resolve(project.workdir, p), "utf-8")); } catch { /* skip */ }
+        try { parts.push(await fsReadFile(resolve(project.workdir, p), "utf-8")); } catch { /* skip */ }
       }
     } catch { /* skip */ }
   }
@@ -296,7 +296,7 @@ async function gatherArtContext(db: Db, directive: DirectorDirective, project: P
     }
   } else {
     // Fallback: include all conventions (they're short)
-    for (const entry of readConventions(project.workdir)) {
+    for (const entry of await readConventions(project.workdir)) {
       parts.push(entry.content);
     }
   }

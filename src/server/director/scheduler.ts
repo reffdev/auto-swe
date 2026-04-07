@@ -88,9 +88,9 @@ export function getGlobalDb(): Db | null { return schedulerDb; }
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** Check if the project has comfyui machines and no locked style. */
-function needsStyleLock(db: Db, project: Project): boolean {
+async function needsStyleLock(db: Db, project: Project): Promise<boolean> {
   const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
-  return hasComfyUI && !isStyleLocked(project.workdir);
+  return hasComfyUI && !(await isStyleLocked(project.workdir));
 }
 
 /**
@@ -197,7 +197,9 @@ export function startDirectorScheduler(db: Db): void {
     if (project) {
       indexMemories(project.workdir).catch(() => {});
       if (config.enabled) {
-        ensureStyleExploration(db, project);
+        void ensureStyleExploration(db, project).catch(err =>
+          console.warn("[director] startup ensureStyleExploration failed:", err instanceof Error ? err.message : err),
+        );
       }
     }
   }
@@ -213,8 +215,8 @@ export function stopDirectorScheduler(): void {
  * On startup or when style is needed, check if the project needs a style exploration task.
  * Sets directorBusy while the LLM generates the art prompt.
  */
-export function ensureStyleExploration(db: Db, project: Project): void {
-  if (isStyleLocked(project.workdir)) return;
+export async function ensureStyleExploration(db: Db, project: Project): Promise<void> {
+  if (await isStyleLocked(project.workdir)) return;
 
   const allStyleTasks = db.getForemanTasks(project.id).filter(
     (t: ForemanTask) => t.type === "style_exploration" && !getConfig(t)?.enhance
@@ -269,7 +271,7 @@ export function ensureStyleExploration(db: Db, project: Project): void {
 async function ensureContinuousExploration(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
   const config = db.getForemanConfig();
   if (!config?.continuous_exploration) return;
-  if (isStyleLocked(project.workdir)) return;
+  if (await isStyleLocked(project.workdir)) return;
 
   const styleTasks = db.getForemanTasks(project.id).filter(
     (t: ForemanTask) => t.type === "style_exploration" && !getConfig(t)?.enhance
@@ -287,7 +289,7 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
   // Archive current assets
   const runs = db.getForemanRunsForTask(idle.id);
   const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
-  archiveCurrentAssets(project.workdir, idle, attempt);
+  await archiveCurrentAssets(project.workdir, idle, attempt);
 
   // Generate fresh prompts and re-queue
   console.log(`[director] continuous exploration — archived run ${attempt}, generating fresh prompts`);
@@ -394,8 +396,8 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
 
   try {
     // Ensure style exploration is running (doesn't block code work)
-    if (needsStyleLock(db, project)) {
-      ensureStyleExploration(db, project);
+    if (await needsStyleLock(db, project)) {
+      await ensureStyleExploration(db, project);
     }
 
     // Continuous exploration: if enabled and no style task is queued/running, queue the next batch
@@ -410,7 +412,7 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
     await verifyAwaitingTasks(db, directive, project);
     await handleFailedTasks(db, directive);
     await advanceMilestone(db, directive, project);
-    checkForUnattributedCommits(db, directive, project);
+    await checkForUnattributedCommits(db, directive, project);
     await processKnowledgeExtraction(db, project);
 
     // Review gates are informational — the Director continues working on other tasks
@@ -426,14 +428,14 @@ async function processActiveDirective(db: Db, directive: DirectorDirective): Pro
  * Check if there are commits on main not linked to any foreman task.
  * Creates a single review gate notification if found (deduped).
  */
-function checkForUnattributedCommits(db: Db, directive: DirectorDirective, project: Project): void {
+async function checkForUnattributedCommits(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
   // Check for any pending or recently responded gate about unattributed commits
   const existing = db.getDirectorReviews(directive.id).filter(
     r => r.review_type === "task_verify" && (r.status === "pending" || r.status === "responded") && r.question.includes("unattributed commits")
   );
   if (existing.length > 0) return;
 
-  const unattributed = getUnattributedCommits(db, project);
+  const unattributed = await getUnattributedCommits(db, project);
   if (unattributed.length > 0) {
     createReviewGate(db, {
       directive_id: directive.id,
@@ -520,7 +522,7 @@ async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project,
     db.updateForemanTask(task.id, { git_worktree: null });
   }
   console.log(`[director] completed task "${task.title}" (confidence: ${confidence})`);
-  logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${confidence}`);
+  await logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${confidence}`);
   if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
   nudgeForeman(db);
 }
@@ -615,7 +617,7 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
     } else if (result.verdict === "fail") {
       db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
       console.log(`[director] task "${task.title}" failed verification: ${result.issues.join("; ")}`);
-      logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
+      await logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
     } else {
       // confidence === 0 is a hard signal that the verifier did NOT actually
       // evaluate the work (wall-clock timeout, step limit, parser failure with
@@ -745,7 +747,7 @@ async function completeMilestone(
     zeroTaskCounts.delete(milestone.id);
     db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString() });
     console.log(`[director] milestone "${milestone.title}" completed`);
-    logEpisodic(project.workdir, `Milestone completed: "${milestone.title}"`, `Tasks: ${taskCount}`);
+    await logEpisodic(project.workdir, `Milestone completed: "${milestone.title}"`, `Tasks: ${taskCount}`);
 
     if (shouldEscalate(directive.autonomy_level, "milestone_complete")) {
       const existing = db.getDirectorReviews(directive.id).filter(r => r.milestone_id === milestone.id && r.status === "pending");
@@ -769,12 +771,12 @@ async function completeMilestone(
     } else {
       db.updateDirectorDirective(directive.id, { status: "completed", completed_at: new Date().toISOString() });
       console.log(`[director] directive "${directive.directive}" completed!`);
-      logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
+      await logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
     }
   } else {
     db.updateDirectorMilestone(milestone.id, { status: "active" });
     console.log(`[director] milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
-    logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
+    await logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
     await planTasks(db, directive, project, milestone, "corrective", verification.issues);
   }
 }
@@ -917,7 +919,7 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
           if (task) {
             const runs = db.getForemanRunsForTask(task.id);
             const attempt = runs.length > 0 ? Math.max(...runs.map(r => r.attempt)) : 1;
-            archiveCurrentAssets(project.workdir, task, attempt);
+            await archiveCurrentAssets(project.workdir, task, attempt);
             console.log(`[director] archived style exploration run ${attempt}, re-queuing with same prompts`);
           }
           db.updateForemanTask(review.task_id, {
@@ -931,7 +933,7 @@ async function processRespondedReviews(db: Db, directive: DirectorDirective, pro
       case "lock_style": {
         if (review.task_id) {
           try {
-            handleStyleLock(db, directive, project, review.task_id, review.id, result.context);
+            await handleStyleLock(db, directive, project, review.task_id, review.id, result.context);
           } catch (err) {
             console.error("[director] style lock failed:", err instanceof Error ? err.message : err);
             db.updateForemanTask(review.task_id, {

@@ -5,7 +5,7 @@
  * Reuses runStage() from the pipeline for the actual LLM execution.
  */
 
-import { readFileSync } from "fs";
+import { readFile as fsReadFile } from "fs/promises";
 import { resolve } from "path";
 import type { Db, Project, ForemanTask } from "../db";
 import { runStage, StageStepLimitError, StageWallTimeoutError } from "../pipeline/run-stage";
@@ -259,7 +259,7 @@ async function runInferenceTaskWithSession(
         directiveText = directive.directive;
         if (directive.design_doc_path) {
           try {
-            designDoc = readFileSync(resolve(project.workdir, directive.design_doc_path), "utf-8");
+            designDoc = await fsReadFile(resolve(project.workdir, directive.design_doc_path), "utf-8");
           } catch { /* skip — file may not exist */ }
         }
       }

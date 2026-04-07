@@ -7,7 +7,7 @@
  * with [workflow:], [params:], and [output:] tags.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { readFile as fsReadFile } from "fs/promises";
 import { resolve } from "path";
 
 /** Resolved path to the comfyui-workflows directory for a project */
@@ -56,14 +56,14 @@ export interface WorkflowManifest {
  * Load the workflow manifest for a project.
  * Returns null if no manifest exists (ComfyUI not configured for this project).
  */
-export function loadWorkflowManifest(projectWorkdir: string): WorkflowManifest | null {
+export async function loadWorkflowManifest(projectWorkdir: string): Promise<WorkflowManifest | null> {
   const manifestPath = resolve(getWorkflowDir(projectWorkdir), "manifest.json");
-  if (!existsSync(manifestPath)) return null;
-
   try {
-    const raw = readFileSync(manifestPath, "utf-8");
+    const raw = await fsReadFile(manifestPath, "utf-8");
     return JSON.parse(raw) as WorkflowManifest;
   } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === "ENOENT") return null;
     console.error(`[foreman] failed to load workflow manifest at ${manifestPath}:`, err);
     return null;
   }

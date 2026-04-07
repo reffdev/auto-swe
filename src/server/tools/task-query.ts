@@ -86,8 +86,8 @@ export function makeTaskQueryTools(db: Db, projectId: string, workdir: string) {
         if (!task.git_branch) return `Task "${task.title}" has no git branch`;
 
         try {
-          fetchOrigin(workdir);
-          const { stat, diff } = getDiffBetween(workdir, "origin/main", `origin/${task.git_branch}`);
+          await fetchOrigin(workdir);
+          const { stat, diff } = await getDiffBetween(workdir, "origin/main", `origin/${task.git_branch}`);
           if (!diff.trim()) return `No changes found on branch ${task.git_branch}`;
           return `## ${task.title}\nBranch: ${task.git_branch}\n\n${stat}\n\n${diff}`;
         } catch (err) {

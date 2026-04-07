@@ -3,11 +3,15 @@
  * and milestones. Called once when the user approves the directive plan.
  */
 
-import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { writeFile as fsWriteFile, mkdir as fsMkdir, stat as fsStat } from "fs/promises";
 import { resolve, dirname } from "path";
-import { spawnSync } from "child_process";
+import { runProcess } from "../util/async-process";
 import type { Db, DirectorDirective, Project } from "../db";
 import { parseDesignDoc, parseMilestones } from "./parsers";
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
 
 /**
  * Process the approved conversation: extract design doc and milestones,
@@ -49,15 +53,15 @@ export async function decomposeDirective(
   // Write design doc to project repo
   const designDocPath = directive.design_doc_path || "docs/design.md";
   const fullPath = resolve(project.workdir, designDocPath);
-  mkdirSync(dirname(fullPath), { recursive: true });
-  writeFileSync(fullPath, designDocContent, "utf-8");
+  await fsMkdir(dirname(fullPath), { recursive: true });
+  await fsWriteFile(fullPath, designDocContent, "utf-8");
 
   // Commit the design doc (non-fatal — file is written regardless)
-  if (existsSync(resolve(project.workdir, ".git"))) {
-    const addResult = spawnSync("git", ["add", designDocPath], { cwd: project.workdir });
+  if (await pathExists(resolve(project.workdir, ".git"))) {
+    const addResult = await runProcess("git", ["add", designDocPath], { cwd: project.workdir, timeoutMs: 10_000 });
     if (addResult.status === 0) {
       // Only commit if there are staged changes (avoids "nothing to commit" error)
-      spawnSync("git", ["commit", "-m", `[Director] Add design document for: ${directive.directive.slice(0, 50)}`], { cwd: project.workdir });
+      await runProcess("git", ["commit", "-m", `[Director] Add design document for: ${directive.directive.slice(0, 50)}`], { cwd: project.workdir, timeoutMs: 10_000 });
     }
   }
 

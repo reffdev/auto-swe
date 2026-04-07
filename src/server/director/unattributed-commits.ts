@@ -3,7 +3,7 @@
  * Shared by the director scheduler (notification) and API (manual commits page).
  */
 
-import { spawnSync } from "child_process";
+import { runProcess } from "../util/async-process";
 import type { Db, Project } from "../db";
 
 export interface UnattributedCommit {
@@ -17,16 +17,16 @@ export interface UnattributedCommit {
  * Find commits on the default branch not attributed to any foreman task.
  * Fetches from origin first to see external pushes.
  */
-export function getUnattributedCommits(db: Db, project: Project): UnattributedCommit[] {
+export async function getUnattributedCommits(db: Db, project: Project): Promise<UnattributedCommit[]> {
   // Fetch latest so we see externally pushed commits
   try {
-    spawnSync("git", ["fetch", "origin"], { cwd: project.workdir, timeout: 30_000 });
-    spawnSync("git", ["merge", "--ff-only"], { cwd: project.workdir, timeout: 10_000 });
+    await runProcess("git", ["fetch", "origin"], { cwd: project.workdir, timeoutMs: 30_000 });
+    await runProcess("git", ["merge", "--ff-only"], { cwd: project.workdir, timeoutMs: 10_000 });
   } catch { /* best effort */ }
 
-  const result = spawnSync("git", [
+  const result = await runProcess("git", [
     "log", "--format=%H\t%an\t%aI\t%s", "-100",
-  ], { cwd: project.workdir, encoding: "utf-8", timeout: 10_000 });
+  ], { cwd: project.workdir, timeoutMs: 10_000 });
 
   if (result.status !== 0) return [];
 
@@ -38,9 +38,9 @@ export function getUnattributedCommits(db: Db, project: Project): UnattributedCo
     // Commits on foreman branches
     if (task.git_branch) {
       try {
-        const branchLog = spawnSync("git", [
+        const branchLog = await runProcess("git", [
           "log", "--format=%H", `origin/${task.git_branch}`, "--not", "origin/HEAD",
-        ], { cwd: project.workdir, encoding: "utf-8", timeout: 5_000 });
+        ], { cwd: project.workdir, timeoutMs: 5_000 });
         if (branchLog.status === 0) {
           for (const sha of branchLog.stdout.trim().split("\n").filter(Boolean)) {
             attributedSHAs.add(sha);

@@ -15,24 +15,24 @@ afterEach(() => {
 });
 
 describe("runAndExtractErrors", () => {
-  it('returns "success" for exit code 0', () => {
-    const result = runAndExtractErrors("echo ok", workdir);
+  it('returns "success" for exit code 0', async () => {
+    const result = await runAndExtractErrors("echo ok", workdir);
     expect(result).toBe("success");
   });
 
-  it("extracts TypeScript-style errors", () => {
+  it("extracts TypeScript-style errors", async () => {
     writeFileSync(join(workdir, "errors.txt"),
       'src/file.ts(10,5): error TS2304: Cannot find name "foo".\nother noise\nsrc/bar.ts(3,1): error TS1005: expected ;');
-    const result = runAndExtractErrors(`cat ${join(workdir, "errors.txt")} && exit 1`, workdir);
+    const result = await runAndExtractErrors(`cat ${join(workdir, "errors.txt")} && exit 1`, workdir);
     expect(result).toContain("error TS2304");
     expect(result).toContain("error TS1005");
     expect(result).not.toContain("other noise");
   });
 
-  it("extracts Jest failure lines", () => {
+  it("extracts Jest failure lines", async () => {
     writeFileSync(join(workdir, "errors.txt"),
       'PASS src/ok.test.ts\nFAIL src/bad.test.ts\n  ✕ should work (5ms)\n  Expected: 1\n  Received: 2\n\nTest Suites: 1 failed, 1 passed');
-    const result = runAndExtractErrors(`cat ${join(workdir, "errors.txt")} && exit 1`, workdir);
+    const result = await runAndExtractErrors(`cat ${join(workdir, "errors.txt")} && exit 1`, workdir);
     expect(result).toContain("FAIL");
     expect(result).toContain("Expected: 1");
     expect(result).toContain("Received: 2");
@@ -40,14 +40,14 @@ describe("runAndExtractErrors", () => {
     expect(result).not.toContain("PASS");
   });
 
-  it("falls back to last 30 lines when no patterns match", () => {
-    const result = runAndExtractErrors("echo 'some weird output' && exit 1", workdir);
+  it("falls back to last 30 lines when no patterns match", async () => {
+    const result = await runAndExtractErrors("echo 'some weird output' && exit 1", workdir);
     expect(result).toMatch(/^Exit 1:/);
     expect(result).toContain("some weird output");
   });
 
-  it("handles command that produces no output", () => {
-    const result = runAndExtractErrors("exit 1", workdir);
+  it("handles command that produces no output", async () => {
+    const result = await runAndExtractErrors("exit 1", workdir);
     expect(result).toMatch(/^Exit 1/);
   });
 });

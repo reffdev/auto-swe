@@ -76,7 +76,7 @@ function createActiveDirective() {
 }
 
 describe("ensureStyleExploration", () => {
-  it("does nothing when style is already locked", () => {
+  it("does nothing when style is already locked", async () => {
     createComfyMachine();
     createInferenceMachine();
     createActiveDirective();
@@ -84,7 +84,7 @@ describe("ensureStyleExploration", () => {
     // Lock style
     mkdirSync(join(projectDir, ".swe", "art"), { recursive: true });
     writeFileSync(join(projectDir, ".swe", "art", "style-reference.png"), "ref");
-    lockStyle(projectDir, {
+    await lockStyle(projectDir, {
       checkpoint: "test.safetensors",
       preset: "pixel_sprite",
       prompt_style_prefix: "",
@@ -95,37 +95,37 @@ describe("ensureStyleExploration", () => {
     }, join(projectDir, ".swe", "art", "style-reference.png"));
 
     const project = db.getProject(projectId)!;
-    ensureStyleExploration(db, project);
+    await ensureStyleExploration(db, project);
 
     // Should not create any tasks
     const tasks = db.getForemanTasks(projectId);
     expect(tasks.filter(t => t.type === "style_exploration")).toHaveLength(0);
   });
 
-  it("does nothing when no comfyui machines exist", () => {
+  it("does nothing when no comfyui machines exist", async () => {
     createInferenceMachine(); // only inference, no comfyui
     createActiveDirective();
 
     const project = db.getProject(projectId)!;
-    ensureStyleExploration(db, project);
+    await ensureStyleExploration(db, project);
 
     const tasks = db.getForemanTasks(projectId);
     expect(tasks.filter(t => t.type === "style_exploration")).toHaveLength(0);
   });
 
-  it("does nothing when no active directive exists", () => {
+  it("does nothing when no active directive exists", async () => {
     createComfyMachine();
     createInferenceMachine();
     // No directive created
 
     const project = db.getProject(projectId)!;
-    ensureStyleExploration(db, project);
+    await ensureStyleExploration(db, project);
 
     const tasks = db.getForemanTasks(projectId);
     expect(tasks.filter(t => t.type === "style_exploration")).toHaveLength(0);
   });
 
-  it("does nothing when style_exploration task already exists", () => {
+  it("does nothing when style_exploration task already exists", async () => {
     createComfyMachine();
     createInferenceMachine();
     const { directive } = createActiveDirective();
@@ -140,14 +140,14 @@ describe("ensureStyleExploration", () => {
     });
 
     const project = db.getProject(projectId)!;
-    ensureStyleExploration(db, project);
+    await ensureStyleExploration(db, project);
 
     // Should not create a second one
     const tasks = db.getForemanTasks(projectId).filter(t => t.type === "style_exploration");
     expect(tasks).toHaveLength(1);
   });
 
-  it("re-queues failed style_exploration task", () => {
+  it("re-queues failed style_exploration task", async () => {
     createComfyMachine();
     createInferenceMachine();
     const { directive } = createActiveDirective();
@@ -162,7 +162,7 @@ describe("ensureStyleExploration", () => {
     db.updateForemanTask(task.id, { error_message: "previous failure", retry_count: 3 });
 
     const project = db.getProject(projectId)!;
-    ensureStyleExploration(db, project);
+    await ensureStyleExploration(db, project);
 
     const updated = db.getForemanTask(task.id)!;
     expect(updated.status).toBe("queued");
@@ -172,13 +172,13 @@ describe("ensureStyleExploration", () => {
 
   // This test must run last — it sets module-level directorBusy which
   // can't be cleared without the async LLM call completing
-  it("sets directorBusy when creating new style exploration task", () => {
+  it("sets directorBusy when creating new style exploration task", async () => {
     createComfyMachine();
     createInferenceMachine();
     createActiveDirective();
 
     const project = db.getProject(projectId)!;
-    ensureStyleExploration(db, project);
+    await ensureStyleExploration(db, project);
 
     expect(isDirectorBusy()).toBe(true);
   });

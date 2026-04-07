@@ -10,13 +10,24 @@
  * Ported from mastra-react/src/server/git.ts + github.ts
  */
 
-import { exec, spawn, spawnSync } from "child_process";
+import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import { resolve, dirname } from "path";
-import { readdirSync, existsSync, mkdirSync, rmSync } from "fs";
+import { readdir as fsReaddir, mkdir as fsMkdir, rm as fsRm, stat as fsStat } from "fs/promises";
 import type { Project } from "./db";
+import { runProcess } from "./util/async-process";
 
 const execAsync = promisify(exec);
+
+/** Async existence check — replaces existsSync. Returns false on any error. */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsStat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Run a git command via shell string. Only for commands with NO user input in args. */
 async function git(args: string, cwd: string): Promise<string> {
@@ -88,24 +99,22 @@ async function gitCommit(message: string, cwd: string): Promise<string> {
  * git_remote, re-clone it. Throws if the workdir can't be restored.
  */
 export async function ensureWorkdir(project: Project): Promise<void> {
-  if (existsSync(project.workdir)) return;
+  if (await pathExists(project.workdir)) return;
 
   if (!project.git_remote) {
     throw new Error(`Workdir missing and no git_remote to clone from: ${project.workdir}`);
   }
 
   console.log(`[git] workdir missing, re-cloning ${project.git_remote} → ${project.workdir}`);
-  mkdirSync(dirname(project.workdir), { recursive: true });
+  await fsMkdir(dirname(project.workdir), { recursive: true });
 
   const cloneUrl =
     project.git_server_token
       ? authenticatedRemoteUrl(project.git_remote, project.git_server_token) ?? project.git_remote
       : project.git_remote;
 
-  const result = spawnSync("git", ["clone", cloneUrl, project.workdir], {
-    encoding: "utf-8",
-    timeout: 120_000,
-    stdio: "pipe",
+  const result = await runProcess("git", ["clone", cloneUrl, project.workdir], {
+    timeoutMs: 120_000,
     shell: true,
   });
 
@@ -172,7 +181,7 @@ export async function setupWorktree(
   try {
     // Verify the main workdir exists before any git operations
     try {
-      readdirSync(mainWorkdir);
+      await fsReaddir(mainWorkdir);
     } catch {
       return { ok: false, error: `project workdir does not exist: ${mainWorkdir}` };
     }
@@ -193,7 +202,7 @@ export async function setupWorktree(
     }
 
     // If worktree path already exists, try to reuse or clean it up
-    if (existsSync(worktreePath)) {
+    if (await pathExists(worktreePath)) {
       try {
         const currentBranch = (
           await git("rev-parse --abbrev-ref HEAD", worktreePath)
@@ -248,7 +257,7 @@ export async function setupWorktree(
       } catch {
         // git worktree remove failed — force-remove the directory
         try {
-          rmSync(worktreePath, { recursive: true, force: true });
+          await fsRm(worktreePath, { recursive: true, force: true });
           console.log(`[git] force-removed stale worktree directory`);
         } catch (rmErr) {
           console.error(`[git] failed to remove stale worktree directory:`, rmErr);
@@ -283,7 +292,7 @@ export async function setupWorktree(
     }
 
     // Verify the worktree has files
-    const entries = readdirSync(worktreePath).filter((e) => e !== ".git");
+    const entries = (await fsReaddir(worktreePath)).filter((e) => e !== ".git");
     if (entries.length === 0) {
       const msg = `worktree created but contains no files for ${branch}`;
       console.error(`[git] ${msg}`);
@@ -316,9 +325,9 @@ export async function removeWorktree(
     console.log(`[git] worktree removed ${worktreePath}`);
   } catch {
     // git worktree remove failed — force-remove the directory
-    if (existsSync(worktreePath)) {
+    if (await pathExists(worktreePath)) {
       try {
-        rmSync(worktreePath, { recursive: true, force: true });
+        await fsRm(worktreePath, { recursive: true, force: true });
         console.log(`[git] force-removed worktree directory ${worktreePath}`);
       } catch (rmErr) {
         console.error(`[git] failed to remove worktree directory:`, rmErr);

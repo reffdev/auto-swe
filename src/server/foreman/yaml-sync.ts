@@ -2,7 +2,7 @@
  * Sync Foreman tasks between YAML files on disk and the database.
  */
 
-import { readdirSync, readFileSync } from "fs";
+import { readdir as fsReaddir, readFile as fsReadFile } from "fs/promises";
 import { resolve, extname } from "path";
 import { parse as parseYaml } from "yaml";
 import type { Db } from "../db";
@@ -39,11 +39,11 @@ function resolveYamlModelSlug(db: Db, slug: string | undefined, taskRef: string)
   return model.id;
 }
 
-export function syncTasksFromDisk(
+export async function syncTasksFromDisk(
   db: Db,
   tasksDir: string,
   projectId: string,
-): { imported: number; updated: number; errors: string[] } {
+): Promise<{ imported: number; updated: number; errors: string[] }> {
   let imported = 0;
   let updated = 0;
   const errors: string[] = [];
@@ -51,7 +51,8 @@ export function syncTasksFromDisk(
   // Read all YAML files
   let files: string[];
   try {
-    files = readdirSync(tasksDir).filter(f => {
+    const all = await fsReaddir(tasksDir);
+    files = all.filter(f => {
       const ext = extname(f).toLowerCase();
       return ext === ".yaml" || ext === ".yml";
     });
@@ -66,7 +67,7 @@ export function syncTasksFromDisk(
   for (const file of files) {
     const fullPath = resolve(tasksDir, file);
     try {
-      const content = readFileSync(fullPath, "utf-8");
+      const content = await fsReadFile(fullPath, "utf-8");
       const data = parseYaml(content) as YamlTask;
 
       if (!data || typeof data !== "object") {

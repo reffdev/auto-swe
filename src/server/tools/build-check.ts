@@ -5,18 +5,16 @@
 
 import { z } from "zod";
 import { tool } from "ai";
-import { spawnSync } from "child_process";
+import { runShellCommand } from "../util/async-process";
 import type { SubmitGuard } from "../foreman/submit-guard";
 
 const DEFAULT_BUILD_COMMAND = "npx tsc --noEmit";
 const DEFAULT_TEST_COMMAND = "npx jest --passWithNoTests --no-colors";
 
-export function runAndExtractErrors(command: string, workdir: string): string {
-  const result = spawnSync(command, {
+export async function runAndExtractErrors(command: string, workdir: string): Promise<string> {
+  const result = await runShellCommand(command, {
     cwd: workdir,
-    encoding: "utf-8",
-    timeout: 120_000,
-    shell: true,
+    timeoutMs: 120_000,
     env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
   });
 
@@ -179,7 +177,7 @@ export function makeGatedSubmitTool(workdir: string, opts?: {
       // Run each gate in order — stop at first failure
       for (const gate of gates) {
         console.log(`[foreman] running ${gate.name.toLowerCase()} gate: ${gate.cmd}`);
-        const result = runAndExtractErrors(gate.cmd, workdir);
+        const result = await runAndExtractErrors(gate.cmd, workdir);
         if (result !== "success") {
           console.log(`[foreman] ${gate.name.toLowerCase()} gate failed — returning errors to agent`);
           if (guard) {

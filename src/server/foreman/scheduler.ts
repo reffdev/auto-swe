@@ -87,10 +87,10 @@ function canDispatchTask(db: Db, task: ForemanTask): boolean {
 }
 
 /** Check if code tasks should be blocked pending art style lock. */
-function styleGateActive(db: Db, project: import("../db").Project): boolean {
+async function styleGateActive(db: Db, project: import("../db").Project): Promise<boolean> {
   const hasComfyUI = db.getMachines().some(m => m.machine_type === "comfyui" && m.enabled);
   if (!hasComfyUI) return false;
-  if (isStyleLocked(project.workdir)) return false;
+  if (await isStyleLocked(project.workdir)) return false;
   return db.getDirectorDirectives(project.id).some(
     d => d.status === "active" || d.status === "paused" || d.status === "planning"
   );
@@ -172,7 +172,7 @@ async function schedulerTick(db: Db): Promise<void> {
   }
 
   // Style gate: block code tasks until art style is locked (if ComfyUI machines exist)
-  const needsStyleLock = styleGateActive(db, project);
+  const needsStyleLock = await styleGateActive(db, project);
 
   // Priority mode check
   if (config.priority_mode === "yield") {

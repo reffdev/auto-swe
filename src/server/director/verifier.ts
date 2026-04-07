@@ -9,8 +9,13 @@
 import { generate } from "../llm";
 import { withLlmSession } from "../llm-dispatch";
 import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
-import { spawnSync, execFile } from "child_process";
-import { readFileSync, existsSync } from "fs";
+import { execFile } from "child_process";
+import { readFile as fsReadFile, stat as fsStat } from "fs/promises";
+import { runShellCommand } from "../util/async-process";
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await fsStat(p); return true; } catch { return false; }
+}
 import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
@@ -54,16 +59,17 @@ export async function verifyTask(
     throw err;
   }
 
-  const workdir = resolveTaskWorkdir(task, project);
+  const workdir = await resolveTaskWorkdir(task, project);
 
   // Get git diff and supplemental file contents for initial context
-  const gitDiff = getTaskBranchDiff(workdir, task, project) ?? "(no diff available)";
-  const supplementalFiles = getSupplementalFileContents(workdir, task, gitDiff);
+  const gitDiff = (await getTaskBranchDiff(workdir, task, project)) ?? "(no diff available)";
+  const supplementalFiles = await getSupplementalFileContents(workdir, task, gitDiff);
 
   // Read project conventions: CLAUDE.md (human-curated repo file) + project brief (LLM-managed)
   const claudeMdPath = resolve(workdir, "CLAUDE.md");
-  const claudeMd = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, "utf-8") : null;
-  const projectBrief = readProjectBrief(project.workdir);
+  let claudeMd: string | null = null;
+  try { claudeMd = await fsReadFile(claudeMdPath, "utf-8"); } catch { /* missing is fine */ }
+  const projectBrief = await readProjectBrief(project.workdir);
   const conventionParts: string[] = [];
   if (claudeMd) conventionParts.push(claudeMd);
   if (projectBrief) conventionParts.push("## Project Brief\n\n" + projectBrief);
@@ -221,9 +227,9 @@ export async function verifyMilestone(
   }
 
   // Check for Godot project — use GUT test runner since --check-only hangs in headless mode on 4.4
-  if (existsSync(resolve(project.workdir, "project.godot"))) {
+  if (await pathExists(resolve(project.workdir, "project.godot"))) {
     const gutScript = resolve(project.workdir, "addons/gut/gut_cmdln.gd");
-    if (existsSync(gutScript)) {
+    if (await pathExists(gutScript)) {
       try {
         await execFileAsync("godot", ["--headless", "--script", "res://addons/gut/gut_cmdln.gd", "--path", project.workdir], {
           cwd: project.workdir, timeout: 120_000,
@@ -277,7 +283,7 @@ export async function verifyMilestone(
     .join("\n");
 
   // Read project state
-  const projectState = getProjectState(project.workdir);
+  const projectState = await getProjectState(project.workdir);
 
   const { system, user } = buildMilestoneVerificationPrompt({
     milestoneTitle: milestone.title,
@@ -320,17 +326,18 @@ export async function verifyMilestone(
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function getProjectState(workdir: string): string {
+async function getProjectState(workdir: string): Promise<string> {
   try {
-    const result = spawnSync("find", [workdir, "-maxdepth", "3", "-type", "f", "-not", "-path", "*/\\.*", "-not", "-path", "*/node_modules/*"], {
-      cwd: workdir, timeout: 5_000, shell: true,
-    });
-    return result.stdout?.toString().slice(0, 5000) ?? "(could not list project files)";
+    const result = await runShellCommand(
+      `find "${workdir}" -maxdepth 3 -type f -not -path '*/\\.*' -not -path '*/node_modules/*'`,
+      { cwd: workdir, timeoutMs: 5_000 },
+    );
+    return result.stdout?.slice(0, 5000) || "(could not list project files)";
   } catch {
     // Windows fallback
     try {
-      const result = spawnSync("dir", ["/s", "/b", workdir], { cwd: workdir, timeout: 5_000, shell: true });
-      return result.stdout?.toString().slice(0, 5000) ?? "(could not list project files)";
+      const result = await runShellCommand(`dir /s /b "${workdir}"`, { cwd: workdir, timeoutMs: 5_000 });
+      return result.stdout?.slice(0, 5000) || "(could not list project files)";
     } catch {
       return "(could not list project files)";
     }

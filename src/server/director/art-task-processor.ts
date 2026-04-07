@@ -26,13 +26,13 @@ import { getStyleLock } from "./style-lock";
  * Post-process parsed tasks: inject ComfyUI tags into art/music/sfx tasks.
  * Non-art tasks pass through unchanged.
  */
-export function postProcessArtTasks(
+export async function postProcessArtTasks(
   tasks: ParsedTask[],
   projectWorkdir: string,
-): ParsedTask[] {
-  const manifest = loadWorkflowManifest(projectWorkdir);
+): Promise<ParsedTask[]> {
+  const manifest = await loadWorkflowManifest(projectWorkdir);
 
-  const styleLock = getStyleLock(projectWorkdir);
+  const styleLock = await getStyleLock(projectWorkdir);
 
   return tasks.map(task => {
     if (!COMFYUI_TASK_TYPES.has(task.type)) return task;

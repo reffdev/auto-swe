@@ -6,9 +6,8 @@ import type { LangGraphRunnableConfig } from "@langchain/langgraph";
 import { tool as aiTool, type ToolSet } from "ai";
 import { generate, stream as llmStream } from "../llm";
 import { z } from "zod";
-import { readFileSync, readdirSync } from "fs";
+import { readFile as fsReadFile, readdir as fsReaddir } from "fs/promises";
 import { join, resolve } from "path";
-import { spawnSync } from "child_process";
 import { getStatus, getDiffStat, getDiff, getHeadCommitFull, getChangedFiles } from "../git-helpers";
 
 import type { PipelineStateType, PipelineConfig } from "./state";
@@ -71,7 +70,7 @@ const AUTO_READ_FILES = [
  * Read key project files from the worktree and build a context section.
  * Returns the context string and the total chars injected.
  */
-export function gatherProjectContext(worktreePath: string): { context: string; fileCount: number; totalChars: number; loadedFiles: string[] } {
+export async function gatherProjectContext(worktreePath: string): Promise<{ context: string; fileCount: number; totalChars: number; loadedFiles: string[] }> {
   const sections: string[] = [];
   let totalChars = 0;
   const loadedFiles: string[] = [];
@@ -79,7 +78,7 @@ export function gatherProjectContext(worktreePath: string): { context: string; f
   // Auto-read key files — full content, no truncation
   for (const filename of AUTO_READ_FILES) {
     try {
-      const content = readFileSync(join(worktreePath, filename), "utf-8").replace(/\r\n/g, "\n");
+      const content = (await fsReadFile(join(worktreePath, filename), "utf-8")).replace(/\r\n/g, "\n");
       // Detect language for syntax highlighting hint
       const ext = filename.split(".").pop() ?? "";
       const lang = { json: "json", ts: "typescript", toml: "toml", mod: "go" }[ext] ?? "";
@@ -94,14 +93,14 @@ export function gatherProjectContext(worktreePath: string): { context: string; f
   // Auto-read directory listing (top-level + 1 depth)
   try {
     const listing: string[] = [];
-    const entries = readdirSync(worktreePath, { withFileTypes: true });
+    const entries = await fsReaddir(worktreePath, { withFileTypes: true });
     for (const e of entries) {
       if (e.name === "node_modules" || e.name === ".git") continue;
       const prefix = e.isDirectory() ? "[dir]" : "[file]";
       listing.push(`${prefix} ${e.name}`);
       if (e.isDirectory()) {
         try {
-          const sub = readdirSync(join(worktreePath, e.name), { withFileTypes: true });
+          const sub = await fsReaddir(join(worktreePath, e.name), { withFileTypes: true });
           for (const s of sub.slice(0, 20)) {
             if (s.name === "node_modules" || s.name === ".git") continue;
             listing.push(`  ${s.isDirectory() ? "[dir]" : "[file]"} ${e.name}/${s.name}`);
@@ -139,7 +138,7 @@ interface ScoutManifest {
  * Parse the scout's manifest and build a file summary with line counts.
  * Does NOT inject file contents — the implementer will read files itself.
  */
-export function resolveScoutManifest(worktreePath: string, scoutBrief: string): string {
+export async function resolveScoutManifest(worktreePath: string, scoutBrief: string): Promise<string> {
   let manifest: ScoutManifest;
   try {
     manifest = JSON.parse(scoutBrief);
@@ -165,7 +164,7 @@ export function resolveScoutManifest(worktreePath: string, scoutBrief: string): 
 
     let lineCount = "?";
     try {
-      const content = readFileSync(fullPath, "utf-8");
+      const content = await fsReadFile(fullPath, "utf-8");
       lineCount = String(content.split("\n").length);
       validCount++;
     } catch {
@@ -215,7 +214,7 @@ function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
         const fullPath = resolve(worktreePath, filePath);
         if (!fullPath.startsWith(resolve(worktreePath))) continue;
         try {
-          const content = readFileSync(fullPath, "utf-8").replace(/\r\n/g, "\n");
+          const content = (await fsReadFile(fullPath, "utf-8")).replace(/\r\n/g, "\n");
           files.push({ path: filePath, content });
         } catch {
           files.push({ path: filePath, content: "(file not found)" });
@@ -228,12 +227,15 @@ function createReadRelevantFilesTool(worktreePath: string, scoutBrief: string) {
 
 // ─── Git context helper ───────────────────────────────────────────────────────
 
-function captureGitContext(worktreePath: string, header = "## Git Changes"): string {
+async function captureGitContext(worktreePath: string, header = "## Git Changes"): Promise<string> {
   try {
-    const status = getStatus(worktreePath) || "(no changes)";
-    const diffStat = getDiffStat(worktreePath);
-    const fullDiff = getDiff(worktreePath);
-    return `${header}\n\n### Modified files:\n\`\`\`\n${status}\n\`\`\`\n\n### Diff summary:\n\`\`\`\n${diffStat}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${fullDiff}\n\`\`\``;
+    const [status, diffStat, fullDiff] = await Promise.all([
+      getStatus(worktreePath),
+      getDiffStat(worktreePath),
+      getDiff(worktreePath),
+    ]);
+    const statusText = status || "(no changes)";
+    return `${header}\n\n### Modified files:\n\`\`\`\n${statusText}\n\`\`\`\n\n### Diff summary:\n\`\`\`\n${diffStat}\n\`\`\`\n\n### Full diff:\n\`\`\`diff\n${fullDiff}\n\`\`\``;
   } catch {
     return "";
   }
@@ -246,7 +248,7 @@ export async function scoutNode(
   const { ctx, machine, project: _project, model, abortSignal } = config.configurable as PipelineConfig;
 
   // Check for cached scout brief — reuse if the codebase hasn't changed
-  const currentCommit = getHeadCommitFull(state.worktreePath) ?? "";
+  const currentCommit = (await getHeadCommitFull(state.worktreePath)) ?? "";
   const issue = ctx.db.getIssue(state.issueId);
   if (issue?.scout_brief && issue.scout_commit) {
     // Check if any of the relevant files changed since the scout ran
@@ -257,7 +259,7 @@ export async function scoutNode(
         const filePaths = manifest.files?.map(f => f.path) ?? [];
         if (filePaths.length > 0) {
           // Check if any relevant files differ between the cached commit and current HEAD
-          const changedFiles = getChangedFiles(state.worktreePath, issue.scout_commit, currentCommit, filePaths);
+          const changedFiles = await getChangedFiles(state.worktreePath, issue.scout_commit, currentCommit, filePaths);
           filesChanged = changedFiles.length > 0;
           if (filesChanged) {
             console.log(`[pipeline] scout — ${changedFiles.length} relevant file(s) changed since last scout: ${changedFiles.join(", ")}`);
@@ -284,7 +286,7 @@ export async function scoutNode(
     }
   }
 
-  const projectCtx = gatherProjectContext(state.worktreePath);
+  const projectCtx = await gatherProjectContext(state.worktreePath);
   console.log(`[pipeline] scout — auto-loaded ${projectCtx.fileCount} files (${projectCtx.totalChars.toLocaleString()} chars)`);
 
   const run = ctx.db.createRun({ issue_id: state.issueId, stage: "scout" });
@@ -417,7 +419,7 @@ export async function implementNode(
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
 
   // Resolve scout manifest → file list with line counts
-  const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
+  const resolvedBrief = await resolveScoutManifest(state.worktreePath, state.scoutBrief);
   const reportLen = resolvedBrief.length;
   const reportTokensEst = Math.round(reportLen / 4);
   const retryInfo = state.retryCount > 0 ? ` | Retry ${state.retryCount}/3 with review feedback` : "";
@@ -488,10 +490,10 @@ export async function testWriteNode(
 
   console.log("[pipeline] test-write stage");
 
-  const gitContext = captureGitContext(state.worktreePath, "## Git Changes (from implement stage)");
-  const projectCtx = gatherProjectContext(state.worktreePath);
+  const gitContext = await captureGitContext(state.worktreePath, "## Git Changes (from implement stage)");
+  const projectCtx = await gatherProjectContext(state.worktreePath);
 
-  const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
+  const resolvedBrief = await resolveScoutManifest(state.worktreePath, state.scoutBrief);
 
   const testPrompts = constructTestWritePrompts({
     workingDir: state.worktreePath,
@@ -552,9 +554,9 @@ export async function reviewNode(
   ctx.db.updateRun(run.id, { machine_id: state.machineId });
   console.log(`[pipeline] review stage — lens "${lens.name}" (${state.currentLensIndex + 1}/${state.reviewLenses.length})`);
 
-  const gitContext = captureGitContext(state.worktreePath);
-  const projectCtxReview = gatherProjectContext(state.worktreePath);
-  const resolvedBrief = resolveScoutManifest(state.worktreePath, state.scoutBrief);
+  const gitContext = await captureGitContext(state.worktreePath);
+  const projectCtxReview = await gatherProjectContext(state.worktreePath);
+  const resolvedBrief = await resolveScoutManifest(state.worktreePath, state.scoutBrief);
 
   const reviewPrompts = constructReviewPrompts({
     workingDir: state.worktreePath,
@@ -737,7 +739,7 @@ export async function buildGateNode(
   ctx.db.updateRun(run.id, { machine_id: state.machineId, status: "running", started_at: new Date().toISOString() });
 
   console.log(`[pipeline] build gate — running: ${project.build_command}`);
-  const result = runAndExtractErrors(project.build_command, state.worktreePath);
+  const result = await runAndExtractErrors(project.build_command, state.worktreePath);
 
   if (result !== "success") {
     const retryCount = state.buildRetryCount + 1;
@@ -749,7 +751,7 @@ export async function buildGateNode(
   // Build passed — run lint if configured
   if (project.lint_command) {
     console.log(`[pipeline] build gate — running lint: ${project.lint_command}`);
-    const lintResult = runAndExtractErrors(project.lint_command, state.worktreePath);
+    const lintResult = await runAndExtractErrors(project.lint_command, state.worktreePath);
     if (lintResult !== "success") {
       const retryCount = state.buildRetryCount + 1;
       console.log(`[pipeline] build gate — lint FAILED (attempt ${retryCount}/${MAX_BUILD_RETRIES})`);
@@ -791,7 +793,7 @@ export async function testGateNode(
   ctx.db.updateRun(run.id, { machine_id: state.machineId, status: "running", started_at: new Date().toISOString() });
 
   console.log(`[pipeline] test gate — running: ${project.test_command}`);
-  const result = runAndExtractErrors(project.test_command, state.worktreePath);
+  const result = await runAndExtractErrors(project.test_command, state.worktreePath);
 
   if (result !== "success") {
     const retryCount = state.testRetryCount + 1;
@@ -803,7 +805,7 @@ export async function testGateNode(
   // Tests passed — run lint if configured
   if (project.lint_command) {
     console.log(`[pipeline] test gate — running lint: ${project.lint_command}`);
-    const lintResult = runAndExtractErrors(project.lint_command, state.worktreePath);
+    const lintResult = await runAndExtractErrors(project.lint_command, state.worktreePath);
     if (lintResult !== "success") {
       const retryCount = state.testRetryCount + 1;
       console.log(`[pipeline] test gate — lint FAILED (attempt ${retryCount}/${MAX_TEST_RETRIES})`);

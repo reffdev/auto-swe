@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 describe("syncTasksFromDisk", () => {
-  it("imports YAML tasks into database", () => {
+  it("imports YAML tasks into database", async () => {
     writeFileSync(join(tasksDir, "001_currency_manager.yaml"), `
 id: "001"
 title: "Implement CurrencyManager"
@@ -47,7 +47,7 @@ max_retries: 3
 status: backlog
 `);
 
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.imported).toBe(1);
     expect(result.updated).toBe(0);
     expect(result.errors).toHaveLength(0);
@@ -60,14 +60,14 @@ status: backlog
     expect(tasks[0].type).toBe("code");
   });
 
-  it("updates existing backlog tasks", () => {
+  it("updates existing backlog tasks", async () => {
     writeFileSync(join(tasksDir, "001.yaml"), `
 id: "001"
 title: "Original Title"
 description: "Original"
 `);
 
-    syncTasksFromDisk(db, tasksDir, projectId);
+    await syncTasksFromDisk(db, tasksDir, projectId);
 
     // Update the YAML
     writeFileSync(join(tasksDir, "001.yaml"), `
@@ -77,7 +77,7 @@ description: "Updated description"
 priority: 2
 `);
 
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.updated).toBe(1);
 
     const task = db.getForemanTaskByYamlId("001", projectId);
@@ -85,13 +85,13 @@ priority: 2
     expect(task!.priority).toBe(2);
   });
 
-  it("does not update non-backlog tasks", () => {
+  it("does not update non-backlog tasks", async () => {
     writeFileSync(join(tasksDir, "001.yaml"), `
 id: "001"
 title: "Original"
 `);
 
-    syncTasksFromDisk(db, tasksDir, projectId);
+    await syncTasksFromDisk(db, tasksDir, projectId);
     const task = db.getForemanTaskByYamlId("001", projectId)!;
     db.updateForemanTask(task.id, { status: "queued" });
 
@@ -101,14 +101,14 @@ id: "001"
 title: "Updated"
 `);
 
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.updated).toBe(0);
 
     const unchanged = db.getForemanTaskByYamlId("001", projectId)!;
     expect(unchanged.title).toBe("Original");
   });
 
-  it("resolves depends_on YAML IDs to DB IDs", () => {
+  it("resolves depends_on YAML IDs to DB IDs", async () => {
     writeFileSync(join(tasksDir, "001.yaml"), `
 id: "001"
 title: "First Task"
@@ -120,7 +120,7 @@ depends_on:
   - "001"
 `);
 
-    syncTasksFromDisk(db, tasksDir, projectId);
+    await syncTasksFromDisk(db, tasksDir, projectId);
 
     const task1 = db.getForemanTaskByYamlId("001", projectId)!;
     const task2 = db.getForemanTaskByYamlId("002", projectId)!;
@@ -129,7 +129,7 @@ depends_on:
     expect(deps).toContain(task1.id);
   });
 
-  it("reports errors for missing dependencies", () => {
+  it("reports errors for missing dependencies", async () => {
     writeFileSync(join(tasksDir, "002.yaml"), `
 id: "002"
 title: "Task with missing dep"
@@ -137,11 +137,11 @@ depends_on:
   - "999"
 `);
 
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.errors.some(e => e.includes("999"))).toBe(true);
   });
 
-  it("detects dependency cycles", () => {
+  it("detects dependency cycles", async () => {
     writeFileSync(join(tasksDir, "001.yaml"), `
 id: "001"
 title: "Task A"
@@ -155,45 +155,45 @@ depends_on:
   - "001"
 `);
 
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.errors.some(e => e.includes("cycle"))).toBe(true);
   });
 
-  it("handles invalid YAML gracefully", () => {
+  it("handles invalid YAML gracefully", async () => {
     writeFileSync(join(tasksDir, "bad.yaml"), "{{{{invalid yaml");
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.imported).toBe(0);
   });
 
-  it("skips files without title", () => {
+  it("skips files without title", async () => {
     writeFileSync(join(tasksDir, "notask.yaml"), `
 id: "999"
 description: "No title provided"
 `);
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.errors.some(e => e.includes("title"))).toBe(true);
     expect(result.imported).toBe(0);
   });
 
-  it("handles non-existent directory gracefully", () => {
-    const result = syncTasksFromDisk(db, join(tmpdir(), "definitely-does-not-exist-" + Date.now()), projectId);
+  it("handles non-existent directory gracefully", async () => {
+    const result = await syncTasksFromDisk(db, join(tmpdir(), "definitely-does-not-exist-" + Date.now()), projectId);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.imported).toBe(0);
   });
 
-  it("uses filename as yaml_id when id field is missing", () => {
+  it("uses filename as yaml_id when id field is missing", async () => {
     writeFileSync(join(tasksDir, "my_task.yaml"), `
 title: "No ID Field"
 `);
 
-    syncTasksFromDisk(db, tasksDir, projectId);
+    await syncTasksFromDisk(db, tasksDir, projectId);
     const task = db.getForemanTaskByYamlId("my_task", projectId);
     expect(task).not.toBeNull();
     expect(task!.title).toBe("No ID Field");
   });
 
-  it("handles multiple files with different extensions", () => {
+  it("handles multiple files with different extensions", async () => {
     writeFileSync(join(tasksDir, "a.yaml"), `
 id: "a"
 title: "YAML file"
@@ -204,7 +204,7 @@ title: "YML file"
 `);
     writeFileSync(join(tasksDir, "c.txt"), "not a yaml file");
 
-    const result = syncTasksFromDisk(db, tasksDir, projectId);
+    const result = await syncTasksFromDisk(db, tasksDir, projectId);
     expect(result.imported).toBe(2);
     const tasks = db.getForemanTasks(projectId);
     expect(tasks).toHaveLength(2);

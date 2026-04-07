@@ -9,7 +9,7 @@
  * No external dependencies — uses native fetch.
  */
 
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFile as fsWriteFile, mkdir as fsMkdir } from "fs/promises";
 import { dirname, resolve } from "path";
 
 const POLL_INTERVAL_MS = 2_000;
@@ -206,7 +206,7 @@ export async function executeComfyUIWorkflow(
 
     // 3. Download output files
     const outputFiles: ComfyUIResult["outputFiles"] = [];
-    mkdirSync(outputDir, { recursive: true });
+    await fsMkdir(outputDir, { recursive: true });
 
     for (const [_nodeId, nodeOutput] of Object.entries(entry.outputs)) {
       // Collect output files from all known output keys (images, audio, gifs, etc.)
@@ -234,8 +234,8 @@ export async function executeComfyUIWorkflow(
 
         const buffer = Buffer.from(await fileRes.arrayBuffer());
         const localPath = resolve(outputDir, file.filename);
-        mkdirSync(dirname(localPath), { recursive: true });
-        writeFileSync(localPath, buffer);
+        await fsMkdir(dirname(localPath), { recursive: true });
+        await fsWriteFile(localPath, buffer);
 
         outputFiles.push({ filename: file.filename, localPath });
       }

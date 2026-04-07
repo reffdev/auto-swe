@@ -100,9 +100,9 @@ export async function extractTaskKnowledge(
   // Get the git diff if we have a branch
   if (task.git_branch) {
     try {
-      fetchOrigin(project.workdir);
+      await fetchOrigin(project.workdir);
       const defaultBranch = "origin/main";
-      const { diff } = getDiffBetween(project.workdir, defaultBranch, `origin/${task.git_branch}`);
+      const { diff } = await getDiffBetween(project.workdir, defaultBranch, `origin/${task.git_branch}`);
       if (diff.trim()) {
         contextParts.push("", "## Changes Made (git diff)", "", diff);
       }
@@ -152,17 +152,17 @@ async function runExtraction(
   }
 
   for (const extraction of extractions) {
-    const existing = readMemory(projectWorkdir, "semantic", extraction.filename);
+    const existing = await readMemory(projectWorkdir, "semantic", extraction.filename);
 
     if (existing) {
       // Append to existing memory, avoiding duplicates
       if (!existing.includes(extraction.content.slice(0, 50))) {
-        writeMemory(projectWorkdir, "semantic", extraction.filename,
+        await writeMemory(projectWorkdir, "semantic", extraction.filename,
           existing + "\n\n---\n\n" + `## ${new Date().toISOString().slice(0, 10)}\n\n` + extraction.content,
         );
       }
     } else {
-      writeMemory(projectWorkdir, "semantic", extraction.filename,
+      await writeMemory(projectWorkdir, "semantic", extraction.filename,
         `# ${extraction.title}\n\n${extraction.content}\n\n*Extracted on ${new Date().toISOString().slice(0, 10)}*`,
       );
     }
