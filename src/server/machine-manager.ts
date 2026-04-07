@@ -195,11 +195,18 @@ export async function acquireLease(
 
   let chosen: { lease: MachineLease; machine: Machine } | null = null;
 
+  // Foreman must never grab the Director's reserved machine — applies to both
+  // the strict-preferred branch (used by withLlmSession for logical-model
+  // dispatch) and the type-based fallback below.
+  const directorReserved = consumer === "foreman" ? getDirectorReservedMachine() : null;
+
   // Try preferred machine first (skip enabled check — Director can use disabled machines)
   if (opts?.preferredMachineId) {
     const preferred = machines.find(m => m.id === opts.preferredMachineId);
     if (preferred) {
-      if (hasCapacity(preferred) && getBreaker(preferred.id).canExecute() && !isBlockedByColocatedMachine(preferred, machines)) {
+      if (directorReserved && preferred.id === directorReserved) {
+        console.log(`[machine-manager] preferred machine ${preferred.name || preferred.id} reserved by Director — foreman skipping`);
+      } else if (hasCapacity(preferred) && getBreaker(preferred.id).canExecute() && !isBlockedByColocatedMachine(preferred, machines)) {
         const lease = createLease(preferred.id, consumer, label, timeoutMs);
         chosen = { lease, machine: preferred };
       } else {
@@ -213,9 +220,6 @@ export async function acquireLease(
   if (!chosen) {
     // Build ordered list of machine types to try: primary first, then fallbacks
     const typesToTry = [machineType, ...(opts?.fallbackMachineTypes ?? [])];
-
-    // Foreman should never acquire the Director's reserved machine
-    const directorReserved = consumer === "foreman" ? getDirectorReservedMachine() : null;
 
     for (const tryType of typesToTry) {
       const candidates = machines.filter(m =>
