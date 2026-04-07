@@ -175,6 +175,22 @@ function createResilientFetch(machine: Machine): typeof globalThis.fetch {
     const callerSignal = (init as RequestInit)?.signal;
     if (callerSignal?.aborted) throw new Error("Aborted");
 
+    // Debug: write the request body to disk so we can replay it via curl
+    // when something hangs. Set LLM_DEBUG_DUMP_DIR to enable.
+    const dumpDir = process.env.LLM_DEBUG_DUMP_DIR;
+    if (dumpDir && typeof (init as RequestInit)?.body === "string") {
+      try {
+        const fs = await import("fs");
+        const path = await import("path");
+        fs.mkdirSync(dumpDir, { recursive: true });
+        const fname = `llm-${machine.name || machine.id}-${Date.now()}.json`;
+        fs.writeFileSync(path.join(dumpDir, fname), (init as RequestInit).body as string);
+        console.log(`LLM debug: dumped request body to ${path.join(dumpDir, fname)}`);
+      } catch (err) {
+        console.warn("LLM debug dump failed:", err instanceof Error ? err.message : err);
+      }
+    }
+
     // Retry loop for server errors and connection failures
     let res: Response | undefined;
     for (let attempt = 0; attempt <= MAX_SERVER_RETRIES; attempt++) {
