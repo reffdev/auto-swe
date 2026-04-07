@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import * as api from './api'
-import type { Machine, MachineModel } from './api'
+import type { Machine, MachineBinding, Model } from './api'
 
 interface MachineDetailProps {
   machine: Machine
@@ -15,7 +15,6 @@ interface MachineDetailProps {
 export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailProps) {
   const [name, setName] = useState(machine.name)
   const [baseUrl, setBaseUrl] = useState(machine.base_url)
-  const [modelId, setModelId] = useState(machine.model_id ?? '')
   const [machineType, setMachineType] = useState<'inference' | 'comfyui' | 'npu'>(machine.machine_type as 'inference' | 'comfyui' | 'npu' ?? 'inference')
   const [enabled, setEnabled] = useState(!!machine.enabled)
   const [contextLimit, setContextLimit] = useState(machine.context_limit?.toString() ?? '')
@@ -31,21 +30,19 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   useEffect(() => {
     setName(machine.name)
     setBaseUrl(machine.base_url)
-    setModelId(machine.model_id ?? '')
     setMachineType(machine.machine_type as 'inference' | 'comfyui' | 'npu' ?? 'inference')
     setEnabled(!!machine.enabled)
     setContextLimit(machine.context_limit?.toString() ?? '')
     setMaxConcurrent(machine.max_concurrent?.toString() ?? '1')
     setApiKey(machine.api_key ?? '')
     setReleaseUrl(machine.release_url ?? '')
-  }, [machine.id, machine.name, machine.base_url, machine.model_id, machine.machine_type, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key, machine.release_url])
+  }, [machine.id, machine.name, machine.base_url, machine.machine_type, machine.enabled, machine.context_limit, machine.max_concurrent, machine.api_key, machine.release_url])
 
   const parsedContextLimit = contextLimit ? parseInt(contextLimit, 10) || null : null
   const parsedMaxConcurrent = parseInt(maxConcurrent, 10) || 1
   const hasChanges =
     name !== machine.name ||
     baseUrl !== machine.base_url ||
-    (modelId || null) !== (machine.model_id ?? null) ||
     machineType !== (machine.machine_type ?? 'inference') ||
     parsedContextLimit !== (machine.context_limit ?? null) ||
     parsedMaxConcurrent !== (machine.max_concurrent ?? 1) ||
@@ -61,7 +58,6 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
       const update: Record<string, unknown> = {
         name,
         base_url: baseUrl,
-        model_id: modelId || null,
         machine_type: machineType,
         enabled: enabled ? 1 : 0,
         context_limit: parsedContextLimit,
@@ -84,7 +80,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   }
 
   const handleDelete = async () => {
-    if (!confirm(`Delete machine "${machine.name || machine.model_id}"?`)) return
+    if (!confirm(`Delete machine "${machine.name || machine.id}"?`)) return
     setError(null)
     setDeleting(true)
     try {
@@ -151,21 +147,15 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
           </div>
 
           <div>
-            <label htmlFor="machine-model-id" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Model ID</label>
-            <Input id="machine-model-id" value={modelId} onChange={(e) => { setModelId(e.target.value); }} placeholder="e.g. anthropic/claude-sonnet-4-20250514" />
-            <p className="text-xs text-muted-foreground mt-1">Default model name. Optional if projects specify their own model.</p>
-          </div>
-
-          <div>
             <label htmlFor="machine-max-concurrent" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Max Concurrent Jobs</label>
             <Input id="machine-max-concurrent" value={maxConcurrent} onChange={(e) => { setMaxConcurrent(e.target.value); }} placeholder="1" type="number" min="1" className="max-w-[100px]" />
             <p className="text-xs text-muted-foreground mt-1">How many issues this machine can process simultaneously. Cloud APIs support many; local servers typically 1.</p>
           </div>
 
           <div>
-            <label htmlFor="machine-context-limit" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Context Limit (tokens)</label>
+            <label htmlFor="machine-context-limit" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Hardware context ceiling (tokens)</label>
             <Input id="machine-context-limit" value={contextLimit} onChange={(e) => { setContextLimit(e.target.value); }} placeholder="128000" type="number" />
-            <p className="text-xs text-muted-foreground mt-1">Model&apos;s context window size. Leave empty for default (128k). Tool output truncation scales to this.</p>
+            <p className="text-xs text-muted-foreground mt-1">Hardware-imposed maximum for any model on this machine. Per-binding overrides and per-model defaults can lower this further; the smallest wins.</p>
           </div>
 
           <div>
@@ -180,11 +170,8 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
             <p className="text-xs text-muted-foreground mt-1">URL to call to free GPU resources when a colocated machine needs the GPU. For ComfyUI: <code className="text-[10px] bg-muted px-1 rounded">http://host:8188/free</code> — For llama-swap: <code className="text-[10px] bg-muted px-1 rounded">http://host:8080/api/models/unload</code></p>
           </div>
 
-          {/* Models catalog */}
-          <ModelsCatalog machineId={machine.id} activeModelId={modelId || null} onSelect={(selectedModelId, selectedContextLimit) => {
-            setModelId(selectedModelId)
-            setContextLimit(selectedContextLimit?.toString() ?? '')
-          }} />
+          {/* Hosted model bindings */}
+          <MachineBindings machineId={machine.id} />
 
           <div className="flex items-center gap-3">
             <button
@@ -228,7 +215,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
 
       {/* Actions */}
       <div className="px-6 py-4 border-t border-border flex items-center gap-3">
-        <Button onClick={handleSave} disabled={!hasChanges || !baseUrl || (machineType !== 'comfyui' && !modelId) || saving}>
+        <Button onClick={handleSave} disabled={!hasChanges || !baseUrl || saving}>
           <Save className="size-3.5 mr-1.5" />
           {saving ? 'Saving...' : 'Save Changes'}
         </Button>
@@ -249,114 +236,142 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
   )
 }
 
-// ─── Models Catalog ───────────────────────────────────────────────────────
+// ─── Hosted Model Bindings ────────────────────────────────────────────────
+//
+// Replaces the legacy ModelsCatalog. A binding pairs a logical model with this
+// machine and supplies the per-machine `provider_id` (the literal string passed
+// to the AI SDK on this host). Logical models are managed on the Models page.
 
-function ModelsCatalog({ machineId, activeModelId, onSelect }: {
-  machineId: string
-  activeModelId: string | null
-  onSelect: (modelId: string, contextLimit: number | null) => void
-}) {
-  const [models, setModels] = useState<MachineModel[]>([])
+function MachineBindings({ machineId }: { machineId: string }) {
+  const [bindings, setBindings] = useState<MachineBinding[]>([])
+  const [models, setModels] = useState<Model[]>([])
   const [showAdd, setShowAdd] = useState(false)
   const [newModelId, setNewModelId] = useState('')
-  const [newLabel, setNewLabel] = useState('')
+  const [newProviderId, setNewProviderId] = useState('')
   const [newContextLimit, setNewContextLimit] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editModelId, setEditModelId] = useState('')
-  const [editLabel, setEditLabel] = useState('')
+  const [editProviderId, setEditProviderId] = useState('')
   const [editContextLimit, setEditContextLimit] = useState('')
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
-    api.getMachineModels(machineId).then(setModels).catch(() => {})
+    api.getMachineBindings(machineId).then(setBindings).catch(() => {})
+    api.getModels().then(setModels).catch(() => {})
   }, [machineId])
 
   useEffect(() => { refresh() }, [refresh])
 
+  const modelById = new Map(models.map(m => [m.id, m]))
+  const unboundModels = models.filter(m => !m.archived_at && !bindings.some(b => b.model_id === m.id))
+
   const handleAdd = async () => {
-    if (!newModelId) return
-    await api.createMachineModel(machineId, {
-      model_id: newModelId,
-      label: newLabel || newModelId,
-      context_limit: newContextLimit ? parseInt(newContextLimit, 10) : null,
-    })
-    setNewModelId(''); setNewLabel(''); setNewContextLimit(''); setShowAdd(false)
-    refresh()
+    if (!newModelId || !newProviderId) return
+    setError(null)
+    try {
+      await api.createMachineBinding(machineId, {
+        model_id: newModelId,
+        provider_id: newProviderId,
+        context_limit: newContextLimit ? parseInt(newContextLimit, 10) : null,
+      })
+      setNewModelId(''); setNewProviderId(''); setNewContextLimit(''); setShowAdd(false)
+      refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
-  const handleSelect = (model: MachineModel) => {
-    // Just update parent form fields — actual save happens via Save Changes button
-    onSelect(model.model_id, model.context_limit)
-  }
-
-  const startEdit = (m: MachineModel) => {
-    setEditingId(m.id)
-    setEditModelId(m.model_id)
-    setEditLabel(m.label)
-    setEditContextLimit(m.context_limit?.toString() ?? '')
+  const startEdit = (b: MachineBinding) => {
+    setEditingId(b.id)
+    setEditProviderId(b.provider_id)
+    setEditContextLimit(b.context_limit?.toString() ?? '')
   }
 
   const handleSaveEdit = async () => {
     if (!editingId) return
-    await api.updateMachineModel(machineId, editingId, {
-      model_id: editModelId,
-      label: editLabel,
-      context_limit: editContextLimit ? parseInt(editContextLimit, 10) : null,
-    })
-    setEditingId(null)
-    refresh()
+    setError(null)
+    try {
+      await api.updateMachineBinding(machineId, editingId, {
+        provider_id: editProviderId,
+        context_limit: editContextLimit ? parseInt(editContextLimit, 10) : null,
+      })
+      setEditingId(null)
+      refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
-  const handleDelete = async (modelId: string) => {
-    if (!confirm('Delete this model?')) return
-    await api.deleteMachineModel(machineId, modelId)
-    refresh()
+  const handleDelete = async (bindingId: string) => {
+    if (!confirm('Delete this binding?')) return
+    setError(null)
+    try {
+      await api.deleteMachineBinding(machineId, bindingId)
+      refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const handleToggleEnabled = async (b: MachineBinding) => {
+    setError(null)
+    try {
+      await api.updateMachineBinding(machineId, b.id, { enabled: !b.enabled })
+      refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   return (
     <div className="border border-border rounded-lg p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Available Models</label>
-        <Button variant="ghost" size="icon-sm" onClick={() => setShowAdd(!showAdd)}>
+        <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Hosted Models</label>
+        <Button variant="ghost" size="icon-sm" onClick={() => setShowAdd(!showAdd)} disabled={unboundModels.length === 0}>
           <Plus className="size-3.5" />
         </Button>
       </div>
 
-      {models.length === 0 && !showAdd && (
-        <p className="text-xs text-muted-foreground">No models configured. Add models to quickly switch between them.</p>
+      {bindings.length === 0 && !showAdd && (
+        <p className="text-xs text-muted-foreground">No models hosted on this machine. Bind a logical model to make it available for dispatch.</p>
+      )}
+      {models.length === 0 && (
+        <p className="text-xs text-amber-400">No logical models exist. Create one on the Models page first.</p>
       )}
 
-      {/* Model list */}
+      {/* Bindings list */}
       <div className="space-y-1">
-        {models.map(m => {
-          const isActive = m.model_id === activeModelId
-          const isEditing = editingId === m.id
-
+        {bindings.map(b => {
+          const model = modelById.get(b.model_id)
+          const isEditing = editingId === b.id
           if (isEditing) {
             return (
-              <div key={m.id} className="flex items-center gap-1.5 bg-muted/50 rounded p-1.5">
-                <Input value={editLabel} onChange={e => setEditLabel(e.target.value)} placeholder="Label" className="h-6 text-xs flex-1" />
-                <Input value={editModelId} onChange={e => setEditModelId(e.target.value)} placeholder="Model ID" className="h-6 text-xs flex-1" />
-                <Input value={editContextLimit} onChange={e => setEditContextLimit(e.target.value)} placeholder="CTX" className="h-6 text-xs w-16" type="number" />
+              <div key={b.id} className="flex items-center gap-1.5 bg-muted/50 rounded p-1.5">
+                <span className="text-xs font-medium truncate flex-1">{model?.name ?? '(unknown)'}</span>
+                <Input value={editProviderId} onChange={e => setEditProviderId(e.target.value)} placeholder="provider id" className="h-6 text-xs flex-1" />
+                <Input value={editContextLimit} onChange={e => setEditContextLimit(e.target.value)} placeholder="ctx" className="h-6 text-xs w-16" type="number" />
                 <Button variant="ghost" size="icon-sm" onClick={handleSaveEdit}><Check className="size-3" /></Button>
                 <Button variant="ghost" size="icon-sm" onClick={() => setEditingId(null)}><X className="size-3" /></Button>
               </div>
             )
           }
-
           return (
-            <div key={m.id} className={cn(
+            <div key={b.id} className={cn(
               "flex items-center gap-2 rounded px-2 py-1.5 text-xs group",
-              isActive ? "bg-primary/10 border border-primary/30" : "bg-muted/30 hover:bg-muted/50"
+              b.enabled ? "bg-muted/30 hover:bg-muted/50" : "bg-muted/10 opacity-60"
             )}>
-              <button onClick={() => handleSelect(m)} className="shrink-0" title="Set as active">
-                <div className={cn("size-3 rounded-full border-2", isActive ? "border-primary bg-primary" : "border-muted-foreground/40")} />
+              <button
+                onClick={() => handleToggleEnabled(b)}
+                className="shrink-0"
+                title={b.enabled ? 'Disable binding' : 'Enable binding'}
+              >
+                <div className={cn("size-3 rounded-full border-2", b.enabled ? "border-primary bg-primary" : "border-muted-foreground/40")} />
               </button>
-              <span className="font-medium truncate">{m.label || m.model_id}</span>
-              <span className="text-muted-foreground font-mono truncate">{m.model_id}</span>
-              {m.context_limit && <span className="text-muted-foreground/60 shrink-0">{Math.round(m.context_limit / 1024)}k</span>}
+              <span className="font-medium truncate">{model?.name ?? `(unknown ${b.model_id.slice(0, 8)})`}</span>
+              <span className="text-muted-foreground font-mono truncate">{b.provider_id}</span>
+              {b.context_limit && <span className="text-muted-foreground/60 shrink-0">{Math.round(b.context_limit / 1024)}k</span>}
               <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button onClick={() => startEdit(m)} className="p-0.5 hover:text-primary"><Save className="size-2.5" /></button>
-                <button onClick={() => handleDelete(m.id)} className="p-0.5 hover:text-destructive"><Trash2 className="size-2.5" /></button>
+                <button onClick={() => startEdit(b)} className="p-0.5 hover:text-primary"><Save className="size-2.5" /></button>
+                <button onClick={() => handleDelete(b.id)} className="p-0.5 hover:text-destructive"><Trash2 className="size-2.5" /></button>
               </div>
             </div>
           )
@@ -365,14 +380,27 @@ function ModelsCatalog({ machineId, activeModelId, onSelect }: {
 
       {/* Add form */}
       {showAdd && (
-        <div className="flex items-center gap-1.5 bg-muted/50 rounded p-1.5">
-          <Input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Label" className="h-6 text-xs flex-1" />
-          <Input value={newModelId} onChange={e => setNewModelId(e.target.value)} placeholder="Model ID" className="h-6 text-xs flex-1" />
-          <Input value={newContextLimit} onChange={e => setNewContextLimit(e.target.value)} placeholder="CTX" className="h-6 text-xs w-16" type="number" />
-          <Button variant="ghost" size="icon-sm" onClick={handleAdd} disabled={!newModelId}><Check className="size-3" /></Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => setShowAdd(false)}><X className="size-3" /></Button>
+        <div className="flex flex-col gap-1.5 bg-muted/50 rounded p-1.5">
+          <select
+            value={newModelId}
+            onChange={e => setNewModelId(e.target.value)}
+            className="h-7 text-xs px-2 rounded bg-background border border-border"
+          >
+            <option value="">Select a logical model…</option>
+            {unboundModels.map(m => (
+              <option key={m.id} value={m.id}>{m.name} ({m.slug})</option>
+            ))}
+          </select>
+          <div className="flex items-center gap-1.5">
+            <Input value={newProviderId} onChange={e => setNewProviderId(e.target.value)} placeholder="provider id (e.g. qwen3-coder:30b)" className="h-6 text-xs flex-1" />
+            <Input value={newContextLimit} onChange={e => setNewContextLimit(e.target.value)} placeholder="ctx" className="h-6 text-xs w-16" type="number" />
+            <Button variant="ghost" size="icon-sm" onClick={handleAdd} disabled={!newModelId || !newProviderId}><Check className="size-3" /></Button>
+            <Button variant="ghost" size="icon-sm" onClick={() => setShowAdd(false)}><X className="size-3" /></Button>
+          </div>
         </div>
       )}
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }

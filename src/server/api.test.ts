@@ -37,7 +37,7 @@ describe("GET /api/poll", () => {
   });
 
   it("returns populated state", async () => {
-    const _machine = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const _machine = db.createMachine({ base_url: "http://a/v1" });
     const project = db.createProject({ name: "test", workdir: testDir });
     const issue = db.createIssue({ project_id: project.id, title: "Fix bug" });
     const _run = db.createRun({ issue_id: issue.id });
@@ -194,35 +194,37 @@ describe("machines", () => {
   it("POST /api/machines creates a machine", async () => {
     const res = await request(app)
       .post("/api/machines")
-      .send({ base_url: "http://localhost:8080/v1", model_id: "test-model" });
+      .send({ base_url: "http://localhost:8080/v1", name: "gpu-1" });
     expect(res.status).toBe(201);
     expect(res.body.base_url).toBe("http://localhost:8080/v1");
-    expect(res.body.model_id).toBe("test-model");
+    expect(res.body.name).toBe("gpu-1");
+    // model_id no longer exists on machines after the logical-models refactor
+    expect(res.body.model_id).toBeUndefined();
   });
 
   it("POST /api/machines validates base_url", async () => {
     const res = await request(app)
       .post("/api/machines")
-      .send({ model_id: "m1" });
+      .send({});
     expect(res.status).toBe(400);
   });
 
-  it("POST /api/machines allows optional model_id", async () => {
+  it("POST /api/machines accepts a machine without explicit model bindings", async () => {
     const res = await request(app)
       .post("/api/machines")
       .send({ base_url: "http://a/v1" });
     expect(res.status).toBe(201);
-    expect(res.body.model_id).toBeNull();
+    expect(res.body.base_url).toBe("http://a/v1");
   });
 
   it("GET /api/machines lists machines", async () => {
-    db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    db.createMachine({ base_url: "http://a/v1" });
     const res = await request(app).get("/api/machines");
     expect(res.body).toHaveLength(1);
   });
 
   it("PATCH /api/machines/:id updates a machine", async () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     const res = await request(app)
       .patch(`/api/machines/${m.id}`)
       .send({ name: "gpu-box" });
@@ -231,13 +233,13 @@ describe("machines", () => {
   });
 
   it("DELETE /api/machines/:id deletes a machine", async () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     const res = await request(app).delete(`/api/machines/${m.id}`);
     expect(res.status).toBe(204);
   });
 
   it("DELETE /api/machines/:id rejects working machine", async () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     db.updateMachine(m.id, { status: "working" });
     const res = await request(app).delete(`/api/machines/${m.id}`);
     expect(res.status).toBe(409);
@@ -345,10 +347,16 @@ describe("issues", () => {
 describe("issue actions", () => {
   let projectId: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const p = db.createProject({ name: "test", workdir: testDir });
     projectId = p.id;
-    db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const machine = db.createMachine({ base_url: "http://a/v1" });
+    // Set up a logical model + binding + foreman_code_model_id so the
+    // pipeline lease resolver can find a machine that hosts the configured model.
+    const { createLogicalModel, createBinding } = await import("./models");
+    const model = createLogicalModel(db, { name: "Test", slug: "test-m" });
+    createBinding(db, { machine_id: machine.id, model_id: model.id, provider_id: "test-provider" });
+    db.upsertForemanConfig({ foreman_code_model_id: model.id });
   });
 
   it("POST /api/issues/:id/approve moves pending → approved", async () => {
@@ -366,7 +374,7 @@ describe("issue actions", () => {
   });
 
   it("POST /api/issues/:id/approve requires available machine", async () => {
-    // Fill the machine to capacity via the lease system
+    // Fill the only inference machine to capacity via the lease system
     const { acquireLease, releaseLease } = await import("./machine-manager");
     const lease = acquireLease(db, "pipeline", "blocker", { machineType: "inference" });
     expect(lease).not.toBeNull();

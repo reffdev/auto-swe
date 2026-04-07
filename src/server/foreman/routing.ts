@@ -1,69 +1,78 @@
 /**
- * Foreman model routing — determines which model and machine type to use for a task.
+ * Foreman task routing — determines machine type per task and supports model
+ * affinity sorting for the dispatch loop.
  *
- * Machine types:
- *   "inference" — Ollama/OpenAI-compatible LLM endpoints (code, content, review tasks)
- *   "comfyui"   — ComfyUI image/audio generation server (art, music, sfx tasks)
- *   "npu"       — NPU-hosted small models for lightweight tasks (extraction, feedback)
+ * Post logical-models refactor: for inference tasks, the *model* is no longer
+ * decided here. The scheduler resolves it via task.model_id (per-task override)
+ * or foreman_config.foreman_code_model_id at dispatch time using the unified
+ * resolver in models.ts. This file now only handles:
+ *
+ *   1. machineType classification (inference vs comfyui — npu is not used by
+ *      foreman code tasks per the refactor scope)
+ *   2. Model affinity sorting (group runnable tasks by their resolved logical
+ *      model so we minimize GPU swaps within a single dispatch tick)
  */
 
-import type { ForemanTask } from "../db";
+import type { Db, ForemanTask } from "../db";
 import { isComfyUITaskType } from "./task-types";
 
+export type RouteMachineType = "inference" | "comfyui";
+
 export interface RouteResult {
-  modelId: string;
-  machineType: "inference" | "comfyui" | "npu";
+  machineType: RouteMachineType;
 }
 
-const COMPLEX_KEYWORDS = /architect|system|manager|refactor|implement|engine|framework/i;
-const DEBUG_KEYWORDS = /fix|bug|debug|tweak|edit|patch|iteration/i;
-
-/** Resolve the model and machine type for a task */
-export function resolveModel(task: ForemanTask): RouteResult {
-  // Explicit model override
-  if (task.model !== "auto") {
-    if (task.model.startsWith("comfyui") || task.model === "flux") {
-      return { modelId: task.model, machineType: "comfyui" };
-    }
-    return { modelId: task.model, machineType: "inference" };
-  }
-
-  // Auto-route by task type
+/** Determine which machine type a task needs. */
+export function classifyTask(task: ForemanTask): RouteResult {
   if (isComfyUITaskType(task.type)) {
-    return { modelId: "comfyui", machineType: "comfyui" };
+    return { machineType: "comfyui" };
   }
-
-  switch (task.type) {
-    case "content":
-      return { modelId: "qwen3.5:9b", machineType: "inference" };
-    case "review":
-      return { modelId: "qwen3-coder:30b", machineType: "inference" };
-    case "code":
-    default: {
-      const descLen = task.description.length;
-      if (descLen > 500 || COMPLEX_KEYWORDS.test(task.description) || COMPLEX_KEYWORDS.test(task.title)) {
-        return { modelId: "qwen3.5:122b", machineType: "inference" };
-      }
-      if (DEBUG_KEYWORDS.test(task.description) || DEBUG_KEYWORDS.test(task.title)) {
-        return { modelId: "qwen3-coder:30b", machineType: "inference" };
-      }
-      return { modelId: "qwen3.5:122b", machineType: "inference" };
-    }
-  }
+  return { machineType: "inference" };
 }
 
 /**
- * Sort tasks by model affinity to minimize Ollama GPU swaps.
- * Only applies to inference tasks — ComfyUI tasks don't have model swap costs.
+ * Determine the logical model id that should be used for a code (inference)
+ * task. Returns the per-task override if set, otherwise the configured
+ * Foreman code slot. Returns null if neither is configured (caller should
+ * fail the task with a clear message).
  */
-export function sortByModelAffinity(tasks: ForemanTask[], lastModel: string | null): ForemanTask[] {
-  const resolved = tasks.map(t => ({ task: t, modelId: resolveModel(t).modelId }));
+export function resolveForemanCodeModelId(db: Db, task: ForemanTask): string | null {
+  if (task.model_id) return task.model_id;
+  return db.getForemanConfig()?.foreman_code_model_id ?? null;
+}
+
+/**
+ * Sort tasks by logical-model affinity to minimize GPU swaps. Only inference
+ * tasks participate — ComfyUI tasks don't have model-swap costs and are sorted
+ * after by (priority, created_at).
+ *
+ * `lastModelId` is the logical model id of the last dispatched inference task
+ * (or null at the start of a tick). Tasks bound to that same model sort first.
+ */
+export function sortByModelAffinity(
+  db: Db,
+  tasks: ForemanTask[],
+  lastModelId: string | null,
+): ForemanTask[] {
+  // Pre-compute the resolved logical model id for each task (one DB lookup per task).
+  const config = db.getForemanConfig();
+  const defaultModelId = config?.foreman_code_model_id ?? null;
+  const resolved = tasks.map(t => {
+    const isInference = !isComfyUITaskType(t.type);
+    const modelId = isInference ? (t.model_id ?? defaultModelId) : null;
+    return { task: t, modelId };
+  });
 
   return resolved
     .sort((a, b) => {
-      const aMatch = a.modelId === lastModel ? 0 : 1;
-      const bMatch = b.modelId === lastModel ? 0 : 1;
+      // Same-model affinity wins first
+      const aMatch = a.modelId !== null && a.modelId === lastModelId ? 0 : 1;
+      const bMatch = b.modelId !== null && b.modelId === lastModelId ? 0 : 1;
       if (aMatch !== bMatch) return aMatch - bMatch;
+      // Then group by model id (so we batch swaps once per dispatch loop)
+      if (a.modelId && b.modelId && a.modelId !== b.modelId) {
+        return a.modelId.localeCompare(b.modelId);
+      }
       if (a.task.priority !== b.task.priority) return a.task.priority - b.task.priority;
       return a.task.created_at.localeCompare(b.task.created_at);
     })

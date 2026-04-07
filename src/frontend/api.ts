@@ -10,7 +10,6 @@ export interface Machine {
   id: string;
   name: string;
   base_url: string;
-  model_id: string | null;
   machine_type: string;
   enabled: number;
   status: "idle" | "working";
@@ -30,10 +29,38 @@ export interface Project {
   git_remote: string | null;
   git_server_token: string | null;
   git_default_branch: string;
-  model_id: string | null;
   build_command: string | null;
   test_command: string | null;
   lint_command: string | null;
+  created_at: string;
+}
+
+// ─── Logical Models (post logical-models refactor) ──────────────────────────
+
+export interface Model {
+  id: string;
+  name: string;
+  slug: string;
+  family: string | null;
+  default_context_limit: number | null;
+  description: string | null;
+  archived_at: string | null;
+  created_at: string;
+}
+
+/**
+ * A binding links a machine to a logical model and carries the per-machine
+ * `provider_id` (string passed to the AI SDK) and an optional context override.
+ * Replaces the legacy `MachineModel` shape.
+ */
+export interface MachineBinding {
+  id: string;
+  machine_id: string;
+  model_id: string;          // FK → Model.id
+  provider_id: string;       // literal string passed to the AI SDK
+  label: string;
+  context_limit: number | null;
+  enabled: number;
   created_at: string;
 }
 
@@ -205,7 +232,6 @@ export function createProject(data: {
   git_remote?: string;
   git_server_token?: string;
   git_default_branch?: string;
-  model_id?: string;
 }): Promise<Project> {
   return json("/api/projects", { method: "POST", body: JSON.stringify(data) });
 }
@@ -227,7 +253,6 @@ export function getMachines(): Promise<Machine[]> {
 export function createMachine(data: {
   name?: string;
   base_url: string;
-  model_id?: string;
   max_concurrent?: number;
   api_key?: string;
   machine_type?: string;
@@ -446,7 +471,8 @@ export interface ForemanTask {
   description: string;
   priority: number;
   type: string;
-  model: string;
+  /** Optional per-task override → models.id. NULL = use foreman_config.foreman_code_model_id. */
+  model_id: string | null;
   target_files: string | null;
   depends_on: string | null;
   acceptance_criteria: string | null;
@@ -499,8 +525,12 @@ export interface ForemanConfig {
   tasks_dir: string | null;
   priority_mode: string;
   tick_interval_ms: number;
+  /** Optional preferred-machine hint for the Director slot. */
   director_machine_id: string | null;
+  /** Logical model id for Director conversation/planner/verifier/analysis. */
   director_model_id: string | null;
+  /** Logical model id for Foreman code tasks + pipeline runs. */
+  foreman_code_model_id: string | null;
   analysis_enabled: number;
   continuous_exploration: number;
   exploration_preset: string;
@@ -519,7 +549,7 @@ export function foremanPoll(): Promise<ForemanPollResponse> {
 
 export function createForemanTask(data: {
   project_id: string; title: string; description?: string;
-  priority?: number; type?: string; model?: string;
+  priority?: number; type?: string; model_id?: string | null;
   target_files?: string[]; depends_on?: string[]; acceptance_criteria?: string[];
   max_retries?: number;
 }): Promise<ForemanTask> {
@@ -562,35 +592,61 @@ export function queueAllForemanTasks(): Promise<{ queued: number }> {
   return json("/api/foreman/queue-all", { method: "POST" });
 }
 
-// ─── Machine Models ─────────────────────────────────────────────────────────
+// ─── Logical Models + Bindings ──────────────────────────────────────────────
 
-export interface MachineModel {
-  id: string;
-  machine_id: string;
+export function getModels(): Promise<Model[]> {
+  return json("/api/models");
+}
+
+export function getModel(id: string): Promise<Model> {
+  return json(`/api/models/${id}`);
+}
+
+export function createModel(data: {
+  name: string;
+  slug: string;
+  family?: string | null;
+  default_context_limit?: number | null;
+  description?: string | null;
+}): Promise<Model> {
+  return json("/api/models", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function updateModel(id: string, data: Partial<Pick<Model, "name" | "slug" | "family" | "default_context_limit" | "description" | "archived_at">>): Promise<Model> {
+  return json(`/api/models/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+
+/** Soft-delete (archive). Use `hard: true` to attempt a hard delete (only succeeds with no references). */
+export function deleteModel(id: string, opts?: { hard?: boolean }): Promise<void> {
+  const qs = opts?.hard ? "?hard=true" : "";
+  return json(`/api/models/${id}${qs}`, { method: "DELETE" });
+}
+
+export function getMachineBindings(machineId: string): Promise<MachineBinding[]> {
+  return json(`/api/machines/${machineId}/bindings`);
+}
+
+export function createMachineBinding(machineId: string, data: {
   model_id: string;
+  provider_id: string;
+  label?: string;
+  context_limit?: number | null;
+  enabled?: boolean;
+}): Promise<MachineBinding> {
+  return json(`/api/machines/${machineId}/bindings`, { method: "POST", body: JSON.stringify(data) });
+}
+
+export function updateMachineBinding(machineId: string, bindingId: string, data: Partial<{
+  provider_id: string;
   label: string;
   context_limit: number | null;
-  created_at: string;
+  enabled: boolean;
+}>): Promise<MachineBinding> {
+  return json(`/api/machines/${machineId}/bindings/${bindingId}`, { method: "PATCH", body: JSON.stringify(data) });
 }
 
-export function getMachineModels(machineId: string): Promise<MachineModel[]> {
-  return json(`/api/machines/${machineId}/models`);
-}
-
-export function createMachineModel(machineId: string, data: { model_id: string; label?: string; context_limit?: number | null }): Promise<MachineModel> {
-  return json(`/api/machines/${machineId}/models`, { method: "POST", body: JSON.stringify(data) });
-}
-
-export function updateMachineModel(machineId: string, modelId: string, data: Partial<{ model_id: string; label: string; context_limit: number | null }>): Promise<MachineModel> {
-  return json(`/api/machines/${machineId}/models/${modelId}`, { method: "PATCH", body: JSON.stringify(data) });
-}
-
-export function deleteMachineModel(machineId: string, modelId: string): Promise<void> {
-  return json(`/api/machines/${machineId}/models/${modelId}`, { method: "DELETE" });
-}
-
-export function activateMachineModel(machineId: string, modelId: string): Promise<Machine> {
-  return json(`/api/machines/${machineId}/models/${modelId}/activate`, { method: "POST" });
+export function deleteMachineBinding(machineId: string, bindingId: string): Promise<void> {
+  return json(`/api/machines/${machineId}/bindings/${bindingId}`, { method: "DELETE" });
 }
 
 export interface TaskFileInfo {

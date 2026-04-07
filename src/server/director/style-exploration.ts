@@ -7,7 +7,7 @@
  * 3. It doesn't compete with the planner for machine time
  */
 
-import { createModel, generate } from "../llm";
+import { instantiateLlm, generate } from "../llm";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { Db, DirectorDirective, DirectorMilestone, ForemanTask, Project } from "../db";
@@ -62,7 +62,7 @@ export async function createStyleExplorationTask(
 
   console.log(`Style exploration: generating art prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
 
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
 
   // Gather previously used prompts to avoid repeats (important for FLUX.2 which is deterministic)
   const previousPrompts = collectPreviousPrompts(db, project.id);
@@ -119,7 +119,6 @@ export async function createStyleExplorationTask(
     comfyui_config: serializeConfig(comfyuiConfig),
     priority: 1,
     type: "style_exploration",
-    model: "auto",
     target_files: [],
     depends_on: [],
     acceptance_criteria: ["Generated 6 style variation images", "User selects and locks a style"],
@@ -214,7 +213,7 @@ async function generateFreshPrompts(
   const machineInfo = selectPlannerMachine(db, project);
   if (!machineInfo) return null;
 
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
 
   const avoidSection = previousPrompts.length > 0
     ? `\n\nIMPORTANT — These prompts have ALREADY been generated. Do NOT repeat or closely paraphrase any of them:\n${previousPrompts.map((p, i) => `${i + 1}. ${p}`).join("\n")}`
@@ -342,7 +341,7 @@ export async function createFluxEnhanceTask(
   if (machineInfo) {
     try {
       console.log("Enhance: LLM generating prompt variations ...");
-      const model = createModel(machineInfo.machine, machineInfo.modelId);
+      const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
       const text = (await generate(model, {
         system: ENHANCE_VARIATION_PROMPT,
         prompt: `Original prompt: ${originalPrompt}`,
@@ -389,7 +388,6 @@ export async function createFluxEnhanceTask(
     comfyui_config: serializeConfig(comfyuiConfig),
     priority: 1,
     type: "style_exploration",
-    model: "auto",
     target_files: [],
     depends_on: [],
     acceptance_criteria: [],

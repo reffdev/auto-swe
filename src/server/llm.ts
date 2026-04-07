@@ -7,11 +7,11 @@
  * - Consistent error handling
  *
  * Usage:
- *   import { createModel, generate, stream } from "../llm";
- *   const model = createModel(machine, modelId);
+ *   import { instantiateLlm, generate, stream } from "../llm";
+ *   import { resolveInferenceExecution } from "../models";
+ *   const execution = resolveInferenceExecution(db, modelId);
+ *   const model = instantiateLlm(execution);
  *   const text = await generate(model, { system, prompt });
- *   // or for streaming agent loops:
- *   const result = stream(model, { system, prompt, tools });
  */
 
 import { streamText, type CoreMessage, type ToolSet } from "ai";
@@ -25,6 +25,20 @@ const INACTIVITY_TIMEOUT_MS = 20 * 60 * 1000; // 20 min — max silence between 
 const MAX_SERVER_RETRIES = 5;                  // retries on 5xx / connection errors
 const MAX_AI_SDK_RETRIES = 6;                  // retries at the AI SDK level
 
+// ─── Execution shape (structural) ─────────────────────────────────────────
+//
+// llm.ts deliberately accepts a structural shape rather than importing
+// `ResolvedExecution` from models.ts, to avoid an import cycle (models.ts
+// uses machine-manager which… doesn't import llm.ts but the structural form
+// is also less coupling overall). Any caller that produces an object with
+// `{ machine, providerModelId }` can pass it here — including a full
+// ResolvedExecution from the resolver.
+
+export interface LlmExecution {
+  machine: Machine;
+  providerModelId: string;
+}
+
 // ─── Model warm-up ────────────────────────────────────────────────────────
 
 /**
@@ -32,7 +46,8 @@ const MAX_AI_SDK_RETRIES = 6;                  // retries at the AI SDK level
  * Calls llama-swap's /upstream/:model endpoint which blocks until the model is ready.
  * For non-llama-swap machines (ComfyUI, NPU, cloud APIs), this is a no-op.
  */
-export async function warmUpModel(machine: Machine, modelId: string): Promise<void> {
+export async function warmUpLlm(execution: LlmExecution): Promise<void> {
+  const { machine, providerModelId: modelId } = execution;
   // Only warm up inference machines — ComfyUI/NPU don't use llama-swap
   if (machine.machine_type !== "inference") return;
 
@@ -68,20 +83,23 @@ export async function warmUpModel(machine: Machine, modelId: string): Promise<vo
 
 // ─── Provider creation ─────────────────────────────────────────────────────
 
-type Model = ReturnType<ReturnType<typeof createOpenAICompatible>>;
+export type LlmModel = ReturnType<ReturnType<typeof createOpenAICompatible>>;
 
 /**
- * Create a model instance for a machine + model ID.
+ * Create an LLM SDK model instance from a resolved execution.
  * The returned model has built-in retry, timeout, and stream monitoring.
+ *
+ * Pass a `ResolvedExecution` from `resolveInferenceExecution()` (or
+ * `resolveLightNpuExecution()` for the NPU pathway).
  */
-export function createModel(machine: Machine, modelId?: string): Model {
-  const provider = createProvider(machine);
-  return provider(modelId ?? machine.model_id ?? "default");
+export function instantiateLlm(execution: LlmExecution): LlmModel {
+  const provider = createProvider(execution.machine);
+  return provider(execution.providerModelId);
 }
 
 /**
  * Create a provider for a machine. Use this when you need to create
- * multiple models from the same machine (rare — prefer createModel).
+ * multiple models from the same machine (rare — prefer instantiateLlm).
  */
 export function createProvider(machine: Machine) {
   return createOpenAICompatible({
@@ -105,7 +123,7 @@ interface GenerateOptions {
  * Generate a complete text response. Uses streaming internally to avoid
  * proxy timeouts, but returns the full text when done.
  */
-export async function generate(model: Model, opts: GenerateOptions): Promise<string> {
+export async function generate(model: LlmModel, opts: GenerateOptions): Promise<string> {
   const result = streamText({
     model,
     system: opts.system,

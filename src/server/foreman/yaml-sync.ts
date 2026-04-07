@@ -6,12 +6,14 @@ import { readdirSync, readFileSync } from "fs";
 import { resolve, extname } from "path";
 import { parse as parseYaml } from "yaml";
 import type { Db } from "../db";
+import { getModelBySlug } from "../models";
 
 interface YamlTask {
   id?: string;
   title?: string;
   priority?: number;
   type?: string;
+  /** Logical model slug (e.g. "qwen3-coder-30b"). Resolved to models.id at import. */
   model?: string;
   target_files?: string[];
   depends_on?: string[];
@@ -19,6 +21,22 @@ interface YamlTask {
   acceptance_criteria?: string[];
   max_retries?: number;
   status?: string;
+}
+
+/**
+ * Resolve a YAML `model:` slug to a logical model uuid. Returns null for
+ * empty/missing/"auto" values. Logs a warning (but does not fail import) when
+ * a slug doesn't match any known model — the task is created with model_id=null
+ * and will fall back to foreman_config.foreman_code_model_id at dispatch.
+ */
+function resolveYamlModelSlug(db: Db, slug: string | undefined, taskRef: string): string | null {
+  if (!slug || slug === "auto") return null;
+  const model = getModelBySlug(db, slug);
+  if (!model) {
+    console.warn(`Foreman yaml-sync: ${taskRef}: model slug "${slug}" did not match any logical model — task will use the default Foreman code model`);
+    return null;
+  }
+  return model.id;
 }
 
 export function syncTasksFromDisk(
@@ -91,7 +109,7 @@ export function syncTasksFromDisk(
           description: data.description ?? "",
           priority: data.priority ?? 3,
           type: data.type ?? "code",
-          model: data.model ?? "auto",
+          model_id: resolveYamlModelSlug(db, data.model, `${file}#${yamlId}`),
           target_files: data.target_files,
           depends_on: [], // resolved below
           acceptance_criteria: data.acceptance_criteria,
@@ -106,7 +124,9 @@ export function syncTasksFromDisk(
           description: data.description ?? existing.description,
           priority: data.priority ?? existing.priority,
           type: data.type ?? existing.type,
-          model: data.model ?? existing.model,
+          model_id: data.model !== undefined
+            ? resolveYamlModelSlug(db, data.model, `${file}#${yamlId}`)
+            : existing.model_id,
           target_files: data.target_files ? JSON.stringify(data.target_files) : existing.target_files,
           acceptance_criteria: data.acceptance_criteria ? JSON.stringify(data.acceptance_criteria) : existing.acceptance_criteria,
           max_retries: data.max_retries ?? existing.max_retries,

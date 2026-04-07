@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Send, Check, Loader2, RotateCcw, Cpu } from 'lucide-react'
+import { ArrowLeft, Send, Check, Loader2, RotateCcw } from 'lucide-react'
 import * as api from './api'
 import type { DirectorMessage } from './api'
 
@@ -15,20 +15,6 @@ export function DirectorConversation({ directiveId, onBack }: { directiveId: str
   const [approving, setApproving] = useState(false)
   const [error, setError] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const [machines, setMachines] = useState<api.Machine[]>([])
-  const [directorMachineId, setDirectorMachineId] = useState<string>('')
-  const [directorModelId, setDirectorModelId] = useState<string>('')
-
-  // Load machines and director config
-  useEffect(() => {
-    void api.getMachines().then(setMachines).catch(() => {})
-    void api.getForemanConfig().then(config => {
-      if (config) {
-        setDirectorMachineId(config.director_machine_id ?? '')
-        setDirectorModelId(config.director_model_id ?? '')
-      }
-    }).catch(() => {})
-  }, [])
 
   // Load directive and conversation
   useEffect(() => {
@@ -120,39 +106,7 @@ export function DirectorConversation({ directiveId, onBack }: { directiveId: str
           <p className="text-xs text-muted-foreground">Clarify requirements before autonomous execution begins</p>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            <Cpu className="size-3.5 text-muted-foreground shrink-0" />
-            <select
-              value={directorMachineId}
-              onChange={(e) => {
-                const machineId = e.target.value || null
-                setDirectorMachineId(e.target.value)
-                const machine = machines.find(m => m.id === machineId)
-                void api.updateForemanConfig({
-                  director_machine_id: machineId,
-                  director_model_id: machine?.model_id ?? null,
-                } as Partial<api.ForemanConfig>)
-                if (machine?.model_id) setDirectorModelId(machine.model_id)
-              }}
-              className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground"
-            >
-              <option value="">Auto</option>
-              {machines.filter(m => m.machine_type === 'inference').map(m => (
-                <option key={m.id} value={m.id}>{m.name || m.model_id || m.base_url}{!m.enabled ? ' (disabled)' : ''}</option>
-              ))}
-            </select>
-            {directorMachineId && (
-              <input
-                value={directorModelId}
-                onChange={(e) => {
-                  setDirectorModelId(e.target.value)
-                  void api.updateForemanConfig({ director_model_id: e.target.value || null } as Partial<api.ForemanConfig>)
-                }}
-                placeholder="model override"
-                className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground w-40"
-              />
-            )}
-          </div>
+          {/* Director model + preferred machine are configured globally on the Foreman config page after the logical-models refactor. */}
           {hasPlan && !generating && (
             <Button size="sm" onClick={handleApprove} disabled={approving}>
               {approving ? <Loader2 className="size-3.5 mr-1.5 animate-spin" /> : <Check className="size-3.5 mr-1.5" />}

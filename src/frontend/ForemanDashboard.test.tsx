@@ -74,7 +74,7 @@ describe('ForemanDashboard', () => {
       ...basePollResponse,
       tasks: [{
         id: 't1', yaml_id: '001', project_id: 'proj-1', title: 'Currency Manager',
-        description: '', priority: 1, type: 'code', model: 'auto',
+        description: '', priority: 1, type: 'code', model_id: null,
         target_files: null, depends_on: null, acceptance_criteria: null,
         status: 'backlog', machine_id: null, resolved_model: null,
         retry_count: 0, max_retries: 3, error_message: null,
@@ -122,8 +122,8 @@ describe('ForemanDashboard', () => {
     mockForemanPoll.mockResolvedValue({
       ...basePollResponse,
       tasks: [
-        { ...basePollResponse.tasks[0], id: 't1', title: 'Backlog Task', status: 'backlog', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model: 'auto', target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
-        { ...basePollResponse.tasks[0], id: 't2', title: 'Completed Task', status: 'completed', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model: 'auto', target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
+        { ...basePollResponse.tasks[0], id: 't1', title: 'Backlog Task', status: 'backlog', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model_id: null, target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
+        { ...basePollResponse.tasks[0], id: 't2', title: 'Completed Task', status: 'completed', yaml_id: null, project_id: 'p', description: '', priority: 3, type: 'code', model_id: null, target_files: null, depends_on: null, acceptance_criteria: null, machine_id: null, resolved_model: null, retry_count: 0, max_retries: 3, error_message: null, git_branch: null, git_worktree: null, git_pr_url: null, git_pr_number: null, next_retry_at: null, started_at: null, completed_at: null, duration_ms: null, prompt_tokens: null, completion_tokens: null, created_at: '2026-01-01', yaml_synced_at: null },
       ],
     })
     renderDashboard()

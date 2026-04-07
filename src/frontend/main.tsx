@@ -16,6 +16,7 @@ const routes: Array<{ path: string; view: ViewName }> = [
   { path: '/project/:projectId/llm-logs', view: 'llm-logs' },
   { path: '/project/:projectId/analysis', view: 'analysis' },
   { path: '/machine/:machineId', view: 'machine-detail' },
+  { path: '/models', view: 'models' },
   { path: '/foreman', view: 'foreman-dashboard' },
   { path: '/foreman/task/:taskId', view: 'foreman-task-detail' },
   { path: '/foreman/config', view: 'foreman-config' },

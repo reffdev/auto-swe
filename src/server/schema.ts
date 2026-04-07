@@ -11,7 +11,6 @@ export const machines = sqliteTable("machines", {
   id: text("id").primaryKey(),
   name: text("name").notNull().default(""),
   base_url: text("base_url").notNull(),
-  model_id: text("model_id"),  // optional — fallback if project doesn't specify
   machine_type: text("machine_type").notNull().default("inference"), // inference | comfyui | npu
   enabled: integer("enabled").notNull().default(1),
   status: text("status").notNull().default("idle"),  // derived from active run count
@@ -23,14 +22,38 @@ export const machines = sqliteTable("machines", {
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
-// ─── Machine Models (available models per machine) ──────────────────────────
+// ─── Models (logical, first-class) ───────────────────────────────────────────
+// A logical model (e.g. "Qwen3 Coder 30B") is independent of any machine.
+// Machines host bindings (machine_models rows) that point at a logical model
+// and carry the per-machine provider string + optional context override.
+
+export const models = sqliteTable("models", {
+  id: text("id").primaryKey(),                                    // uuid
+  name: text("name").notNull(),                                   // display, e.g. "Qwen3 Coder 30B"
+  slug: text("slug").notNull().unique(),                          // stable, e.g. "qwen3-coder-30b"
+  family: text("family"),                                         // optional grouping, e.g. "qwen3"
+  default_context_limit: integer("default_context_limit"),        // canonical; bindings can override
+  description: text("description"),                               // free-text notes
+  archived_at: text("archived_at"),                               // soft-delete; null = active
+  created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
+});
+
+// ─── Machine Models — bindings between a machine and a logical model ────────
+// Post-refactor semantics:
+//   model_id   — FK to models.id (the logical model the user selected)
+//   provider_id — the literal string passed to the AI SDK on this machine
+//                 (e.g. "qwen3-coder:30b" on Ollama, "qwen/qwen-3-coder-30b" on OpenRouter)
+//   context_limit — optional per-binding override of models.default_context_limit
+//   enabled    — toggle a binding without deleting it
 
 export const machineModels = sqliteTable("machine_models", {
   id: text("id").primaryKey(),
   machine_id: text("machine_id").notNull().references(() => machines.id),
-  model_id: text("model_id").notNull(),          // e.g., "qwen3.5:122b", "Qwen3-Coder-Next"
-  label: text("label").notNull().default(""),     // human-friendly name
-  context_limit: integer("context_limit"),        // token limit for this model
+  model_id: text("model_id").notNull().references(() => models.id),
+  provider_id: text("provider_id").notNull(),
+  label: text("label").notNull().default(""),
+  context_limit: integer("context_limit"),
+  enabled: integer("enabled").notNull().default(1),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
@@ -43,7 +66,6 @@ export const projects = sqliteTable("projects", {
   git_remote: text("git_remote"),
   git_server_token: text("git_server_token"),
   git_default_branch: text("git_default_branch").notNull().default("main"),
-  model_id: text("model_id"),
   build_command: text("build_command"),
   test_command: text("test_command"),
   lint_command: text("lint_command"),
@@ -235,7 +257,7 @@ export const foremanTasks = sqliteTable("foreman_tasks", {
   description: text("description").notNull().default(""),
   priority: integer("priority").notNull().default(3),           // 1=highest, 5=lowest
   type: text("type").notNull().default("code"),                 // code | art | music | sfx | review | claude | content
-  model: text("model").notNull().default("auto"),               // auto | specific model
+  model_id: text("model_id"),                                   // FK → models.id (per-task override; null = use foreman_code_model_id)
   target_files: text("target_files"),                           // JSON string[]
   depends_on: text("depends_on"),                               // JSON string[] of foreman_task IDs
   acceptance_criteria: text("acceptance_criteria"),              // JSON string[]
@@ -293,8 +315,9 @@ export const foremanConfig = sqliteTable("foreman_config", {
   tasks_dir: text("tasks_dir"),                                 // abs path to tasks/backlog/
   priority_mode: text("priority_mode").notNull().default("parallel"), // yield|parallel|exclusive
   tick_interval_ms: integer("tick_interval_ms").notNull().default(30000),
-  director_machine_id: text("director_machine_id"),             // machine for Director LLM calls
-  director_model_id: text("director_model_id"),                 // model override for Director
+  director_machine_id: text("director_machine_id"),             // optional preferred machine hint for the Director slot
+  director_model_id: text("director_model_id"),                 // FK → models.id (logical model for Director conversation/planner/verifier/analysis)
+  foreman_code_model_id: text("foreman_code_model_id"),         // FK → models.id (logical model for Foreman code tasks + pipeline runs)
   analysis_enabled: integer("analysis_enabled").notNull().default(1), // 0|1 — global analysis toggle
   continuous_exploration: integer("continuous_exploration").notNull().default(0), // 0|1 — keep generating art overnight
   exploration_preset: text("exploration_preset").notNull().default("concept"), // preset for continuous exploration (default: FLUX.2)

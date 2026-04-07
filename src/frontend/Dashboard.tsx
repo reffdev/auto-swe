@@ -6,6 +6,7 @@ import { Sidebar } from './Sidebar'
 import { IssueList } from './IssueList'
 import { IssueDetail } from './IssueDetail'
 import { MachineDetail } from './MachineDetail'
+import { ModelsPage } from './ModelsPage'
 import { DashboardLanding } from './DashboardLanding'
 import { Planner } from './Planner'
 import { ProjectSettings } from './ProjectSettings'
@@ -132,6 +133,8 @@ export function DashboardLayout({ view }: { view: ViewName }) {
               return selectedProjectId ? <AnalysisView projectId={selectedProjectId} /> : null
             case 'machine-detail':
               return selectedMachine ? <MachineDetail machine={selectedMachine} onBack={() => navigate('/')} onDataChange={refresh} /> : null
+            case 'models':
+              return <ModelsPage onBack={() => navigate('/')} />
             case 'foreman-dashboard':
               return <ForemanDashboard />
             case 'foreman-task-detail':

@@ -7,9 +7,10 @@
  */
 
 import type { Db } from "../db";
-import { resolveModel, sortByModelAffinity } from "./routing";
+import { classifyTask, resolveForemanCodeModelId, sortByModelAffinity } from "./routing";
 import { executeForemanTask, cancelForemanTask, unregisterActiveTask } from "./executor";
 import { acquireLease, releaseLease, getColocatedGpuTypes, type MachineLease } from "../machine-manager";
+import { acquireLeaseForModel, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import { isComfyUITaskType } from "./task-types";
 import { canForemanDispatch } from "../orchestrator";
 import { isStyleLocked } from "../director/style-lock";
@@ -21,7 +22,8 @@ import { bootstrapComfyUI } from "./comfyui-bootstrap";
 // ─── Module state ────────────────────────────────────────────────────────────
 
 let schedulerDb: Db | null = null;
-let lastOllamaModel: string | null = null;
+/** Logical model id of the last dispatched inference task — drives affinity sorting. */
+let lastInferenceModelId: string | null = null;
 let pendingNudge = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -149,21 +151,20 @@ async function schedulerTick(db: Db): Promise<void> {
       if (ready.length === 0) break;
     }
 
-    // Sort by model affinity then priority
-    const sorted = sortByModelAffinity(ready, lastOllamaModel);
+    // Sort by logical-model affinity then priority
+    const sorted = sortByModelAffinity(db, ready, lastInferenceModelId);
 
     // Find the first task that has an available machine lease
     let task = null;
     let leaseResult: { lease: MachineLease; machine: import("../db").Machine } | null = null;
     for (const candidate of sorted) {
-      const route = resolveModel(candidate);
+      const route = classifyTask(candidate);
       // Skip machine types we already know are at capacity this tick
       if (exhaustedMachineTypes.has(route.machineType)) continue;
       // Colocated yield: skip types that should yield to their colocated partner
       if (colocatedYield.has(route.machineType)) continue;
-      const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
+      const result = tryAcquireForCandidate(db, candidate, route.machineType);
       if (result) {
-        // acquireLease already excludes Director-reserved machines for "foreman" consumer
         task = candidate;
         leaseResult = result;
         break;
@@ -177,9 +178,9 @@ async function schedulerTick(db: Db): Promise<void> {
     if (!task && !leaseResult && colocatedYield.size > 0) {
       colocatedYield.clear();
       for (const candidate of sorted) {
-        const route = resolveModel(candidate);
+        const route = classifyTask(candidate);
         if (exhaustedMachineTypes.has(route.machineType)) continue;
-        const result = acquireLease(db, "foreman", candidate.title, { machineType: route.machineType });
+        const result = tryAcquireForCandidate(db, candidate, route.machineType);
         if (result) {
           task = candidate;
           leaseResult = result;
@@ -215,8 +216,12 @@ async function schedulerTick(db: Db): Promise<void> {
       .finally(() => {
         releaseLease(lease.id);
         unregisterActiveTask(task.id);
-        const resolved = task.resolved_model;
-        if (resolved) lastOllamaModel = resolved;
+        // Track logical model id for affinity sorting on the next tick
+        const fresh = db.getForemanTask(task.id);
+        if (fresh?.model_id) lastInferenceModelId = fresh.model_id;
+        else if (!isComfyUITaskType(task.type)) {
+          lastInferenceModelId = db.getForemanConfig()?.foreman_code_model_id ?? lastInferenceModelId;
+        }
 
         // Capacity freed — clear exhaustion for this machine type
         exhaustedMachineTypes.delete(machine.machine_type);
@@ -227,7 +232,7 @@ async function schedulerTick(db: Db): Promise<void> {
         if (colocatedTypes.length > 0) {
           const ready = db.getForemanTasksReadyToRun();
           for (const ct of colocatedTypes) {
-            if (ready.some(t => resolveModel(t).machineType === ct)) {
+            if (ready.some(t => classifyTask(t).machineType === ct)) {
               colocatedYield.add(machine.machine_type);
               break;
             }
@@ -246,6 +251,56 @@ async function schedulerTick(db: Db): Promise<void> {
   if (dispatched === 0) {
     // Nothing dispatched — schedule a wake-up for the nearest retry backoff
     scheduleRetryWakeup(db);
+  }
+}
+
+// ─── Lease acquisition for a single candidate ────────────────────────────────
+
+/**
+ * Try to acquire a lease for one candidate task.
+ *
+ * For inference tasks: resolve the logical model (per-task override or
+ * configured Foreman code slot) and call acquireLeaseForModel(), which
+ * iterates the candidate machines that host that model and returns the
+ * first one with capacity. If the model is not configured or not hosted
+ * anywhere, the task is failed with a clear message and we return null.
+ *
+ * For ComfyUI tasks: fall back to the legacy machineType-based acquireLease()
+ * — ComfyUI dispatch is deliberately untouched by the logical-models refactor.
+ */
+function tryAcquireForCandidate(
+  db: Db,
+  task: import("../db").ForemanTask,
+  machineType: import("./routing").RouteMachineType,
+): { lease: MachineLease; machine: import("../db").Machine } | null {
+  if (machineType === "comfyui") {
+    return acquireLease(db, "foreman", task.title, { machineType: "comfyui" });
+  }
+
+  // Inference path — resolve via logical model
+  const modelId = resolveForemanCodeModelId(db, task);
+  if (!modelId) {
+    db.updateForemanTask(task.id, {
+      status: "failed",
+      error_message: "Foreman code model is not configured. Set it under Settings → Foreman → Models, or set a per-task model_id.",
+    });
+    console.error(`Foreman scheduler: ${task.title}: foreman code model not configured`);
+    return null;
+  }
+  try {
+    const result = acquireLeaseForModel(db, "foreman", task.title, modelId);
+    if (!result) return null;
+    return { lease: result.lease, machine: result.execution.machine };
+  } catch (err) {
+    if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
+      db.updateForemanTask(task.id, {
+        status: "failed",
+        error_message: err.message,
+      });
+      console.error(`Foreman scheduler: ${task.title}: ${err.message}`);
+      return null;
+    }
+    throw err;
   }
 }
 

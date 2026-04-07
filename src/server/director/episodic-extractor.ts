@@ -5,7 +5,7 @@
  * Uses an LLM to analyze logs and produce structured insights.
  */
 
-import { createModel, generate } from "../llm";
+import { instantiateLlm, generate } from "../llm";
 import { selectLightMachine } from "../planner-llm";
 import { getGlobalDb } from "./scheduler";
 import { writeMemory, readMemory } from "./persistent-memory";
@@ -33,7 +33,7 @@ export async function extractPatternsFromLogs(
     return;
   }
 
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
   console.log(`Episodic extraction: using ${machineInfo.machine.machine_type} machine (${machineInfo.machine.name || machineInfo.machine.id})`);
 
   const combined = logContents.join("\n\n---\n\n");

@@ -43,10 +43,9 @@ describe("schema", () => {
 
 describe("machines", () => {
   it("creates a machine with defaults", () => {
-    const m = db.createMachine({ base_url: "http://localhost:8080/v1", model_id: "test-model" });
+    const m = db.createMachine({ base_url: "http://localhost:8080/v1" });
     expect(m.id).toBeTruthy();
     expect(m.base_url).toBe("http://localhost:8080/v1");
-    expect(m.model_id).toBe("test-model");
     expect(m.name).toBe("");
     expect(m.enabled).toBe(1);
     expect(m.status).toBe("idle");
@@ -55,18 +54,18 @@ describe("machines", () => {
   });
 
   it("creates a machine with a name", () => {
-    const m = db.createMachine({ name: "local-gpu", base_url: "http://localhost:8080/v1", model_id: "test-model" });
+    const m = db.createMachine({ name: "local-gpu", base_url: "http://localhost:8080/v1" });
     expect(m.name).toBe("local-gpu");
   });
 
   it("lists machines", () => {
-    db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
-    db.createMachine({ base_url: "http://b/v1", model_id: "m2" });
+    db.createMachine({ base_url: "http://a/v1" });
+    db.createMachine({ base_url: "http://b/v1" });
     expect(db.getMachines()).toHaveLength(2);
   });
 
   it("gets machine by id", () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     expect(db.getMachine(m.id)).toEqual(m);
   });
 
@@ -75,16 +74,16 @@ describe("machines", () => {
   });
 
   it("updates machine fields", () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
-    db.updateMachine(m.id, { name: "renamed", model_id: "m2" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
+    db.updateMachine(m.id, { name: "renamed", context_limit: 8192 });
     const updated = db.getMachine(m.id)!;
     expect(updated.name).toBe("renamed");
-    expect(updated.model_id).toBe("m2");
+    expect(updated.context_limit).toBe(8192);
     expect(updated.base_url).toBe("http://a/v1"); // unchanged
   });
 
   it("deletes a machine", () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     expect(db.deleteMachine(m.id)).toBe(true);
     expect(db.getMachine(m.id)).toBeNull();
   });
@@ -94,23 +93,23 @@ describe("machines", () => {
   });
 
   it("getAvailableMachine returns first enabled machine", () => {
-    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
-    db.createMachine({ base_url: "http://b/v1", model_id: "m2" });
+    const m1 = db.createMachine({ base_url: "http://a/v1" });
+    db.createMachine({ base_url: "http://b/v1" });
     const avail = db.getAvailableMachine();
     expect(avail?.id).toBe(m1.id);
   });
 
   it("getAvailableMachine skips disabled machines", () => {
-    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m1 = db.createMachine({ base_url: "http://a/v1" });
     db.updateMachine(m1.id, { enabled: 0 });
-    const m2 = db.createMachine({ base_url: "http://b/v1", model_id: "m2" });
+    const m2 = db.createMachine({ base_url: "http://b/v1" });
     const avail = db.getAvailableMachine();
     expect(avail?.id).toBe(m2.id);
   });
 
   it("getAvailableMachine skips machines at capacity", () => {
     const p = db.createProject({ name: "test", workdir: "/tmp" });
-    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1" }); // max_concurrent defaults to 1
+    const m1 = db.createMachine({ base_url: "http://a/v1" }); // max_concurrent defaults to 1
     const issue = db.createIssue({ project_id: p.id, title: "test" });
     db.updateIssue(issue.id, { status: "running" });
     const run = db.createRun({ issue_id: issue.id, stage: "implement" });
@@ -120,7 +119,7 @@ describe("machines", () => {
 
   it("getAvailableMachine respects max_concurrent", () => {
     const p = db.createProject({ name: "test", workdir: "/tmp" });
-    const m1 = db.createMachine({ base_url: "http://a/v1", model_id: "m1", max_concurrent: 2 });
+    const m1 = db.createMachine({ base_url: "http://a/v1", max_concurrent: 2 });
     const issue = db.createIssue({ project_id: p.id, title: "test" });
     db.updateIssue(issue.id, { status: "running" });
     const run = db.createRun({ issue_id: issue.id, stage: "implement" });
@@ -146,7 +145,6 @@ describe("projects", () => {
     expect(p.git_remote).toBeNull();
     expect(p.git_server_token).toBeNull();
     expect(p.git_default_branch).toBe("main");
-    expect(p.model_id).toBeNull();
   });
 
   it("creates a project with all fields", () => {
@@ -156,12 +154,10 @@ describe("projects", () => {
       git_remote: "https://github.com/test/repo.git",
       git_server_token: "ghp_abc",
       git_default_branch: "develop",
-      model_id: "custom-model",
     });
     expect(p.git_remote).toBe("https://github.com/test/repo.git");
     expect(p.git_server_token).toBe("ghp_abc");
     expect(p.git_default_branch).toBe("develop");
-    expect(p.model_id).toBe("custom-model");
   });
 
   it("lists projects", () => {
@@ -388,7 +384,7 @@ describe("issues retry_count", () => {
 
 describe("crash recovery", () => {
   it("resets working machines to idle", () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     db.updateMachine(m.id, { status: "working", current_run_id: "some-run" });
 
     const result = db.recoverFromCrash();
@@ -479,7 +475,7 @@ describe("llm_requests", () => {
 
 describe("crash recovery (continued)", () => {
   it("rejects invalid column names in update", () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     expect(() => {
       // @ts-expect-error — testing runtime protection against injection
       db.updateMachine(m.id, { "id; DROP TABLE machines--": "x" });
@@ -487,7 +483,7 @@ describe("crash recovery (continued)", () => {
   });
 
   it("does not touch idle machines or completed runs", () => {
-    const m = db.createMachine({ base_url: "http://a/v1", model_id: "m1" });
+    const m = db.createMachine({ base_url: "http://a/v1" });
     const p = db.createProject({ name: "test", workdir: "/tmp/test" });
     const issue = db.createIssue({ project_id: p.id, title: "Fix bug" });
     const run = db.createRun({ issue_id: issue.id });

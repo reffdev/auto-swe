@@ -21,10 +21,17 @@ An autonomous software engineering orchestration system. It takes high-level dir
 │  ├─ /ws/terminal     PTY WebSocket (Claude CLI)         │
 │  └─ SSE /api/console Log streaming                      │
 ├─────────────────────────────────────────────────────────┤
+│  Logical Models      First-class entities (models.ts)   │
+│  ├─ models           Logical model registry             │
+│  ├─ machine_models   Bindings: machine ↔ model + provider_id │
+│  ├─ Director slot    foreman_config.director_model_id   │
+│  └─ Foreman code slot foreman_config.foreman_code_model_id │
+├─────────────────────────────────────────────────────────┤
 │  Machine Manager     Lease-based access control         │
 │  ├─ Director lease   Conversation, planning, verify     │
 │  ├─ Foreman lease    Task execution                     │
-│  └─ Pipeline lease   Full issue pipeline                │
+│  ├─ Pipeline lease   Full issue pipeline                │
+│  └─ acquireLeaseForModel  Dispatch by logical model     │
 ├─────────────────────────────────────────────────────────┤
 │  Director            High-level autonomy                │
 │  ├─ Conversation     Chat with user, research, plan     │
@@ -53,8 +60,9 @@ An autonomous software engineering orchestration system. It takes high-level dir
 └─────────────────────────────────────────────────────────┘
 
   Machines:
-  ├─ Inference (Ollama/OpenRouter/llama.cpp) → code tasks
-  └─ ComfyUI (ROCm/CUDA)                     → art/music/sfx
+  ├─ Inference (Ollama/OpenRouter/llama.cpp) → code tasks (logical-model dispatch)
+  ├─ ComfyUI (ROCm/CUDA)                     → art/music/sfx (preset dispatch)
+  └─ NPU (small fast models)                 → light helpers (selectLightMachine)
 ```
 
 ## Director Flow
@@ -101,21 +109,26 @@ src/server/
 │   ├── web-search.ts   # DuckDuckGo search
 │   ├── fetch.ts        # URL fetcher
 │   └── context7.ts     # Library docs lookup
-├── machine-manager.ts  # Centralized lease system
+├── machine-manager.ts  # Centralized lease system + acquireLease/strictPreferred
+├── models.ts           # Logical models: CRUD, resolver, acquireLeaseForModel
+├── llm.ts              # AI SDK wrapper: instantiateLlm(execution), warmUpLlm
 ├── terminal.ts         # PTY WebSocket for Claude CLI
 ├── schema.ts           # Drizzle ORM (SQLite)
-├── db.ts               # Database + migrations
-├── api.ts              # Express routes
+├── db.ts               # Database + migrations (incl. logical-models refactor)
+├── api.ts              # Express routes (incl. /api/models, /api/machines/:id/bindings)
 ├── stats.ts            # Token speed tracking
 └── git.ts              # Worktree, commit, PR operations
 
 src/frontend/
 ├── Dashboard.tsx       # Main layout + view routing
 ├── Sidebar.tsx         # Navigation, stats, toggles
-├── DirectorDashboard.tsx    # Directive list + machine selector
+├── ModelsPage.tsx      # Logical-model registry (CRUD + bindings overview)
+├── DirectorDashboard.tsx    # Directive list
 ├── DirectorConversation.tsx # Chat UI with retry
 ├── ForemanDashboard.tsx     # Task queue
 ├── ForemanTaskDetail.tsx    # Task detail + asset preview
+├── ForemanConfig.tsx        # Scheduler config + Director/Foreman model slot pickers
+├── MachineDetail.tsx        # Machine settings + MachineBindings sub-component
 ├── Terminal.tsx        # xterm.js Claude CLI
 └── api.ts              # Frontend API client
 ```
@@ -125,15 +138,77 @@ src/frontend/
 SQLite with WAL mode. Drizzle ORM for schema, raw SQL for complex queries.
 Migrations in `db.ts` `migrate()` method — add `ALTER TABLE` statements there.
 
-Key tables: `projects`, `machines`, `issues`, `runs`, `llm_requests`, `foreman_tasks`, `foreman_runs`, `foreman_config`, `director_directives`, `director_milestones`, `director_reviews`, `director_conversations`, `director_messages`.
+Key tables: `projects`, `machines`, `models`, `machine_models`, `issues`, `runs`, `llm_requests`, `foreman_tasks`, `foreman_runs`, `foreman_config`, `director_directives`, `director_milestones`, `director_reviews`, `director_conversations`, `director_messages`.
+
+The logical-models refactor (see "Logical Models" below) introduced a one-shot,
+gated, transactional rebuild migration in `migrateLogicalModelsRefactor()`. It
+creates the `models` table, backfills logical models from existing provider
+strings, and rebuilds `machines`, `projects`, `foreman_config`, `foreman_tasks`,
+and `machine_models` to drop dead columns and enforce FK constraints. The
+migration is idempotent via a column-existence gate (`machine_models.provider_id`).
+
+## Logical Models
+
+A `model` (e.g. "Qwen3 Coder 30B") is a first-class entity decoupled from any
+machine. A `binding` (`machine_models` row) connects a logical model to a
+machine and supplies the per-machine `provider_id` (the literal string passed
+to the AI SDK on that host). The same logical model can be hosted on multiple
+machines with different provider strings.
+
+**Two configured slots** in `foreman_config`:
+- `director_model_id` — used by Director conversation/planner/verifier,
+  issue decomposition, planner-api, and analysis runs
+- `foreman_code_model_id` — used by Foreman code task executor, pipeline runs,
+  and pipeline stages
+- `director_machine_id` — optional preferred-machine hint for the Director slot
+  (when the Director model is hosted on multiple machines)
+
+**Per-task override:** `foreman_tasks.model_id` (FK to `models.id`, nullable).
+NULL = use the Foreman code slot default.
+
+**Resolution flow** (everyone goes through `src/server/models.ts`):
+```ts
+// Read the configured slot
+const modelId = getForemanCodeModelId(db);  // throws ModelSlotUnconfiguredError if unset
+
+// Acquire a lease + resolved execution in one call
+const result = acquireLeaseForModel(db, "foreman", taskLabel, modelId);
+// returns null if all hosting machines are at capacity (caller should defer)
+// throws NoMachineHostsModelError if no enabled inference machine has an enabled binding
+
+const { lease, execution } = result;
+// execution.machine, execution.providerModelId, execution.effectiveContextLimit
+
+// Talk to the model
+const llm = instantiateLlm(execution);
+await warmUpLlm(execution);
+const text = await generate(llm, { system, prompt });
+// finally: releaseLease(lease.id)
+```
+
+**Effective context limit** = `min(machine.context_limit, binding.context_limit, model.default_context_limit)` — the smallest non-null value wins.
+
+**NPU pathway** (lightweight helpers — episodic extractor, task knowledge
+extractor, art prompt revision, art style exploration) is **not** managed by
+the slot system. Use `resolveLightNpuExecution(db)` or the legacy
+`selectLightMachine` shim to get any enabled NPU machine + its first enabled
+binding. NPU machines are excluded from the inference resolver.
+
+**ComfyUI dispatch** (art/music/sfx tasks) is also untouched by this layer — it
+uses the preset/workflow system in `foreman/comfyui-*.ts`.
 
 ## Machine Manager
 
 All machine access goes through `machine-manager.ts`. Consumers acquire leases:
-- `acquireLease(db, "director", label, { preferredMachineId })`
+- `acquireLease(db, "director", label, { preferredMachineId, strictPreferred })`
+- `acquireLeaseForModel(db, consumer, label, modelId)` — preferred entry point
+  for inference workloads (handles candidate iteration + capacity-aware fallback)
 - `releaseLease(leaseId)` in finally block
-- Leases expire automatically (5min director, 30min foreman)
+- Leases expire automatically (5min director, 30min foreman, 60min pipeline, 10min analysis)
 - `hasCapacity(machine)` respects `max_concurrent`
+- `strictPreferred: true` disables type-based fallback when a specific machine
+  is required (used by `acquireLeaseForModel` to guarantee the chosen machine
+  hosts the requested logical model)
 
 ## Memory System (.swe/)
 
@@ -189,6 +264,10 @@ This gives ~77% token savings on multi-lens reviews.
 
 - TypeScript, strict mode
 - AI SDK (`ai` package) for all LLM calls — `streamText`, `generateText`, `tool()`
+- LLM model instances always come from `instantiateLlm(execution)` in `llm.ts`
+- LLM model resolution always goes through `models.ts` (`resolveInferenceExecution`,
+  `resolveLightNpuExecution`, `acquireLeaseForModel`) — never read provider strings
+  directly from machine fields
 - Zod for tool parameter schemas
 - Express routes with explicit error handling
 - Git worktrees for task isolation
@@ -197,8 +276,10 @@ This gives ~77% token savings on multi-lens reviews.
 
 ## Testing
 
-Jest, 711+ tests across 41 suites. Run with `npx jest`.
-Tests use in-memory SQLite databases and temp directories.
+Jest, 880+ tests across 52 suites. Run with `npx jest`.
+Tests use in-memory SQLite databases and temp directories. Test files are
+excluded from `tsc` (per `tsconfig.json`); they're type-checked by ts-jest at
+test runtime, which is more lenient about excess properties on object literals.
 
 ## Build & Run
 
@@ -213,7 +294,14 @@ npx tsc --noEmit     # Type check
 ## What NOT To Do
 
 - Don't add migrations by modifying the schema alone — add ALTER TABLE to `db.ts` `migrate()`
-- Don't bypass the machine manager — always use `acquireLease`/`releaseLease`
+- Don't bypass the machine manager — always use `acquireLease`/`releaseLease` or `acquireLeaseForModel`
+- Don't read provider strings from machine fields (`machines.model_id` no longer
+  exists). Always go through `models.ts` resolvers — they return the right
+  binding, machine, and effective context limit in one call.
+- Don't call `acquireLease` with `preferredMachineId` and expect the result to
+  always be that machine — without `strictPreferred: true`, acquireLease may
+  fall through to a type-based search and pick a different machine. For
+  logical-model dispatch, use `acquireLeaseForModel`.
 - Don't make the Director write project files — it has read-only filesystem access
 - Don't skip `shell: false` in spawn calls — prevents injection and special char issues
 - Don't add `shell: true` to memsearch or other subprocess calls

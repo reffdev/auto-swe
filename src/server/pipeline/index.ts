@@ -11,8 +11,14 @@
 import { StateGraph, START, END, type LangGraphRunnableConfig } from "@langchain/langgraph";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { createProvider as _createProvider } from "../llm";
+import { instantiateLlm } from "../llm";
+import {
+  resolveInferenceExecution,
+  getForemanCodeModelId,
+  ModelSlotUnconfiguredError,
+  NoMachineHostsModelError,
+  ModelNotFoundError,
+} from "../models";
 import { resolve } from "path";
 
 import { PipelineState } from "./state";
@@ -45,9 +51,24 @@ import type { Db, Machine, Issue, Project } from "../db";
 export { extractScoutBrief, parseVerdict, parseTestVerdict } from "./parsers";
 export { REVIEW_LENSES, type ReviewLens } from "../prompts/stage";
 
-// ─── LLM provider — delegates to unified llm.ts module ──────────────────────
+// ─── LLM helpers — delegates to unified llm.ts module ──────────────────────
 
-export { createProvider as createModelProvider, createModel, generate, stream } from "../llm";
+export { createProvider as createModelProvider, instantiateLlm, generate, stream } from "../llm";
+
+/**
+ * Internal helper: resolve the Foreman-code logical model into a binding on
+ * the given machine, returning the (provider string, effective context limit).
+ * Throws a clear error if the slot is unconfigured or the machine doesn't
+ * host the configured model.
+ */
+function resolvePipelineExecution(db: Db, machine: Machine): { providerModelId: string; effectiveContextLimit: number | null } {
+  const requestedModelId = getForemanCodeModelId(db);
+  const exec = resolveInferenceExecution(db, requestedModelId, { preferMachineId: machine.id });
+  if (exec.machine.id !== machine.id) {
+    throw new Error(`Machine ${machine.id} does not host the configured Foreman code model (resolver picked ${exec.machine.id})`);
+  }
+  return { providerModelId: exec.providerModelId, effectiveContextLimit: exec.effectiveContextLimit };
+}
 
 // ─── Graph wiring (shared between production and tests) ─────────────────────
 
@@ -181,11 +202,21 @@ export async function executePipeline(
 
     console.log(`Pipeline: starting for "${issue.title}" (machine: ${machine.name || machine.id})`);
 
-    // Create model once — shared across all pipeline nodes
-    const modelId = project.model_id ?? machine.model_id;
-    if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const provider = _createProvider(machine);
-    const model = provider(modelId);
+    // Resolve model once — shared across all pipeline nodes. Pipeline runs use
+    // the configured Foreman code slot.
+    let modelId: string;
+    try {
+      const resolved = resolvePipelineExecution(ctx.db, machine);
+      modelId = resolved.providerModelId;
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        throw new Error(err.message);
+      }
+      throw err;
+    }
+    const model = instantiateLlm({ machine, providerModelId: modelId });
 
     // Fresh run: unique thread_id so we don't resume stale checkpoints
     const threadId = `pipeline-${issue.id}-${Date.now()}`;
@@ -305,10 +336,19 @@ export async function executeStageRetry(
       return await executePipeline(ctx, machine, issue, project);
     }
 
-    const modelId = project.model_id ?? machine.model_id;
-    if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const provider = _createProvider(machine);
-    const model = provider(modelId);
+    let modelId: string;
+    try {
+      const resolved = resolvePipelineExecution(ctx.db, machine);
+      modelId = resolved.providerModelId;
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        throw new Error(err.message);
+      }
+      throw err;
+    }
+    const model = instantiateLlm({ machine, providerModelId: modelId });
 
     // Use the thread_id from the last executePipeline run to resume from checkpoint
     const threadId = lastThreadIds.get(issue.id);

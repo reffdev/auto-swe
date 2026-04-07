@@ -413,7 +413,7 @@ export function createDirectorRouter(db: Db): Router {
       description: fullDescription,
       priority: 3,
       type: "code",
-      model: "manual",
+      model_id: null,
       target_files: [],
       depends_on: [],
       acceptance_criteria: [],

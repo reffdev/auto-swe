@@ -10,7 +10,8 @@ import { resolve } from "path";
 import type { Db, Machine, Project, ForemanTask } from "../db";
 import { runStage } from "../pipeline/run-stage";
 import { withProjectLock } from "../pipeline/index";
-import { createModel, warmUpModel } from "../llm";
+import { instantiateLlm, warmUpLlm } from "../llm";
+import { resolveInferenceExecution, getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import {
   makeWorktreePath,
   ensureWorkdir,
@@ -21,7 +22,6 @@ import {
   pushBranch,
 } from "../git";
 import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrlTool, lookupDocs } from "../tools";
-import { resolveModel } from "./routing";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 
 import { nudgeDirector } from "../director/scheduler";
@@ -75,8 +75,36 @@ export async function executeForemanTask(
   }
 
   const { db } = ctx;
-  const route = resolveModel(task);
-  const modelId = machine.model_id || route.modelId;
+  // Resolve the binding for this task on the chosen machine. The scheduler
+  // already picked `machine` based on which inference machines host the task's
+  // configured logical model (foreman_tasks.model_id override or
+  // foreman_config.foreman_code_model_id default), so we just look up the
+  // binding here to get the provider string + effective context limit.
+  let modelId: string;
+  let effectiveContextLimit: number | null = machine.context_limit;
+  try {
+    const requestedModelId = task.model_id ?? getForemanCodeModelId(db);
+    const exec = resolveInferenceExecution(db, requestedModelId, { preferMachineId: machine.id });
+    if (exec.machine.id !== machine.id) {
+      // Should never happen — scheduler dispatched to a machine that doesn't host the model
+      throw new Error(`Machine ${machine.id} does not host model ${requestedModelId} (resolver chose ${exec.machine.id})`);
+    }
+    modelId = exec.providerModelId;
+    effectiveContextLimit = exec.effectiveContextLimit;
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError ||
+        err instanceof NoMachineHostsModelError ||
+        err instanceof ModelNotFoundError) {
+      // Mark the task failed with a clear, actionable message
+      db.updateForemanTask(task.id, {
+        status: "failed",
+        error_message: err.message,
+      });
+      console.error(`Foreman executor: ${task.title}: ${err.message}`);
+      return;
+    }
+    throw err;
+  }
   const run = initTaskRun(db, task, machine, modelId);
 
   const targetFiles: string[] = task.target_files ? JSON.parse(task.target_files) : [];
@@ -230,10 +258,11 @@ export async function executeForemanTask(
 
     console.log(`[executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars) — directive=${directiveText?.length ?? 0}, designDoc=${designDoc?.length ?? 0}, milestone=${milestoneContext?.length ?? 0}, brief=${memoryContext.brief?.length ?? 0}, retrievedConventions=${memoryContext.retrievedConventions.length}, searchUsed=${memoryContext.searchUsed} — warming up model...`);
     // Ensure the model is loaded before sending requests
-    await warmUpModel(machine, modelId);
+    const execution = { machine, providerModelId: modelId };
+    await warmUpLlm(execution);
 
     // Create model provider
-    const model = createModel(machine, modelId);
+    const model = instantiateLlm(execution);
 
     console.log(`[executor] ${task.title}: model created, entering runStage...`);
     // Run the LLM agent — pass runId="" to skip runs table updates, use onStepsUpdate for foreman_runs
@@ -249,7 +278,7 @@ export async function executeForemanTask(
       tools,
       maxSteps: 80,
       abortSignal: run.controller.signal,
-      contextLimit: machine.context_limit ?? undefined,
+      contextLimit: effectiveContextLimit ?? undefined,
       worktreePath,
       onStepsUpdate: (stepsJson: string) => {
         try { db.updateForemanRun(run.foremanRun.id, { output: stepsJson }); } catch { /* non-critical */ }

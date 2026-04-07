@@ -169,7 +169,6 @@ describe('DashboardLanding', () => {
     mockPrompt.mockImplementation((prompt: string) => {
       if (prompt === 'Machine name (optional):') return ''
       if (prompt.startsWith('Base URL:')) return 'http://localhost:11434'
-      if (prompt.startsWith('Default Model ID')) return 'llama3'
       return null
     })
 
@@ -188,7 +187,6 @@ describe('DashboardLanding', () => {
     expect(mockCreateMachine).toHaveBeenCalledWith({
       name: '',
       base_url: 'http://localhost:11434',
-      model_id: 'llama3',
     })
     expect(mockOnRefresh).toHaveBeenCalled()
 

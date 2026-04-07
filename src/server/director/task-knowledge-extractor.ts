@@ -7,7 +7,7 @@
  * and manually submitted commits (has commit SHAs + user description).
  */
 
-import { createModel, generate } from "../llm";
+import { instantiateLlm, generate } from "../llm";
 import { writeMemory, readMemory } from "./persistent-memory";
 import { getDiffBetween, fetchOrigin } from "../git-helpers";
 import type { Db, ForemanTask, Machine, Project } from "../db";
@@ -130,7 +130,7 @@ async function runExtraction(
   context: string,
   machineInfo: { machine: Machine; modelId: string },
 ): Promise<void> {
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
 
   let extractions: Extraction[];
   try {

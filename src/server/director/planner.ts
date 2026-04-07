@@ -7,7 +7,7 @@
  * - After a milestone transitions (new milestone tasks)
  */
 
-import { createModel, stream as llmStream, warmUpModel } from "../llm";
+import { instantiateLlm, stream as llmStream, warmUpLlm } from "../llm";
 import { MACHINE_TYPE_TASK_TYPES } from "../foreman/task-types";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
@@ -99,9 +99,10 @@ export async function planNextTasks(
 
   // Stream LLM response with progress logging
   const llmStartTime = Date.now();
-  const model = createModel(machine, modelId);
+  const execution = { machine, providerModelId: modelId };
+  const model = instantiateLlm(execution);
   // Ensure the model is loaded before sending requests
-  await warmUpModel(machine, modelId);
+  await warmUpLlm(execution);
 
   console.log(`Director planner: calling ${machine.name || modelId} ...`);
 
@@ -215,7 +216,7 @@ export async function planNextTasks(
       description,
       priority: parsed.priority,
       type: parsed.type,
-      model: "auto",
+      // model_id is left null — scheduler resolves it from foreman_config.foreman_code_model_id at dispatch
       target_files: parsed.target_files,
       depends_on: [],
       acceptance_criteria: parsed.acceptance_criteria,

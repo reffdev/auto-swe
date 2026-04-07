@@ -51,7 +51,7 @@ export class Db {
     this.sqlite.exec(`
       CREATE TABLE IF NOT EXISTS machines (
         id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', base_url TEXT NOT NULL,
-        model_id TEXT, machine_type TEXT NOT NULL DEFAULT 'inference',
+        machine_type TEXT NOT NULL DEFAULT 'inference',
         enabled INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'idle', current_run_id TEXT,
         max_concurrent INTEGER NOT NULL DEFAULT 1,
@@ -61,9 +61,30 @@ export class Db {
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL,
         git_remote TEXT, git_server_token TEXT,
-        git_default_branch TEXT NOT NULL DEFAULT 'main', model_id TEXT,
+        git_default_branch TEXT NOT NULL DEFAULT 'main',
         build_command TEXT, test_command TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS models (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        family TEXT,
+        default_context_limit INTEGER,
+        description TEXT,
+        archived_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS machine_models (
+        id TEXT PRIMARY KEY,
+        machine_id TEXT NOT NULL REFERENCES machines(id),
+        model_id TEXT NOT NULL REFERENCES models(id),
+        provider_id TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        context_limit INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(machine_id, model_id)
       );
       CREATE TABLE IF NOT EXISTS issues (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
@@ -123,7 +144,7 @@ export class Db {
         title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
         priority INTEGER NOT NULL DEFAULT 3,
         type TEXT NOT NULL DEFAULT 'code',
-        model TEXT NOT NULL DEFAULT 'auto',
+        model_id TEXT REFERENCES models(id),
         target_files TEXT, depends_on TEXT, acceptance_criteria TEXT,
         status TEXT NOT NULL DEFAULT 'backlog',
         machine_id TEXT, resolved_model TEXT,
@@ -154,6 +175,12 @@ export class Db {
         tasks_dir TEXT,
         priority_mode TEXT NOT NULL DEFAULT 'parallel',
         tick_interval_ms INTEGER NOT NULL DEFAULT 30000,
+        director_machine_id TEXT,
+        director_model_id TEXT REFERENCES models(id),
+        foreman_code_model_id TEXT REFERENCES models(id),
+        analysis_enabled INTEGER NOT NULL DEFAULT 1,
+        continuous_exploration INTEGER NOT NULL DEFAULT 0,
+        exploration_preset TEXT NOT NULL DEFAULT 'concept',
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS director_directives (
@@ -219,6 +246,9 @@ export class Db {
   }
 
   private migrate(): void {
+    // Legacy idempotent ALTERs for older databases. These predate the
+    // logical-models refactor below and bring an old DB up to the point
+    // where the refactor migration can run.
     const migrations = [
       "ALTER TABLE machines ADD COLUMN context_limit INTEGER",
       "ALTER TABLE machines ADD COLUMN api_key TEXT",
@@ -249,6 +279,8 @@ export class Db {
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
       "ALTER TABLE machines ADD COLUMN release_url TEXT",
+      // Legacy machine_models shape (text model_id, no provider_id, no enabled).
+      // The logical-models refactor migration below upgrades this to its final shape.
       `CREATE TABLE IF NOT EXISTS machine_models (
         id TEXT PRIMARY KEY,
         machine_id TEXT NOT NULL REFERENCES machines(id),
@@ -261,6 +293,415 @@ export class Db {
     for (const sql of migrations) {
       try { this.sqlite.exec(sql); } catch { /* column already exists */ }
     }
+
+    // One-shot logical-models refactor migration. Gated by the existence of
+    // the `models` table — if it's already there, this migration has run and
+    // we skip the entire block. Otherwise we run it inside a single
+    // transaction so partial failure rolls back cleanly.
+    this.migrateLogicalModelsRefactor();
+  }
+
+  /**
+   * One-shot, gated, transactional migration that introduces the `models`
+   * table, populates it from existing string references, and rebuilds
+   * machines / projects / foreman_config / foreman_tasks / machine_models
+   * to the post-refactor shape (FK-enforced model references, no orphan
+   * columns).
+   *
+   * Safe to call repeatedly: gated on whether `models` table exists.
+   * Single transaction; on any error, rollback and re-throw.
+   *
+   * Orphan handling: any string reference (machines.model_id, projects.model_id,
+   * foreman_config.director_model_id, foreman_tasks.model) that does not match
+   * any value in machine_models.model_id is set to NULL with a warning.
+   */
+  private migrateLogicalModelsRefactor(): void {
+    // Gate: skip if machine_models.provider_id already exists (i.e. the
+    // rebuild has run, OR the table was just freshly created in its
+    // post-refactor shape by the main CREATE TABLE block).
+    //
+    // We can't gate on the `models` table existing, because the main
+    // CREATE TABLE block (which runs on every startup, fresh or old)
+    // creates `models` BEFORE this migration is reached.
+    const cols = this.sqlite
+      .prepare("PRAGMA table_info(machine_models)")
+      .all() as Array<{ name: string }>;
+    if (cols.some(c => c.name === "provider_id")) return;
+
+    // Also a no-op if there are zero rows in machine_models AND machines.model_id
+    // doesn't exist (truly fresh DB that somehow ended up with a legacy-shape
+    // machine_models from the migrate() ALTER list — possible if the main
+    // CREATE TABLE block didn't run first for some reason).
+    // The rebuild handles this case correctly anyway, so just proceed.
+
+    console.log("[migration] Logical-models refactor: starting");
+
+    // SQLite requires foreign_keys OFF during table rebuilds with FK references.
+    // We restore it after the migration completes.
+    this.sqlite.pragma("foreign_keys = OFF");
+
+    const begin = this.sqlite.prepare("BEGIN IMMEDIATE");
+    const commit = this.sqlite.prepare("COMMIT");
+    const rollback = this.sqlite.prepare("ROLLBACK");
+
+    let step = "init";
+    try {
+      begin.run();
+
+      // ─── Step 1: create models table ─────────────────────────────────────
+      step = "create-models-table";
+      this.sqlite.exec(`
+        CREATE TABLE IF NOT EXISTS models (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          slug TEXT NOT NULL UNIQUE,
+          family TEXT,
+          default_context_limit INTEGER,
+          description TEXT,
+          archived_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+
+      // ─── Step 2: collect distinct provider strings from all sources ──────
+      step = "collect-provider-strings";
+      const providerStrings = new Set<string>();
+      const labelByProvider = new Map<string, string>();
+      const contextLimitByProvider = new Map<string, number>();
+
+      const mmRows = this.sqlite
+        .prepare("SELECT model_id, label, context_limit FROM machine_models WHERE model_id IS NOT NULL AND model_id != ''")
+        .all() as Array<{ model_id: string; label: string | null; context_limit: number | null }>;
+      for (const row of mmRows) {
+        providerStrings.add(row.model_id);
+        if (row.label && row.label.length > (labelByProvider.get(row.model_id)?.length ?? 0)) {
+          labelByProvider.set(row.model_id, row.label);
+        }
+        if (row.context_limit != null) {
+          const cur = contextLimitByProvider.get(row.model_id) ?? 0;
+          if (row.context_limit > cur) contextLimitByProvider.set(row.model_id, row.context_limit);
+        }
+      }
+      // Also pick up provider strings from columns we're about to drop
+      const collectFromColumn = (sql: string, col: string) => {
+        try {
+          const rows = this.sqlite.prepare(sql).all() as Array<Record<string, string | null>>;
+          for (const r of rows) {
+            const v = r[col];
+            if (v && v !== "auto") providerStrings.add(v);
+          }
+        } catch { /* column may not exist on very fresh DBs */ }
+      };
+      collectFromColumn("SELECT DISTINCT model_id FROM machines WHERE model_id IS NOT NULL AND model_id != ''", "model_id");
+      collectFromColumn("SELECT DISTINCT model_id FROM projects WHERE model_id IS NOT NULL AND model_id != ''", "model_id");
+      collectFromColumn("SELECT DISTINCT director_model_id FROM foreman_config WHERE director_model_id IS NOT NULL AND director_model_id != ''", "director_model_id");
+      // Magic strings that should NOT become logical models:
+      //   "auto"   — the legacy "use the routing default" sentinel
+      //   "manual" — the marker used by director/api.ts manual_commits flow for
+      //              tasks that were submitted as already-completed work and
+      //              never had a real model
+      collectFromColumn("SELECT DISTINCT model FROM foreman_tasks WHERE model IS NOT NULL AND model != '' AND model != 'auto' AND model != 'manual'", "model");
+
+      // ─── Step 3: create one models row per distinct provider string ──────
+      step = "backfill-models";
+      const providerToUuid = new Map<string, string>();
+      const insertModel = this.sqlite.prepare(`
+        INSERT INTO models (id, name, slug, default_context_limit) VALUES (?, ?, ?, ?)
+      `);
+      const usedSlugs = new Set<string>();
+      const slugify = (s: string): string => {
+        const base = s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "model";
+        let slug = base;
+        let n = 1;
+        while (usedSlugs.has(slug)) { n++; slug = `${base}-${n}`; }
+        usedSlugs.add(slug);
+        return slug;
+      };
+      for (const provider of providerStrings) {
+        const uuid = randomUUID();
+        const name = labelByProvider.get(provider) || provider;
+        const slug = slugify(provider);
+        const ctxLimit = contextLimitByProvider.get(provider) ?? null;
+        insertModel.run(uuid, name, slug, ctxLimit);
+        providerToUuid.set(provider, uuid);
+      }
+      console.log(`[migration] Created ${providerStrings.size} logical model${providerStrings.size === 1 ? "" : "s"} from existing provider strings`);
+
+      // ─── Step 4: ensure every machines.model_id has a binding row ───────
+      // (NPU machines that only had machines.model_id set without an explicit
+      // machine_models entry would otherwise lose access to their model after
+      // the column is dropped.)
+      step = "create-missing-bindings";
+      let createdBindings = 0;
+      try {
+        const machineRows = this.sqlite
+          .prepare("SELECT id, model_id FROM machines WHERE model_id IS NOT NULL AND model_id != ''")
+          .all() as Array<{ id: string; model_id: string }>;
+        const bindingExists = this.sqlite.prepare(
+          "SELECT id FROM machine_models WHERE machine_id = ? AND model_id = ?"
+        );
+        const insertBinding = this.sqlite.prepare(
+          "INSERT INTO machine_models (id, machine_id, model_id, label, context_limit) VALUES (?, ?, ?, ?, ?)"
+        );
+        for (const m of machineRows) {
+          const exists = bindingExists.get(m.id, m.model_id);
+          if (!exists) {
+            insertBinding.run(randomUUID(), m.id, m.model_id, labelByProvider.get(m.model_id) ?? "", contextLimitByProvider.get(m.model_id) ?? null);
+            createdBindings++;
+          }
+        }
+      } catch { /* machines.model_id may not exist on very fresh DBs */ }
+      if (createdBindings > 0) {
+        console.log(`[migration] Created ${createdBindings} machine_models binding${createdBindings === 1 ? "" : "s"} from machines.model_id`);
+      }
+
+      // ─── Step 5: rebuild machine_models ─────────────────────────────────
+      // Old shape: (id, machine_id, model_id TEXT, label, context_limit, created_at)
+      // New shape: (id, machine_id FK, model_id FK→models, provider_id, label, context_limit, enabled, created_at)
+      step = "rebuild-machine-models";
+      this.sqlite.exec(`
+        CREATE TABLE machine_models_new (
+          id TEXT PRIMARY KEY,
+          machine_id TEXT NOT NULL REFERENCES machines(id),
+          model_id TEXT NOT NULL REFERENCES models(id),
+          provider_id TEXT NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          context_limit INTEGER,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(machine_id, model_id)
+        )
+      `);
+      const oldBindings = this.sqlite
+        .prepare("SELECT id, machine_id, model_id, label, context_limit, created_at FROM machine_models")
+        .all() as Array<{ id: string; machine_id: string; model_id: string; label: string; context_limit: number | null; created_at: string }>;
+      const insertNewBinding = this.sqlite.prepare(`
+        INSERT INTO machine_models_new (id, machine_id, model_id, provider_id, label, context_limit, enabled, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+      `);
+      // Track (machine_id, logical model uuid) we've already inserted to satisfy the unique constraint
+      // when the same provider string appears multiple times on a single machine (rare edge case).
+      const seen = new Set<string>();
+      let droppedDupes = 0;
+      for (const row of oldBindings) {
+        const uuid = providerToUuid.get(row.model_id);
+        if (!uuid) {
+          // Should be impossible since we just collected from this table, but be defensive
+          console.warn(`[migration] machine_models row ${row.id}: no logical model for provider "${row.model_id}", skipping`);
+          continue;
+        }
+        const key = `${row.machine_id}::${uuid}`;
+        if (seen.has(key)) {
+          droppedDupes++;
+          continue;
+        }
+        seen.add(key);
+        insertNewBinding.run(row.id, row.machine_id, uuid, row.model_id, row.label, row.context_limit, row.created_at);
+      }
+      if (droppedDupes > 0) {
+        console.warn(`[migration] Dropped ${droppedDupes} duplicate machine_models row${droppedDupes === 1 ? "" : "s"} (same machine + provider string)`);
+      }
+      this.sqlite.exec("DROP TABLE machine_models");
+      this.sqlite.exec("ALTER TABLE machine_models_new RENAME TO machine_models");
+
+      // ─── Step 6: rebuild machines (drop model_id) ───────────────────────
+      step = "rebuild-machines";
+      this.sqlite.exec(`
+        CREATE TABLE machines_new (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL DEFAULT '',
+          base_url TEXT NOT NULL,
+          machine_type TEXT NOT NULL DEFAULT 'inference',
+          enabled INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'idle',
+          current_run_id TEXT,
+          max_concurrent INTEGER NOT NULL DEFAULT 1,
+          context_limit INTEGER,
+          api_key TEXT,
+          release_url TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      this.sqlite.exec(`
+        INSERT INTO machines_new (id, name, base_url, machine_type, enabled, status, current_run_id, max_concurrent, context_limit, api_key, release_url, created_at)
+        SELECT id, name, base_url, machine_type, enabled, status, current_run_id, max_concurrent, context_limit, api_key, release_url, created_at FROM machines
+      `);
+      this.sqlite.exec("DROP TABLE machines");
+      this.sqlite.exec("ALTER TABLE machines_new RENAME TO machines");
+
+      // ─── Step 7: rebuild projects (drop model_id) ───────────────────────
+      step = "rebuild-projects";
+      this.sqlite.exec(`
+        CREATE TABLE projects_new (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          workdir TEXT NOT NULL,
+          git_remote TEXT,
+          git_server_token TEXT,
+          git_default_branch TEXT NOT NULL DEFAULT 'main',
+          build_command TEXT,
+          test_command TEXT,
+          lint_command TEXT,
+          context_limit INTEGER,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      this.sqlite.exec(`
+        INSERT INTO projects_new (id, name, workdir, git_remote, git_server_token, git_default_branch, build_command, test_command, lint_command, context_limit, created_at)
+        SELECT id, name, workdir, git_remote, git_server_token, git_default_branch, build_command, test_command, lint_command, context_limit, created_at FROM projects
+      `);
+      this.sqlite.exec("DROP TABLE projects");
+      this.sqlite.exec("ALTER TABLE projects_new RENAME TO projects");
+
+      // ─── Step 8: rebuild foreman_config ─────────────────────────────────
+      // Adds foreman_code_model_id and converts director_model_id from text to FK semantics.
+      step = "rebuild-foreman-config";
+      // Read existing config rows BEFORE rebuilding so we can map director_model_id text → uuid.
+      const oldConfigs = this.sqlite
+        .prepare("SELECT id, enabled, project_id, tasks_dir, priority_mode, tick_interval_ms, director_machine_id, director_model_id, analysis_enabled, continuous_exploration, exploration_preset, created_at FROM foreman_config")
+        .all() as Array<{
+          id: string; enabled: number; project_id: string | null; tasks_dir: string | null;
+          priority_mode: string; tick_interval_ms: number; director_machine_id: string | null;
+          director_model_id: string | null; analysis_enabled: number; continuous_exploration: number;
+          exploration_preset: string; created_at: string;
+        }>;
+      this.sqlite.exec(`
+        CREATE TABLE foreman_config_new (
+          id TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          project_id TEXT REFERENCES projects(id),
+          tasks_dir TEXT,
+          priority_mode TEXT NOT NULL DEFAULT 'parallel',
+          tick_interval_ms INTEGER NOT NULL DEFAULT 30000,
+          director_machine_id TEXT,
+          director_model_id TEXT REFERENCES models(id),
+          foreman_code_model_id TEXT REFERENCES models(id),
+          analysis_enabled INTEGER NOT NULL DEFAULT 1,
+          continuous_exploration INTEGER NOT NULL DEFAULT 0,
+          exploration_preset TEXT NOT NULL DEFAULT 'concept',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      const insertConfig = this.sqlite.prepare(`
+        INSERT INTO foreman_config_new (id, enabled, project_id, tasks_dir, priority_mode, tick_interval_ms, director_machine_id, director_model_id, foreman_code_model_id, analysis_enabled, continuous_exploration, exploration_preset, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+      `);
+      for (const c of oldConfigs) {
+        let directorUuid: string | null = null;
+        if (c.director_model_id) {
+          directorUuid = providerToUuid.get(c.director_model_id) ?? null;
+          if (!directorUuid) {
+            console.warn(`[migration] foreman_config.director_model_id "${c.director_model_id}" did not match any model; cleared`);
+          }
+        }
+        insertConfig.run(
+          c.id, c.enabled, c.project_id, c.tasks_dir, c.priority_mode, c.tick_interval_ms,
+          c.director_machine_id, directorUuid, c.analysis_enabled, c.continuous_exploration,
+          c.exploration_preset, c.created_at,
+        );
+      }
+      this.sqlite.exec("DROP TABLE foreman_config");
+      this.sqlite.exec("ALTER TABLE foreman_config_new RENAME TO foreman_config");
+
+      // ─── Step 9: rebuild foreman_tasks (drop `model`, add `model_id` FK) ─
+      step = "rebuild-foreman-tasks";
+      const oldTasks = this.sqlite
+        .prepare("SELECT * FROM foreman_tasks")
+        .all() as Array<Record<string, unknown>>;
+      this.sqlite.exec(`
+        CREATE TABLE foreman_tasks_new (
+          id TEXT PRIMARY KEY,
+          yaml_id TEXT,
+          project_id TEXT NOT NULL REFERENCES projects(id),
+          title TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '',
+          priority INTEGER NOT NULL DEFAULT 3,
+          type TEXT NOT NULL DEFAULT 'code',
+          model_id TEXT REFERENCES models(id),
+          target_files TEXT,
+          depends_on TEXT,
+          acceptance_criteria TEXT,
+          status TEXT NOT NULL DEFAULT 'backlog',
+          machine_id TEXT,
+          resolved_model TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 3,
+          error_message TEXT,
+          git_branch TEXT,
+          git_worktree TEXT,
+          git_pr_url TEXT,
+          git_pr_number INTEGER,
+          next_retry_at TEXT,
+          started_at TEXT,
+          completed_at TEXT,
+          duration_ms INTEGER,
+          prompt_tokens INTEGER,
+          completion_tokens INTEGER,
+          directive_id TEXT,
+          milestone_id TEXT,
+          verification_result TEXT,
+          knowledge_extracted INTEGER NOT NULL DEFAULT 0,
+          comfyui_config TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          yaml_synced_at TEXT
+        )
+      `);
+      const insertNewTask = this.sqlite.prepare(`
+        INSERT INTO foreman_tasks_new (
+          id, yaml_id, project_id, title, description, priority, type, model_id,
+          target_files, depends_on, acceptance_criteria, status, machine_id, resolved_model,
+          retry_count, max_retries, error_message, git_branch, git_worktree, git_pr_url, git_pr_number,
+          next_retry_at, started_at, completed_at, duration_ms, prompt_tokens, completion_tokens,
+          directive_id, milestone_id, verification_result, knowledge_extracted, comfyui_config,
+          created_at, yaml_synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      let orphanTasks = 0;
+      for (const t of oldTasks) {
+        let modelUuid: string | null = null;
+        const oldModel = (t.model as string | null) ?? null;
+        // Skip the magic sentinels "auto" and "manual" — they map to NULL.
+        if (oldModel && oldModel !== "auto" && oldModel !== "manual" && oldModel !== "") {
+          modelUuid = providerToUuid.get(oldModel) ?? null;
+          if (!modelUuid) {
+            orphanTasks++;
+            console.warn(`[migration] foreman_tasks.${t.id}.model "${oldModel}" did not match any model; cleared`);
+          }
+        }
+        insertNewTask.run(
+          t.id, t.yaml_id, t.project_id, t.title, t.description, t.priority, t.type, modelUuid,
+          t.target_files, t.depends_on, t.acceptance_criteria, t.status, t.machine_id, t.resolved_model,
+          t.retry_count, t.max_retries, t.error_message, t.git_branch, t.git_worktree, t.git_pr_url, t.git_pr_number,
+          t.next_retry_at, t.started_at, t.completed_at, t.duration_ms, t.prompt_tokens, t.completion_tokens,
+          t.directive_id, t.milestone_id, t.verification_result, t.knowledge_extracted, t.comfyui_config,
+          t.created_at, t.yaml_synced_at,
+        );
+      }
+      this.sqlite.exec("DROP TABLE foreman_tasks");
+      this.sqlite.exec("ALTER TABLE foreman_tasks_new RENAME TO foreman_tasks");
+      // Recreate indexes that were attached to the old foreman_tasks
+      this.sqlite.exec(`
+        CREATE INDEX IF NOT EXISTS idx_foreman_tasks_status ON foreman_tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_foreman_tasks_project_status ON foreman_tasks(project_id, status);
+      `);
+
+      // ─── Step 10: sanity check ──────────────────────────────────────────
+      step = "fk-check";
+      const fkErrors = this.sqlite.prepare("PRAGMA foreign_key_check").all() as unknown[];
+      if (fkErrors.length > 0) {
+        throw new Error(`foreign_key_check returned ${fkErrors.length} violation(s): ${JSON.stringify(fkErrors).slice(0, 500)}`);
+      }
+
+      step = "commit";
+      commit.run();
+      console.log("[migration] Logical-models refactor: complete");
+    } catch (err) {
+      try { rollback.run(); } catch { /* ignore */ }
+      this.sqlite.pragma("foreign_keys = ON");
+      throw new Error(`Logical-models refactor failed at step "${step}": ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    this.sqlite.pragma("foreign_keys = ON");
   }
 
   close(): void {
@@ -322,13 +763,12 @@ export class Db {
     return this.drizzle.select().from(schema.machines).where(eq(schema.machines.id, id)).get() ?? null;
   }
 
-  createMachine(data: { name?: string; base_url: string; model_id?: string | null; machine_type?: string; max_concurrent?: number; api_key?: string | null }): Machine {
+  createMachine(data: { name?: string; base_url: string; machine_type?: string; max_concurrent?: number; api_key?: string | null }): Machine {
     const id = randomUUID();
     this.drizzle.insert(schema.machines).values({
       id,
       name: data.name ?? "",
       base_url: data.base_url,
-      model_id: data.model_id ?? null,
       machine_type: data.machine_type ?? "inference",
       max_concurrent: data.max_concurrent ?? 1,
       api_key: data.api_key ?? null,
@@ -336,7 +776,7 @@ export class Db {
     return this.getMachine(id)!;
   }
 
-  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "model_id" | "machine_type" | "enabled" | "status" | "current_run_id" | "context_limit" | "api_key" | "max_concurrent" | "release_url">>): void {
+  updateMachine(id: string, data: Partial<Pick<Machine, "name" | "base_url" | "machine_type" | "enabled" | "status" | "current_run_id" | "context_limit" | "api_key" | "max_concurrent" | "release_url">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.machines).set(clean).where(eq(schema.machines.id, id)).run();
@@ -347,7 +787,14 @@ export class Db {
     return result.changes > 0;
   }
 
-  // ─── Machine Models ──────────────────────────────────────────────────────
+  // ─── Machine Model Bindings ──────────────────────────────────────────────
+  //
+  // After the logical-models refactor:
+  //   - `model_id` is a FK to models.id (the LOGICAL model)
+  //   - `provider_id` is the literal string passed to the AI SDK
+  //
+  // Higher-level CRUD + resolution lives in src/server/models.ts. These
+  // helpers are the raw row-level accessors used by that module.
 
   getMachineModels(machineId: string): MachineModel[] {
     return this.drizzle.select().from(schema.machineModels)
@@ -362,19 +809,21 @@ export class Db {
       .get() ?? null;
   }
 
-  createMachineModel(data: { machine_id: string; model_id: string; label?: string; context_limit?: number | null }): MachineModel {
+  createMachineModel(data: { machine_id: string; model_id: string; provider_id: string; label?: string; context_limit?: number | null; enabled?: number }): MachineModel {
     const id = randomUUID();
     this.drizzle.insert(schema.machineModels).values({
       id,
       machine_id: data.machine_id,
       model_id: data.model_id,
+      provider_id: data.provider_id,
       label: data.label ?? "",
       context_limit: data.context_limit ?? null,
+      enabled: data.enabled ?? 1,
     }).run();
     return this.getMachineModel(id)!;
   }
 
-  updateMachineModel(id: string, data: Partial<Pick<MachineModel, "model_id" | "label" | "context_limit">>): void {
+  updateMachineModel(id: string, data: Partial<Pick<MachineModel, "provider_id" | "label" | "context_limit" | "enabled">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.machineModels).set(clean).where(eq(schema.machineModels.id, id)).run();
@@ -383,16 +832,6 @@ export class Db {
   deleteMachineModel(id: string): boolean {
     const result = this.drizzle.delete(schema.machineModels).where(eq(schema.machineModels.id, id)).run();
     return result.changes > 0;
-  }
-
-  /** Set a model as active on its machine — copies model_id and context_limit to the machine. */
-  activateMachineModel(modelId: string): void {
-    const model = this.getMachineModel(modelId);
-    if (!model) return;
-    this.updateMachine(model.machine_id, {
-      model_id: model.model_id,
-      context_limit: model.context_limit,
-    });
   }
 
   /** @deprecated Use getAvailableMachine() instead */
@@ -478,7 +917,6 @@ export class Db {
     git_remote?: string;
     git_server_token?: string;
     git_default_branch?: string;
-    model_id?: string;
   }): Project {
     const id = randomUUID();
     this.drizzle.insert(schema.projects).values({
@@ -488,12 +926,11 @@ export class Db {
       git_remote: data.git_remote ?? null,
       git_server_token: data.git_server_token ?? null,
       git_default_branch: data.git_default_branch ?? "main",
-      model_id: data.model_id ?? null,
     }).run();
     return this.getProject(id)!;
   }
 
-  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "model_id" | "build_command" | "test_command" | "lint_command">>): void {
+  updateProject(id: string, data: Partial<Pick<Project, "name" | "workdir" | "git_remote" | "git_server_token" | "git_default_branch" | "build_command" | "test_command" | "lint_command">>): void {
     const clean = stripUndefined(data);
     if (Object.keys(clean).length === 0) return;
     this.drizzle.update(schema.projects).set(clean).where(eq(schema.projects.id, id)).run();
@@ -973,7 +1410,7 @@ export class Db {
 
   createForemanTask(data: {
     project_id: string; title: string; description?: string;
-    yaml_id?: string; priority?: number; type?: string; model?: string;
+    yaml_id?: string; priority?: number; type?: string; model_id?: string | null;
     target_files?: string[]; depends_on?: string[]; acceptance_criteria?: string[];
     max_retries?: number; status?: string;
     directive_id?: string; milestone_id?: string;
@@ -988,7 +1425,7 @@ export class Db {
       description: data.description ?? "",
       priority: data.priority ?? 3,
       type: data.type ?? "code",
-      model: data.model ?? "auto",
+      model_id: data.model_id ?? null,
       target_files: data.target_files ? JSON.stringify(data.target_files) : null,
       depends_on: data.depends_on?.length ? JSON.stringify(data.depends_on) : null,
       acceptance_criteria: data.acceptance_criteria ? JSON.stringify(data.acceptance_criteria) : null,
@@ -1112,6 +1549,9 @@ export class Db {
       }
       return this.getForemanConfig()!;
     }
+    // Insert path: include every field on `data` so first-time setters
+    // (e.g. tests calling upsertForemanConfig({ director_model_id: ... }) on
+    // a fresh DB) don't lose them.
     this.drizzle.insert(schema.foremanConfig).values({
       id: "default",
       enabled: data.enabled ?? 0,
@@ -1119,6 +1559,12 @@ export class Db {
       tasks_dir: data.tasks_dir ?? null,
       priority_mode: data.priority_mode ?? "parallel",
       tick_interval_ms: data.tick_interval_ms ?? 30000,
+      director_machine_id: data.director_machine_id ?? null,
+      director_model_id: data.director_model_id ?? null,
+      foreman_code_model_id: data.foreman_code_model_id ?? null,
+      analysis_enabled: data.analysis_enabled ?? 1,
+      continuous_exploration: data.continuous_exploration ?? 0,
+      exploration_preset: data.exploration_preset ?? "concept",
     }).run();
     return this.getForemanConfig()!;
   }

@@ -6,7 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import * as api from './api'
 import type { Project, Machine, Issue } from './api'
 
@@ -298,19 +298,18 @@ function NewMachineDialog({ open, onClose, onCreated }: {
 }) {
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
-  const [modelId, setModelId] = useState('')
   const [machineType, setMachineType] = useState<'inference' | 'comfyui' | 'npu'>('inference')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const resetForm = () => { setName(''); setBaseUrl(''); setModelId(''); setMachineType('inference' as 'inference' | 'comfyui' | 'npu'); setError('') }
+  const resetForm = () => { setName(''); setBaseUrl(''); setMachineType('inference' as 'inference' | 'comfyui' | 'npu'); setError('') }
   const handleClose = () => { resetForm(); onClose() }
 
   const handleSubmit = async () => {
     setError('')
     setSubmitting(true)
     try {
-      await api.createMachine({ name: name || undefined, base_url: baseUrl, model_id: modelId || undefined, machine_type: machineType })
+      await api.createMachine({ name: name || undefined, base_url: baseUrl, machine_type: machineType })
       onCreated()
       handleClose()
     } catch (e: unknown) {
@@ -346,11 +345,11 @@ function NewMachineDialog({ open, onClose, onCreated }: {
             </div>
           </div>
           <Input placeholder="Base URL (e.g. http://192.168.1.50:8080/v1)" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} />
-          <Input placeholder={machineType === 'comfyui' ? 'Model ID (optional for ComfyUI)' : 'Model ID (e.g. qwen2.5-coder-32b)'} value={modelId} onChange={(e) => { setModelId(e.target.value); }} />
+          <p className="text-xs text-muted-foreground">Bind logical models to this machine after creation, on its detail page.</p>
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
         <DialogFooter>
-          <Button onClick={handleSubmit} disabled={!baseUrl || (machineType !== 'comfyui' && !modelId) || submitting}>
+          <Button onClick={handleSubmit} disabled={!baseUrl || submitting}>
             {submitting ? 'Adding...' : 'Add Machine'}
           </Button>
         </DialogFooter>
@@ -465,6 +464,7 @@ const MACHINE_STATUS: Record<Machine['status'], string> = {
 
 export function Sidebar({ projects, machines, issues, selectedProjectId, selectedMachineId, onSelectProject: _onSelectProject, onSelectMachine, onDataChange }: SidebarProps) {
   const location = useLocation()
+  const navigate = useNavigate()
   const [showNewProject, setShowNewProject] = useState(false)
   const [showNewMachine, setShowNewMachine] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -566,9 +566,19 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
       {/* Machines */}
       <div className="px-3 pt-3 pb-1 flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Machines</span>
-        <Button variant="ghost" size="icon-sm" onClick={() => { setShowNewMachine(true); }}>
-          <Plus className="size-3.5" />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => { void navigate('/models'); }}
+            title="Manage logical models"
+          >
+            <BrainCircuit className="size-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => { setShowNewMachine(true); }}>
+            <Plus className="size-3.5" />
+          </Button>
+        </div>
       </div>
       <nav className="px-1 pb-2">
         {machines.length === 0 && (
@@ -627,7 +637,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     ? <BrainCircuit className="size-3.5 shrink-0 text-cyan-400" />
                     : <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
                   }
-                  <span className="truncate flex-1">{m.name || m.model_id || 'Unnamed'}</span>
+                  <span className="truncate flex-1">{m.name || m.base_url || 'Unnamed'}</span>
                   {(activeIds.length > 0 || (m.machine_type === 'npu' && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec))) && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
                     <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0 flex items-center gap-0.5">
                       <Zap className="size-2.5 text-yellow-500/70" />

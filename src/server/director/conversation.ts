@@ -7,7 +7,7 @@
 
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
-import { createModel, stream as llmStream } from "../llm";
+import { instantiateLlm, stream as llmStream } from "../llm";
 import type { Db, Machine } from "../db";
 import { buildConversationSystemPrompt } from "./prompts";
 import { assembleDirectorContext } from "./memory";
@@ -51,7 +51,7 @@ export async function generateDirectorResponse(opts: {
 
   console.log(`Director conversation: generating response for ${opts.conversationId} (directive: ${opts.directiveId}) via "${opts.machine.name || opts.machine.id}" model ${opts.modelId}`);
 
-  const model = createModel(opts.machine, opts.modelId);
+  const model = instantiateLlm({ machine: opts.machine, providerModelId: opts.modelId });
 
   // Build context from directive + project
   const directive = db.getDirectorDirective(opts.directiveId);

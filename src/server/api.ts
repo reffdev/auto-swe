@@ -15,10 +15,18 @@ import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type
 import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
 import { getGenerationSpeed, getAllMachineSpeeds } from "./stats";
 import { selectPlannerMachine } from "./planner-llm";
+import {
+  acquireLeaseForModel,
+  getDirectorModelId,
+  getForemanCodeModelId,
+  ModelSlotUnconfiguredError,
+  NoMachineHostsModelError,
+  ModelNotFoundError,
+} from "./models";
 import { parseEpicProposal } from "./planner-api";
 import { constructDecomposePrompt } from "./prompts/planner";
-import { createModel, generate } from "./llm";
-import { acquireLease, releaseLease } from "./machine-manager";
+import { instantiateLlm, generate } from "./llm";
+import { releaseLease } from "./machine-manager";
 import { isDirectorBusy, isDirectorPlanning, getDirectorReservedMachine } from "./director/director-state";
 import { notifyCapacityChange } from "./foreman/scheduler";
 import { getActiveAnalysisCount } from "./analysis";
@@ -71,7 +79,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   });
 
   router.post("/projects", (req, res) => {
-    const { name, workdir, git_remote, git_server_token, git_default_branch, model_id } = req.body;
+    const { name, workdir, git_remote, git_server_token, git_default_branch } = req.body;
     if (!name || typeof name !== "string") {
       res.status(400).json({ error: "name is required" });
       return;
@@ -142,7 +150,6 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       git_remote,
       git_server_token,
       git_default_branch,
-      model_id,
     });
     res.status(201).json(project);
   });
@@ -153,8 +160,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "project not found" });
       return;
     }
-    const { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command, lint_command } = req.body;
-    db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, model_id, build_command, test_command, lint_command });
+    const { name, workdir, git_remote, git_server_token, git_default_branch, build_command, test_command, lint_command } = req.body;
+    db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, build_command, test_command, lint_command });
     res.json(db.getProject(req.params.id));
   });
 
@@ -182,12 +189,12 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   });
 
   router.post("/machines", (req, res) => {
-    const { base_url, model_id, name, max_concurrent, api_key, machine_type } = req.body;
+    const { base_url, name, max_concurrent, api_key, machine_type } = req.body;
     if (!base_url || typeof base_url !== "string") {
       res.status(400).json({ error: "base_url is required" });
       return;
     }
-    const machine = db.createMachine({ name, base_url, model_id: model_id || null, max_concurrent, api_key, machine_type });
+    const machine = db.createMachine({ name, base_url, max_concurrent, api_key, machine_type });
 
     // Auto-bootstrap ComfyUI workflows for the active project
     if (machine_type === "comfyui") {
@@ -214,8 +221,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(404).json({ error: "machine not found" });
       return;
     }
-    const { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url } = req.body;
-    db.updateMachine(req.params.id, { base_url, model_id, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url });
+    const { base_url, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url } = req.body;
+    db.updateMachine(req.params.id, { base_url, name, enabled, context_limit, api_key, max_concurrent, machine_type, release_url });
     // Machine config changed — clear exhaustion for both old and new type
     notifyCapacityChange();
     res.json(db.getMachine(req.params.id));
@@ -235,48 +242,106 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.status(204).end();
   });
 
-  // ─── Machine Models ─────────────────────────────────────────────────────
+  // ─── Machine Model Bindings ─────────────────────────────────────────────
+  // Bindings link a machine to a logical model and carry the per-machine
+  // provider string + optional context override. CRUD is delegated to
+  // src/server/models.ts which validates inputs and FK targets.
 
-  router.get("/machines/:id/models", (req, res) => {
+  router.get("/machines/:id/bindings", (req, res) => {
     const machine = db.getMachine(req.params.id);
     if (!machine) return res.status(404).json({ error: "machine not found" });
     res.json(db.getMachineModels(req.params.id));
   });
 
-  router.post("/machines/:id/models", (req, res) => {
+  router.post("/machines/:id/bindings", async (req, res) => {
     const machine = db.getMachine(req.params.id);
     if (!machine) return res.status(404).json({ error: "machine not found" });
-    const { model_id, label, context_limit } = req.body;
-    if (!model_id) return res.status(400).json({ error: "model_id required" });
-    const model = db.createMachineModel({
-      machine_id: req.params.id,
-      model_id,
-      label: label || model_id,
-      context_limit: context_limit ?? null,
-    });
-    res.status(201).json(model);
+    const { model_id, provider_id, label, context_limit, enabled } = req.body;
+    if (!model_id || typeof model_id !== "string") return res.status(400).json({ error: "model_id (logical model uuid) is required" });
+    if (!provider_id || typeof provider_id !== "string") return res.status(400).json({ error: "provider_id is required" });
+    try {
+      const { createBinding } = await import("./models");
+      const binding = createBinding(db, {
+        machine_id: req.params.id,
+        model_id,
+        provider_id,
+        label,
+        context_limit: context_limit ?? null,
+        enabled: enabled !== false,
+      });
+      res.status(201).json(binding);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
-  router.patch("/machines/:machineId/models/:modelId", (req, res) => {
-    const model = db.getMachineModel(req.params.modelId);
-    if (!model) return res.status(404).json({ error: "model not found" });
-    const { model_id, label, context_limit } = req.body;
-    db.updateMachineModel(req.params.modelId, { model_id, label, context_limit });
-    res.json(db.getMachineModel(req.params.modelId));
+  router.patch("/machines/:machineId/bindings/:bindingId", async (req, res) => {
+    const binding = db.getMachineModel(req.params.bindingId);
+    if (!binding) return res.status(404).json({ error: "binding not found" });
+    try {
+      const { updateBinding } = await import("./models");
+      const updated = updateBinding(db, req.params.bindingId, {
+        provider_id: req.body.provider_id,
+        label: req.body.label,
+        context_limit: req.body.context_limit,
+        enabled: typeof req.body.enabled === "boolean" ? req.body.enabled : undefined,
+      });
+      res.json(updated);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
-  router.delete("/machines/:machineId/models/:modelId", (req, res) => {
-    const model = db.getMachineModel(req.params.modelId);
-    if (!model) return res.status(404).json({ error: "model not found" });
-    db.deleteMachineModel(req.params.modelId);
+  router.delete("/machines/:machineId/bindings/:bindingId", (req, res) => {
+    const binding = db.getMachineModel(req.params.bindingId);
+    if (!binding) return res.status(404).json({ error: "binding not found" });
+    db.deleteMachineModel(req.params.bindingId);
     res.status(204).end();
   });
 
-  router.post("/machines/:machineId/models/:modelId/activate", (req, res) => {
-    const model = db.getMachineModel(req.params.modelId);
+  // ─── Logical Models ────────────────────────────────────────────────────
+
+  router.get("/models", async (_req, res) => {
+    const { listModels } = await import("./models");
+    res.json(listModels(db));
+  });
+
+  router.get("/models/:id", async (req, res) => {
+    const { getModel } = await import("./models");
+    const model = getModel(db, req.params.id);
     if (!model) return res.status(404).json({ error: "model not found" });
-    db.activateMachineModel(req.params.modelId);
-    res.json(db.getMachine(req.params.machineId));
+    res.json(model);
+  });
+
+  router.post("/models", async (req, res) => {
+    const { createLogicalModel } = await import("./models");
+    try {
+      const model = createLogicalModel(db, req.body);
+      res.status(201).json(model);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.patch("/models/:id", async (req, res) => {
+    const { updateLogicalModel } = await import("./models");
+    try {
+      const model = updateLogicalModel(db, req.params.id, req.body);
+      res.json(model);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.delete("/models/:id", async (req, res) => {
+    const { deleteLogicalModel, archiveLogicalModel } = await import("./models");
+    if (req.query.hard === "true") {
+      const ok = deleteLogicalModel(db, req.params.id);
+      if (!ok) return res.status(409).json({ error: "model has bindings or references; archive it instead" });
+      return res.status(204).end();
+    }
+    archiveLogicalModel(db, req.params.id);
+    res.status(204).end();
   });
 
   // ─── Issues ─────────────────────────────────────────────────────────────
@@ -358,19 +423,27 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot approve issue in status '${issue.status}'` });
       return;
     }
-    const leaseResult = acquireLease(db, "pipeline", issue.title, { machineType: "inference" });
-    if (!leaseResult) {
-      res.status(409).json({ error: "no machine available — all at capacity" });
-      return;
-    }
-    const { lease, machine } = leaseResult;
     const project = db.getProject(issue.project_id)!;
-    const modelId = project.model_id ?? machine.model_id;
-    if (!modelId) {
-      releaseLease(lease.id);
-      res.status(409).json({ error: "no model specified — set model_id on the project or machine" });
+    // Pipeline runs use the configured Foreman code slot (per refactor).
+    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
+    try {
+      const requestedModelId = getForemanCodeModelId(db);
+      leaseResult = acquireLeaseForModel(db, "pipeline", issue.title, requestedModelId);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    if (!leaseResult) {
+      res.status(409).json({ error: "no machine available — all hosts of the configured Foreman code model are at capacity" });
       return;
     }
+    const { lease, execution } = leaseResult;
+    const machine = execution.machine;
     db.updateIssue(issue.id, { status: "approved" });
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
@@ -412,7 +485,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
 
     try {
-      const model = createModel(selected.machine, selected.modelId);
+      const model = instantiateLlm({ machine: selected.machine, providerModelId: selected.modelId });
 
       const result = await generate(model, {
         system: constructDecomposePrompt(),
@@ -507,12 +580,25 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry issue in status '${issue.status}'` });
       return;
     }
-    const leaseResult = acquireLease(db, "pipeline", `retry: ${issue.title}`, { machineType: "inference" });
+    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
+    try {
+      const requestedModelId = getForemanCodeModelId(db);
+      leaseResult = acquireLeaseForModel(db, "pipeline", `retry: ${issue.title}`, requestedModelId);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
     if (!leaseResult) {
-      res.status(409).json({ error: "no machine available — all at capacity" });
+      res.status(409).json({ error: "no machine available — all hosts of the configured Foreman code model are at capacity" });
       return;
     }
-    const { lease, machine } = leaseResult;
+    const { lease, execution } = leaseResult;
+    const machine = execution.machine;
     db.updateIssue(issue.id, {
       status: "approved",
       git_branch: null,
@@ -579,12 +665,25 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       res.status(409).json({ error: `cannot retry stage for issue in status '${issue.status}'` });
       return;
     }
-    const leaseResult = acquireLease(db, "pipeline", `retry: ${issue.title}`, { machineType: "inference" });
+    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
+    try {
+      const requestedModelId = getForemanCodeModelId(db);
+      leaseResult = acquireLeaseForModel(db, "pipeline", `retry: ${issue.title}`, requestedModelId);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
     if (!leaseResult) {
-      res.status(409).json({ error: "no machine available — all at capacity" });
+      res.status(409).json({ error: "no machine available — all hosts of the configured Foreman code model are at capacity" });
       return;
     }
-    const { lease, machine } = leaseResult;
+    const { lease, execution } = leaseResult;
+    const machine = execution.machine;
     const project = db.getProject(issue.project_id)!;
     const freshIssue = db.getIssue(issue.id)!;
     res.status(202).json({ issue: freshIssue });
@@ -917,11 +1016,23 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   router.post("/projects/:id/analysis/trigger/:lensKey", async (req, res) => {
     const project = db.getProject(req.params.id);
     if (!project) { res.status(404).json({ error: "project not found" }); return; }
-    const leaseResult = acquireLease(db, "analysis", req.params.lensKey, { machineType: "inference" });
-    if (!leaseResult) { res.status(409).json({ error: "no machine available" }); return; }
-    const { lease, machine } = leaseResult;
-    const modelId = project.model_id ?? machine.model_id;
-    if (!modelId) { releaseLease(lease.id); res.status(409).json({ error: "no model specified" }); return; }
+    // Analysis runs use the configured Director model slot.
+    let leaseResult: ReturnType<typeof acquireLeaseForModel>;
+    try {
+      const requestedModelId = getDirectorModelId(db);
+      leaseResult = acquireLeaseForModel(db, "analysis", req.params.lensKey, requestedModelId);
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        res.status(409).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    if (!leaseResult) { res.status(409).json({ error: "no machine available — all hosts of the configured Director model are at capacity" }); return; }
+    const { lease, execution } = leaseResult;
+    const machine = execution.machine;
 
     const config = db.upsertAnalysisConfig({ project_id: project.id, lens_key: req.params.lensKey });
 

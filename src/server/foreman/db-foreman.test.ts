@@ -31,7 +31,7 @@ describe("Foreman Tasks CRUD", () => {
       yaml_id: "001",
       priority: 1,
       type: "code",
-      model: "auto",
+      model_id: null,
       target_files: ["file.gd"],
       depends_on: [],
       acceptance_criteria: ["File file.gd exists"],
@@ -54,7 +54,7 @@ describe("Foreman Tasks CRUD", () => {
     expect(task.title).toBe("Minimal");
     expect(task.priority).toBe(3);
     expect(task.type).toBe("code");
-    expect(task.model).toBe("auto");
+    expect(task.model_id).toBeNull();
     expect(task.status).toBe("backlog");
     expect(task.max_retries).toBe(3);
   });
@@ -283,7 +283,7 @@ describe("getForemanTasksReadyToRun", () => {
 
 describe("getAvailableMachine with foreman_runs", () => {
   it("counts running foreman_runs against machine capacity", () => {
-    const machine = db.createMachine({ base_url: "http://localhost:8080/v1", model_id: "test", max_concurrent: 1 });
+    const machine = db.createMachine({ base_url: "http://localhost:8080/v1", max_concurrent: 1 });
     const task = db.createForemanTask({ project_id: projectId, title: "Task" });
     const run = db.createForemanRun({ task_id: task.id, machine_id: machine.id });
     db.updateForemanRun(run.id, { status: "running" });
@@ -293,7 +293,7 @@ describe("getAvailableMachine with foreman_runs", () => {
   });
 
   it("allows machine when foreman_run is complete", () => {
-    const machine = db.createMachine({ base_url: "http://localhost:8080/v1", model_id: "test", max_concurrent: 1 });
+    const machine = db.createMachine({ base_url: "http://localhost:8080/v1", max_concurrent: 1 });
     const task = db.createForemanTask({ project_id: projectId, title: "Task" });
     const run = db.createForemanRun({ task_id: task.id, machine_id: machine.id });
     db.updateForemanRun(run.id, { status: "pass" });

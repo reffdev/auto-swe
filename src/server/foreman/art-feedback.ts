@@ -7,7 +7,7 @@
  * the feedback while maintaining the original intent.
  */
 
-import { createModel, generate } from "../llm";
+import { instantiateLlm, generate } from "../llm";
 import { selectPlannerMachine, selectLightMachine } from "../planner-llm";
 import type { Db } from "../db";
 import { serializeConfig, type ComfyUITaskConfig } from "./comfyui-config";
@@ -192,7 +192,7 @@ async function revisePromptsWithLLM(
 
   console.log(`Art feedback: revising ${prompts.length} style exploration prompts via ${machineInfo.machine.base_url}`);
 
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
 
   const promptList = prompts.map((p, i) => `${i + 1}. ${p}`).join("\n");
   const revised = (await generate(model, {
@@ -240,7 +240,7 @@ async function revisePromptWithLLM(
 
   console.log(`Art feedback: revising prompt via ${machineInfo.machine.base_url} (model: ${machineInfo.modelId})`);
 
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const model = instantiateLlm({ machine: machineInfo.machine, providerModelId: machineInfo.modelId });
 
   const revised = (await generate(model, {
     system: REVISION_SYSTEM_PROMPT,

@@ -65,7 +65,7 @@ export function ForemanTaskDetail({ taskId, onBack }: { taskId: string; onBack: 
             </div>
             <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
               <span>Type: <span className="text-foreground font-mono">{task.type}</span></span>
-              <span>Model: <span className="text-foreground font-mono">{task.resolved_model ?? task.model}</span></span>
+              <span>Model: <span className="text-foreground font-mono">{task.resolved_model ?? (task.model_id ? task.model_id.slice(0, 8) : 'auto')}</span></span>
               <span>Priority: <span className="text-foreground">P{task.priority}</span></span>
               <span>Status: <span className="text-foreground">
                 {task.status === 'validating' ? 'auto review' : task.status === 'awaiting_review' ? 'needs review' : task.status.replace('_', ' ')}

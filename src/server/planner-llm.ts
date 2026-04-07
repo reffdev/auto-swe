@@ -5,9 +5,18 @@
  * Streams responses and stores partial text in memory for polling.
  */
 
-import { createModel, stream as llmStream } from "./llm";
+import { instantiateLlm, stream as llmStream } from "./llm";
 import type { Db, Machine, Project } from "./db";
 import { constructPlannerSystemPrompt } from "./prompts/planner";
+import {
+  getDirectorModelId,
+  getDirectorPreferredMachineId,
+  resolveInferenceExecution,
+  resolveLightNpuExecution,
+  ModelSlotUnconfiguredError,
+  NoMachineHostsModelError,
+  ModelNotFoundError,
+} from "./models";
 
 // ─── In-memory streaming state ───────────────────────────────────────────────
 
@@ -28,64 +37,50 @@ export function isGenerating(conversationId: string): boolean {
 }
 
 // ─── Machine selection ───────────────────────────────────────────────────────
+//
+// Both helpers below are thin shims around the unified resolver in models.ts.
+// They preserve the legacy `{ machine, modelId }` return shape so the many
+// existing call sites don't have to change in lockstep with this refactor.
+// New code should call resolveInferenceExecution() / resolveLightNpuExecution()
+// directly to get the full ResolvedExecution (which carries effective context
+// limit and the logical model record).
+//
+// `project` is accepted for backwards compat but ignored — projects no longer
+// have their own model selection (per the logical-models refactor; pipeline
+// runs use the configured Foreman code slot, analysis uses the Director slot).
 
-export function selectPlannerMachine(db: Db, project?: Project): { machine: Machine; modelId: string } | null {
-  const allMachines = db.getMachines();
-
-  // 1. Check for Director-specific machine in foreman config (can be disabled)
-  const config = db.getForemanConfig();
-  if (config?.director_machine_id) {
-    const directorMachine = allMachines.find((m: Machine) => m.id === config.director_machine_id);
-    if (directorMachine) {
-      const modelId = config.director_model_id ?? directorMachine.model_id;
-      if (modelId) return { machine: directorMachine, modelId };
+export function selectPlannerMachine(db: Db, _project?: Project): { machine: Machine; modelId: string } | null {
+  try {
+    const modelId = getDirectorModelId(db);
+    const preferId = getDirectorPreferredMachineId(db);
+    const exec = resolveInferenceExecution(db, modelId, { preferMachineId: preferId });
+    return { machine: exec.machine, modelId: exec.providerModelId };
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError ||
+        err instanceof NoMachineHostsModelError ||
+        err instanceof ModelNotFoundError) {
+      console.warn(`selectPlannerMachine: ${err.message}`);
+      return null;
     }
+    throw err;
   }
-
-  const machines = allMachines.filter((m: Machine) => m.enabled === 1);
-  if (machines.length === 0) return null;
-
-  // 2. Project model_id override
-  if (project?.model_id) {
-    const match = machines.find((m: Machine) => m.model_id === project.model_id);
-    if (match) return { machine: match, modelId: project.model_id };
-    return { machine: machines[0], modelId: project.model_id };
-  }
-
-  // 3. Fallback: first enabled inference machine
-  const inferenceMachines = machines.filter((m: Machine) => m.machine_type === "inference");
-  const machine = inferenceMachines[0] ?? machines[0];
-  const modelId = machine.model_id;
-  if (!modelId) return null;
-  return { machine, modelId };
 }
 
 /**
  * Select a machine for lightweight single-shot tasks (knowledge extraction,
- * episodic extraction, art feedback). Prefers NPU machines, falls back to inference.
+ * episodic extraction, art feedback, style exploration). Prefers NPU machines.
+ * Returns null if no NPU machine has an enabled binding.
  *
- * Unlike selectPlannerMachine, this does NOT respect director_machine_id config —
- * the whole point is to avoid using the heavy inference machine for simple work.
+ * Note: this NO LONGER falls back to inference machines. The previous fallback
+ * existed because old setups didn't always have NPU. Post-refactor, NPU is the
+ * intended pathway for light workloads; if you don't have an NPU machine, the
+ * caller should fall back to the Director slot explicitly (see foreman/art-feedback.ts
+ * for the canonical pattern).
  */
 export function selectLightMachine(db: Db): { machine: Machine; modelId: string } | null {
-  const machines = db.getMachines().filter((m: Machine) => m.enabled === 1);
-  if (machines.length === 0) return null;
-
-  // Prefer NPU machines
-  const npuMachines = machines.filter((m: Machine) => m.machine_type === "npu");
-  if (npuMachines.length > 0) {
-    const machine = npuMachines[0];
-    const modelId = machine.model_id;
-    if (modelId) return { machine, modelId };
-  }
-
-  // Fall back to inference machines only — never route light tasks to comfyui
-  const inferenceMachines = machines.filter((m: Machine) => m.machine_type === "inference");
-  if (inferenceMachines.length === 0) return null;
-  const machine = inferenceMachines[0];
-  const modelId = machine.model_id;
-  if (!modelId) return null;
-  return { machine, modelId };
+  const exec = resolveLightNpuExecution(db);
+  if (!exec) return null;
+  return { machine: exec.machine, modelId: exec.providerModelId };
 }
 
 // ─── Response generation ─────────────────────────────────────────────────────
@@ -98,7 +93,7 @@ export async function generatePlannerResponse(opts: {
   projectName: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
 }): Promise<void> {
-  const model = createModel(opts.machine, opts.modelId);
+  const model = instantiateLlm({ machine: opts.machine, providerModelId: opts.modelId });
 
   const systemPrompt = constructPlannerSystemPrompt({
     projectName: opts.projectName,

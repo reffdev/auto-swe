@@ -13,6 +13,7 @@ import {
 } from "./scheduler";
 import { isDirectorBusy } from "./director-state";
 import { lockStyle, unlockStyle } from "./style-lock";
+import { createLogicalModel, createBinding } from "../models";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -39,18 +40,22 @@ function createComfyMachine() {
   return db.createMachine({
     name: "comfy",
     base_url: "http://localhost:8188",
-    model_id: "comfyui",
     machine_type: "comfyui",
   });
 }
 
 function createInferenceMachine() {
-  return db.createMachine({
+  const machine = db.createMachine({
     name: "inference",
     base_url: "http://localhost:8080",
-    model_id: "test-model",
     machine_type: "inference",
   });
+  // Create a logical model + binding so the unified resolver can pick this machine,
+  // and configure foreman_config.director_model_id so style-exploration's LLM call resolves.
+  const model = createLogicalModel(db, { name: "Test Model", slug: "test-model" });
+  createBinding(db, { machine_id: machine.id, model_id: model.id, provider_id: "test-model" });
+  db.upsertForemanConfig({ director_model_id: model.id });
+  return machine;
 }
 
 function createActiveDirective() {

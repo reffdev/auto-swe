@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
   CheckCircle2, XCircle, Clock, Play, AlertCircle, Loader2,
-  GitBranch, Cpu, ArrowRight, Plus, Terminal, Settings, Zap,
+  GitBranch, ArrowRight, Plus, Terminal, Settings, Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import * as api from './api'
@@ -332,12 +332,6 @@ export function ProjectOverview({ projectId, onDataChange }: { projectId: string
                 <span className="text-xs text-muted-foreground block">Branch</span>
                 <span className="font-mono text-xs">{project.git_default_branch}</span>
               </div>
-              {project.model_id && (
-                <div>
-                  <span className="text-xs text-muted-foreground block">Model</span>
-                  <span className="font-mono text-xs">{project.model_id}</span>
-                </div>
-              )}
               {project.build_command && (
                 <div>
                   <span className="text-xs text-muted-foreground block">Build</span>

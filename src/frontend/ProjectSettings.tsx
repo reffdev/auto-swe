@@ -76,10 +76,6 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
               <span className="font-mono">{project.git_default_branch}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-border/50">
-              <span className="text-muted-foreground">Model</span>
-              <span className="font-mono">{project.model_id || 'Machine default'}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-border/50">
               <span className="text-muted-foreground">Created</span>
               <span>{new Date(project.created_at).toLocaleDateString()}</span>
             </div>

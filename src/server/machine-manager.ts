@@ -161,6 +161,11 @@ const DEFAULT_LEASE_TIMEOUT_MS: Record<LeaseConsumer, number> = {
  * @param label — Human-readable description (e.g., "planning for milestone X")
  * @param machineType — Filter by machine type (default: "inference")
  * @param preferredMachineId — Try this machine first (e.g., director's configured machine)
+ * @param strictPreferred — When set with preferredMachineId, ONLY the preferred
+ *        machine is considered. If it's busy/unavailable, returns null instead
+ *        of falling through to a type-based search. Used by acquireLeaseForModel
+ *        in models.ts to ensure we never dispatch a task to a machine that
+ *        doesn't host the requested logical model.
  * @param timeoutMs — Override default lease timeout
  */
 export function acquireLease(
@@ -170,6 +175,7 @@ export function acquireLease(
   opts?: {
     machineType?: string;
     preferredMachineId?: string;
+    strictPreferred?: boolean;
     timeoutMs?: number;
     /** If no machine of the primary type is available, try these types in order. */
     fallbackMachineTypes?: string[];
@@ -195,6 +201,8 @@ export function acquireLease(
       }
       console.log(`Machine manager: preferred machine ${preferred.name || preferred.id} busy (leases: ${getLeaseCount(preferred.id)}/${preferred.max_concurrent}, breaker: ${getBreaker(preferred.id).canExecute() ? 'ok' : 'open'}, colocated: ${isBlockedByColocatedMachine(preferred, machines) ? 'blocked' : 'ok'})`);
     }
+    // Strict mode: do not fall through to type-based search.
+    if (opts.strictPreferred) return null;
   }
 
   // Build ordered list of machine types to try: primary first, then fallbacks

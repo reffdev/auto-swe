@@ -5,23 +5,32 @@ import { ForemanConfig } from './ForemanConfig'
 const mockGetForemanConfig = jest.fn()
 const mockUpdateForemanConfig = jest.fn()
 const mockPoll = jest.fn()
+const mockGetModels = jest.fn()
+const mockGetMachines = jest.fn()
+const mockGetMachineBindings = jest.fn()
 
 jest.mock('./api', () => ({
   getForemanConfig: () => mockGetForemanConfig(),
   updateForemanConfig: (data: unknown) => mockUpdateForemanConfig(data),
   poll: () => mockPoll(),
+  getModels: () => mockGetModels(),
+  getMachines: () => mockGetMachines(),
+  getMachineBindings: (id: string) => mockGetMachineBindings(id),
 }))
 
 beforeEach(() => {
   jest.clearAllMocks()
   mockPoll.mockResolvedValue({
     projects: [
-      { id: 'proj-1', name: 'Dopamine Engine', workdir: '/path', git_remote: null, git_server_token: null, git_default_branch: 'main', model_id: null, build_command: null, test_command: null, lint_command: null, created_at: '2026-01-01' },
+      { id: 'proj-1', name: 'Dopamine Engine', workdir: '/path', git_remote: null, git_server_token: null, git_default_branch: 'main', build_command: null, test_command: null, lint_command: null, created_at: '2026-01-01' },
     ],
     machines: [],
     issues: [],
     runs: [],
   })
+  mockGetModels.mockResolvedValue([])
+  mockGetMachines.mockResolvedValue([])
+  mockGetMachineBindings.mockResolvedValue([])
 })
 
 function renderConfig() {

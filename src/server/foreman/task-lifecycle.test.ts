@@ -20,7 +20,6 @@ function createTestTask(overrides?: Record<string, unknown>) {
     description: "Test description",
     priority: 1,
     type: "code",
-    model: "auto",
     target_files: [],
     depends_on: [],
     acceptance_criteria: [],
@@ -34,7 +33,6 @@ function createTestMachine() {
   return db.createMachine({
     name: "test-machine",
     base_url: "http://localhost:8080",
-    model_id: "test-model",
     machine_type: "inference",
   });
 }

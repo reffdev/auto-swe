@@ -232,7 +232,7 @@ function TaskRow({ task, isActive: _isActive, onNavigate, onRefresh }: {
       </td>
       <td className="px-2 py-2.5">
         <span className="text-xs text-muted-foreground font-mono truncate block max-w-[140px]">
-          {task.resolved_model ?? task.model}
+          {task.resolved_model ?? (task.model_id ? task.model_id.slice(0, 8) : 'auto')}
         </span>
       </td>
       <td className="px-2 py-2.5">

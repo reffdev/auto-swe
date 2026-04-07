@@ -6,7 +6,7 @@
  * 2. LLM review — agent with read-only tool access evaluates the work against requirements
  */
 
-import { createModel, generate, warmUpModel } from "../llm";
+import { instantiateLlm, generate, warmUpLlm } from "../llm";
 import { spawnSync, execFile } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { promisify } from "util";
@@ -81,8 +81,9 @@ export async function verifyTask(
     projectConventions: conventions,
   });
 
-  await warmUpModel(machine, modelId);
-  const model = createModel(machine, modelId);
+  const execution = { machine, providerModelId: modelId };
+  await warmUpLlm(execution);
+  const model = instantiateLlm(execution);
   const tools = makeVerifyTools(workdir);
 
   try {
@@ -224,8 +225,9 @@ export async function verifyMilestone(
     projectState,
   });
 
-  await warmUpModel(machineInfo.machine, machineInfo.modelId);
-  const model = createModel(machineInfo.machine, machineInfo.modelId);
+  const milestoneExecution = { machine: machineInfo.machine, providerModelId: machineInfo.modelId };
+  await warmUpLlm(milestoneExecution);
+  const model = instantiateLlm(milestoneExecution);
 
   try {
     const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);

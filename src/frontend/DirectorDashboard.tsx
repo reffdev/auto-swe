@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { RefreshCw, Plus, AlertTriangle, Cpu, Trash2, X } from 'lucide-react'
+import { RefreshCw, Plus, AlertTriangle, Trash2, X } from 'lucide-react'
 import * as api from './api'
 import type { DirectorDirective, DirectorReview } from './api'
 
@@ -23,25 +23,14 @@ export function DirectorDashboard() {
   const [directives, setDirectives] = useState<DirectorDirective[]>([])
   const [loading, setLoading] = useState(true)
   const [showNew, setShowNew] = useState(false)
-  const [machines, setMachines] = useState<api.Machine[]>([])
-  const [directorMachineId, setDirectorMachineId] = useState<string>('')
-  const [directorModelId, setDirectorModelId] = useState<string>('')
 
   const refresh = useCallback(async () => {
     try { setDirectives(await api.getDirectorDirectives()) } catch { /* ignore */ }
     finally { setLoading(false) }
   }, [])
 
-  // Load machines and current director config
-  useEffect(() => {
-    void api.getMachines().then(setMachines).catch(() => {})
-    void api.getForemanConfig().then(config => {
-      if (config) {
-        setDirectorMachineId(config.director_machine_id ?? '')
-        setDirectorModelId(config.director_model_id ?? '')
-      }
-    }).catch(() => {})
-  }, [])
+  // Director model + preferred machine are configured under
+  // Settings → Foreman → Models (post logical-models refactor).
 
   useEffect(() => {
     void refresh()
@@ -74,39 +63,6 @@ export function DirectorDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Director machine selector */}
-          <div className="flex items-center gap-1.5">
-            <Cpu className="size-3.5 text-muted-foreground" />
-            <select
-              value={directorMachineId}
-              onChange={(e) => {
-                const machineId = e.target.value || null
-                setDirectorMachineId(e.target.value)
-                const machine = machines.find(m => m.id === machineId)
-                void api.updateForemanConfig({
-                  director_machine_id: machineId,
-                  director_model_id: machine?.model_id ?? null,
-                } as Partial<api.ForemanConfig>)
-              }}
-              className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground"
-            >
-              <option value="">Auto</option>
-              {machines.filter(m => m.machine_type === 'inference').map(m => (
-                <option key={m.id} value={m.id}>{m.name || m.model_id || m.base_url}{!m.enabled ? ' (disabled)' : ''}</option>
-              ))}
-            </select>
-            {directorMachineId && (
-              <input
-                value={directorModelId}
-                onChange={(e) => {
-                  setDirectorModelId(e.target.value)
-                  void api.updateForemanConfig({ director_model_id: e.target.value || null } as Partial<api.ForemanConfig>)
-                }}
-                placeholder="model override"
-                className="h-7 text-xs bg-background border border-border rounded-md px-2 text-foreground w-40"
-              />
-            )}
-          </div>
           <Button size="sm" onClick={() => setShowNew(true)}>
             <Plus className="size-3.5 mr-1.5" /> New Directive
           </Button>

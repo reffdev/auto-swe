@@ -141,7 +141,7 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
   const handleNewProject = () => {
     const name = prompt('Project name:')
     if (name) {
-      void api.createProject({ name, workdir: '', git_remote: undefined, git_server_token: undefined, git_default_branch: 'main', model_id: undefined })
+      void api.createProject({ name, workdir: '', git_remote: undefined, git_server_token: undefined, git_default_branch: 'main' })
         .then(() => { onRefresh(); })
     }
   }
@@ -149,12 +149,10 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
   const handleNewMachine = () => {
     const name = prompt('Machine name (optional):')
     const baseUrl = prompt('Base URL:', 'https://openrouter.ai/api/v1')
-    const modelId = prompt('Default Model ID (optional):')
     if (baseUrl) {
       void api.createMachine({
         name: name || '',
         base_url: baseUrl,
-        model_id: modelId || undefined,
       }).then(() => { onRefresh(); })
     }
   }

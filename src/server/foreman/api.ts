@@ -70,12 +70,12 @@ export function createForemanRouter(db: Db): Router {
   });
 
   router.post("/tasks", (req, res) => {
-    const { project_id, title, description, priority, type, model, target_files, depends_on, acceptance_criteria, max_retries } = req.body;
+    const { project_id, title, description, priority, type, model_id, target_files, depends_on, acceptance_criteria, max_retries } = req.body;
     if (!project_id || !title) {
       return res.status(400).json({ error: "project_id and title are required" });
     }
     const task = db.createForemanTask({
-      project_id, title, description, priority, type, model,
+      project_id, title, description, priority, type, model_id: model_id ?? null,
       target_files, depends_on, acceptance_criteria, max_retries,
     });
     res.status(201).json(task);
@@ -85,7 +85,7 @@ export function createForemanRouter(db: Db): Router {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
-    const allowed = ["title", "description", "priority", "type", "model", "target_files", "depends_on", "acceptance_criteria", "max_retries"];
+    const allowed = ["title", "description", "priority", "type", "model_id", "target_files", "depends_on", "acceptance_criteria", "max_retries"];
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
@@ -317,7 +317,7 @@ export function createForemanRouter(db: Db): Router {
   });
 
   router.patch("/config", (req, res) => {
-    const allowed = ["enabled", "project_id", "tasks_dir", "priority_mode", "tick_interval_ms", "director_machine_id", "director_model_id", "analysis_enabled", "continuous_exploration", "exploration_preset"];
+    const allowed = ["enabled", "project_id", "tasks_dir", "priority_mode", "tick_interval_ms", "director_machine_id", "director_model_id", "foreman_code_model_id", "analysis_enabled", "continuous_exploration", "exploration_preset"];
     const updates: Record<string, unknown> = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];

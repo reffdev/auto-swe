@@ -12,7 +12,15 @@ import { ANALYSIS_LENSES, constructAnalysisScoutPrompt, constructAnalysisGroupPr
 import { makeReadOnlyTools } from "./tools/filesystem";
 import { makeBuildCheckTools, makeAnalysisGroupsTool, makeAnalysisFindingsTool } from "./tools/build-check";
 import { runStage } from "./pipeline/run-stage";
-import { createModelProvider } from "./pipeline/index";
+import { instantiateLlm } from "./llm";
+import {
+  resolveInferenceExecution,
+  getDirectorModelId,
+  getDirectorPreferredMachineId,
+  ModelSlotUnconfiguredError,
+  NoMachineHostsModelError,
+  ModelNotFoundError,
+} from "./models";
 import { runStaticScan } from "./analysis-scan";
 
 // ─── Frequency helpers ───────────────────────────────────────────────────────
@@ -110,20 +118,34 @@ export async function executeAnalysis(
     machine_id: machine.id,
   });
 
-  const modelId = project.model_id ?? machine.model_id;
-  if (!modelId) {
-    console.error(`Analysis: no model specified for project "${project.name}"`);
-    db.updateAnalysisRun(run.id, { status: "fail", completed_at: new Date().toISOString() });
-    activeAnalyses.delete(config.id);
-    return;
+  // Analysis runs use the configured Director model slot.
+  let modelId: string;
+  try {
+    const requestedModelId = getDirectorModelId(db);
+    const exec = resolveInferenceExecution(db, requestedModelId, {
+      preferMachineId: getDirectorPreferredMachineId(db) ?? machine.id,
+    });
+    if (exec.machine.id !== machine.id) {
+      throw new Error(`Machine ${machine.id} does not host the configured Director model (resolver picked ${exec.machine.id})`);
+    }
+    modelId = exec.providerModelId;
+  } catch (err) {
+    if (err instanceof ModelSlotUnconfiguredError ||
+        err instanceof NoMachineHostsModelError ||
+        err instanceof ModelNotFoundError) {
+      console.error(`Analysis: ${err.message}`);
+      db.updateAnalysisRun(run.id, { status: "fail", completed_at: new Date().toISOString() });
+      activeAnalyses.delete(config.id);
+      return;
+    }
+    throw err;
   }
 
   console.log(`Analysis: starting "${lens.name}" for project "${project.name}" (machine: ${machine.name || machine.id})`);
   db.updateAnalysisRun(run.id, { status: "running", started_at: new Date().toISOString() });
 
   try {
-    const provider = createModelProvider(machine);
-    const model = provider(modelId);
+    const model = instantiateLlm({ machine, providerModelId: modelId });
 
     // ── Phase 1: Static pre-scan ──
     const scanResult = await runStaticScan(project.workdir);

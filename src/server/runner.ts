@@ -6,8 +6,15 @@
  */
 
 import { type StepResult, type ToolSet } from "ai";
-import { createModel, stream as llmStream } from "./llm";
+import { instantiateLlm, stream as llmStream } from "./llm";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import {
+  resolveInferenceExecution,
+  getForemanCodeModelId,
+  ModelSlotUnconfiguredError,
+  NoMachineHostsModelError,
+  ModelNotFoundError,
+} from "./models";
 import { constructSystemPrompt } from "./prompts/system";
 import { ContextBudget, makeFilesystemTools, fetchUrlTool } from "./tools";
 import {
@@ -72,13 +79,29 @@ export async function executeIssue(
       throw new Error(`Failed to create git worktree: ${worktreeResult.error}`);
     }
 
-    // 2. Resolve model
-    const modelId = project.model_id ?? machine.model_id;
-    if (!modelId) throw new Error("No model specified — set model_id on the project or machine");
-    const model = createModel(machine, modelId);
+    // 2. Resolve model — pipeline runs use the configured Foreman code slot
+    let modelId: string;
+    let effectiveContextLimit: number | null = machine.context_limit;
+    try {
+      const requestedModelId = getForemanCodeModelId(ctx.db);
+      const exec = resolveInferenceExecution(ctx.db, requestedModelId, { preferMachineId: machine.id });
+      if (exec.machine.id !== machine.id) {
+        throw new Error(`Machine ${machine.id} does not host the configured Foreman code model (resolver picked ${exec.machine.id})`);
+      }
+      modelId = exec.providerModelId;
+      effectiveContextLimit = exec.effectiveContextLimit;
+    } catch (err) {
+      if (err instanceof ModelSlotUnconfiguredError ||
+          err instanceof NoMachineHostsModelError ||
+          err instanceof ModelNotFoundError) {
+        throw new Error(err.message);
+      }
+      throw err;
+    }
+    const model = instantiateLlm({ machine, providerModelId: modelId });
 
-    // 3. Create tools (use machine's context_limit if configured)
-    const budget = new ContextBudget(machine.context_limit ?? undefined);
+    // 3. Create tools (use effective context limit from the resolved binding)
+    const budget = new ContextBudget(effectiveContextLimit ?? undefined);
     const tools = {
       ...makeFilesystemTools(worktreePath, budget),
       fetchUrl: fetchUrlTool,
