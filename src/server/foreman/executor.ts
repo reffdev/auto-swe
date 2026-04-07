@@ -156,9 +156,15 @@ async function runInferenceTask(
   }
 
   if (result === "deferred") {
-    // No machine had capacity right now. Reset to queued so the next nudge picks it up.
-    db.updateForemanTask(task.id, { status: "queued", machine_id: null });
-    console.log(`[foreman:executor] ${task.title}: no machine available, re-queued for next dispatch`);
+    // No hosting machine had capacity right now (or all of them were
+    // reserved by the Director). Re-queue with a short backoff so the
+    // scheduler doesn't immediately re-dispatch this task on every nudge —
+    // without backoff the dispatch loop pegs CPU re-trying the same task
+    // dozens of times per tick until something else frees up.
+    const backoffMs = 5_000;
+    const nextRetryAt = new Date(Date.now() + backoffMs).toISOString();
+    db.updateForemanTask(task.id, { status: "queued", machine_id: null, next_retry_at: nextRetryAt });
+    console.log(`[foreman:executor] ${task.title}: no machine available, re-queued in ${backoffMs / 1000}s`);
   }
 }
 

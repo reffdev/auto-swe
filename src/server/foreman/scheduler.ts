@@ -6,12 +6,15 @@
  * is enabled. The only timer is for retry backoff wake-ups.
  */
 
-import type { Db } from "../db";
-import { classifyTask, sortByModelAffinity } from "./routing";
+import type { Db, ForemanTask } from "../db";
+import { classifyTask, sortByModelAffinity, resolveForemanCodeModelId } from "./routing";
 import { executeForemanTask, cancelForemanTask, unregisterActiveTask } from "./executor";
 import { isComfyUITaskType } from "./task-types";
 import { canForemanDispatch } from "../orchestrator";
 import { isStyleLocked } from "../director/style-lock";
+import { resolveInferenceCandidates, ModelNotFoundError, NoMachineHostsModelError } from "../models";
+import { hasCapacity } from "../machine-manager";
+import { getDirectorReservedMachine } from "../director/director-state";
 import { existsSync } from "fs";
 import { resolve as resolvePath } from "path";
 import { getWorkflowDir } from "./workflow-manifest";
@@ -40,6 +43,38 @@ const exhaustedMachineTypes = new Set<string>();
  * instead of one type starving the other.
  */
 const colocatedYield = new Set<string>();
+
+/**
+ * Pre-check whether the executor would be able to acquire a session for an
+ * inference task RIGHT NOW. Returns true iff the task's resolved logical model
+ * has at least one hosting machine that:
+ *   - has capacity
+ *   - is not currently reserved by the Director
+ *
+ * This avoids the dispatch → executor → withLlmSession-returns-null →
+ * re-queue → re-nudge tight loop. The executor still has its own deferred
+ * fallback (with backoff) for the genuine race window between this check and
+ * the actual lease acquisition.
+ *
+ * Returns true on any unexpected error so we err on the side of dispatching
+ * (the executor will surface the real error). Returns false if the task has
+ * no resolvable model — the executor will fail it with a clear message.
+ */
+function hasDispatchableInferenceCandidate(db: Db, task: ForemanTask): boolean {
+  const modelId = resolveForemanCodeModelId(db, task);
+  if (!modelId) return false;
+  const reserved = getDirectorReservedMachine();
+  try {
+    const { candidates } = resolveInferenceCandidates(db, modelId);
+    return candidates.some(c => c.machine.id !== reserved && hasCapacity(c.machine));
+  } catch (err) {
+    if (err instanceof ModelNotFoundError || err instanceof NoMachineHostsModelError) {
+      // Let the executor surface the real error so it ends up on the task row.
+      return true;
+    }
+    throw err;
+  }
+}
 
 /** Check if code tasks should be blocked pending art style lock. */
 function styleGateActive(db: Db, project: import("../db").Project): boolean {
@@ -136,6 +171,12 @@ async function schedulerTick(db: Db): Promise<void> {
     if (running.length > 0) return;
   }
 
+  // Tick-local set of logical model ids that have no dispatchable candidate
+  // right now (all hosting machines are at capacity or reserved by the
+  // Director). Cleared on every tick start; the next tick re-checks each
+  // model fresh. Avoids re-resolving candidates for every task in the loop.
+  const exhaustedInferenceModels = new Set<string>();
+
   // Dispatch loop — fill all available machine slots
   let dispatched = 0;
   for (;;) {
@@ -161,22 +202,35 @@ async function schedulerTick(db: Db): Promise<void> {
     // best-effort optimizations. The executor will re-queue the task if its
     // session can't acquire a lease, so even imperfect scheduling decisions
     // are recoverable.
-    let task: import("../db").ForemanTask | null = null;
-    for (const candidate of sorted) {
-      const route = classifyTask(candidate);
-      if (exhaustedMachineTypes.has(route.machineType)) continue;
-      if (colocatedYield.has(route.machineType)) continue;
-      task = candidate;
-      break;
-    }
-    if (!task && colocatedYield.size > 0) {
-      colocatedYield.clear();
+    const pickDispatchable = (allowYielded: boolean): ForemanTask | null => {
       for (const candidate of sorted) {
         const route = classifyTask(candidate);
         if (exhaustedMachineTypes.has(route.machineType)) continue;
-        task = candidate;
-        break;
+        if (!allowYielded && colocatedYield.has(route.machineType)) continue;
+
+        // Inference tasks: pre-check that some hosting machine for the
+        // resolved logical model has capacity AND isn't Director-reserved.
+        // Without this, we'd dispatch, the executor would fail to acquire a
+        // session, re-queue, re-nudge, and we'd spin until something else
+        // changed.
+        if (route.machineType === "inference") {
+          const modelId = resolveForemanCodeModelId(db, candidate);
+          if (modelId && exhaustedInferenceModels.has(modelId)) continue;
+          if (!hasDispatchableInferenceCandidate(db, candidate)) {
+            if (modelId) exhaustedInferenceModels.add(modelId);
+            continue;
+          }
+        }
+
+        return candidate;
       }
+      return null;
+    };
+
+    let task = pickDispatchable(false);
+    if (!task && colocatedYield.size > 0) {
+      colocatedYield.clear();
+      task = pickDispatchable(true);
     }
     if (!task) break;
 
