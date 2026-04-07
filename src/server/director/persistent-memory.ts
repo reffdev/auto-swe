@@ -21,6 +21,13 @@ import { resolve } from "path";
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export type MemoryCategory = "episodic" | "semantic" | "procedural";
+/**
+ * "convention" is a virtual category — convention files live at the root of
+ * .swe/conventions/ rather than under a category subdirectory. The hook system
+ * uses this string so consumers can distinguish convention writes from other
+ * memory writes (e.g. for indexing).
+ */
+export type WriteCategory = MemoryCategory | "convention" | "project_brief";
 
 export interface MemoryEntry {
   category: MemoryCategory;
@@ -28,6 +35,34 @@ export interface MemoryEntry {
   content: string;
   /** File modification time */
   updatedAt: Date;
+}
+
+// ─── Write hook (dependency inversion for indexing) ─────────────────────────
+
+/**
+ * Hook fired after any persistent-memory write completes. Used by memsearch
+ * to schedule a re-index without persistent-memory needing to import memsearch
+ * (which would create a circular dependency).
+ *
+ * Register at startup via setMemoryWriteHook(). Only one hook is supported.
+ */
+export type MemoryWriteHook = (
+  projectWorkdir: string,
+  category: WriteCategory,
+  filename: string,
+) => void;
+
+let writeHook: MemoryWriteHook | null = null;
+
+/** Register (or clear) the post-write hook. */
+export function setMemoryWriteHook(hook: MemoryWriteHook | null): void {
+  writeHook = hook;
+}
+
+/** Fire the registered hook, if any. Errors in the hook are swallowed. */
+function fireWriteHook(workdir: string, category: WriteCategory, filename: string): void {
+  if (!writeHook) return;
+  try { writeHook(workdir, category, filename); } catch { /* hook errors are non-fatal */ }
 }
 
 // ─── Path Resolution ────────────────────────────────────────────────────────
@@ -478,6 +513,59 @@ export function writeProjectBrief(projectWorkdir: string, content: string): void
   ensureMemoryDirs(projectWorkdir);
   const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", PROJECT_BRIEF_FILENAME);
   writeFileSync(filePath, content);
+  fireWriteHook(projectWorkdir, "project_brief", PROJECT_BRIEF_FILENAME);
+}
+
+/**
+ * Read a single convention file by name. Returns null if it doesn't exist.
+ */
+export function readConvention(projectWorkdir: string, filename: string): string | null {
+  const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
+  const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", fname);
+  if (!existsSync(filePath)) return null;
+  try {
+    return readFileSync(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write a convention file (top-level .md in .swe/conventions/). Creates the
+ * file if it doesn't exist, overwrites if it does. Returns true if a new file
+ * was created, false if an existing one was overwritten.
+ *
+ * The PROJECT_BRIEF.md and ABOUT.md filenames are reserved — use writeProjectBrief
+ * for the brief; ABOUT.md is managed by the system.
+ */
+export function writeConvention(
+  projectWorkdir: string,
+  filename: string,
+  content: string,
+): { created: boolean } {
+  const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
+  if (fname === PROJECT_BRIEF_FILENAME || fname === "ABOUT.md") {
+    throw new Error(`${fname} is reserved — use the appropriate dedicated function`);
+  }
+  ensureMemoryDirs(projectWorkdir);
+  const dirPath = resolve(projectWorkdir, SWE_ROOT, "conventions");
+  const filePath = resolve(dirPath, fname);
+  const created = !existsSync(filePath);
+  writeFileSync(filePath, content);
+  fireWriteHook(projectWorkdir, "convention", fname);
+  return { created };
+}
+
+/**
+ * Delete a convention file. Returns true if a file was actually deleted.
+ */
+export function deleteConvention(projectWorkdir: string, filename: string): boolean {
+  const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
+  const filePath = resolve(projectWorkdir, SWE_ROOT, "conventions", fname);
+  if (!existsSync(filePath)) return false;
+  unlinkSync(filePath);
+  fireWriteHook(projectWorkdir, "convention", fname);
+  return true;
 }
 
 // ─── Writing ────────────────────────────────────────────────────────────────
@@ -494,6 +582,7 @@ export function writeMemory(
   ensureMemoryDirs(projectWorkdir);
   const filePath = resolve(categoryDir(projectWorkdir, category), filename);
   writeFileSync(filePath, content);
+  fireWriteHook(projectWorkdir, category, filename);
 }
 
 /**
@@ -509,6 +598,7 @@ export function appendMemory(
   const filePath = resolve(categoryDir(projectWorkdir, category), filename);
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : "";
   writeFileSync(filePath, existing + "\n" + content);
+  fireWriteHook(projectWorkdir, category, filename);
 }
 
 // ─── Episodic: Daily Logs ───────────────────────────────────────────────────

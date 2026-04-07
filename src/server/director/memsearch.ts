@@ -10,7 +10,7 @@
  * Docs: https://github.com/zilliztech/memsearch
  */
 
-import { spawn, spawnSync, type ChildProcess } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { resolve } from "path";
 
 const SEARCH_TIMEOUT_MS = 10_000;
@@ -143,9 +143,24 @@ async function doIndex(projectWorkdir: string): Promise<boolean> {
 
 // ─── Search ─────────────────────────────────────────────────────────────────
 
+/** Maximum number of search retries when the Milvus DB file is locked. */
+const SEARCH_MAX_RETRIES = 3;
+/** Delay between search retries (exponential: 250ms, 500ms, 1000ms). */
+const SEARCH_RETRY_BASE_MS = 250;
+
+/** Result of a single doSearch attempt — distinguishes "no results" from "lock contention". */
+interface SearchAttempt {
+  results: SearchResult[];
+  /** True if the search failed because the Milvus DB file was locked by another process. */
+  locked: boolean;
+}
+
 /**
  * Semantic search across all project memories.
  * Returns ranked results with content and similarity scores.
+ *
+ * Retries on Milvus Lite lock contention — the DB only allows one writer at a
+ * time, so a concurrent reindex can briefly block searches.
  */
 export async function searchMemories(
   projectWorkdir: string,
@@ -154,14 +169,25 @@ export async function searchMemories(
 ): Promise<SearchResult[]> {
   if (!isMemsearchAvailable()) return [];
 
-  return (await withMemsearchLock(() => doSearch(projectWorkdir, query, topK))) ?? [];
+  for (let attempt = 0; attempt <= SEARCH_MAX_RETRIES; attempt++) {
+    const result = await withMemsearchLock(() => doSearch(projectWorkdir, query, topK));
+    if (!result) return [];
+    if (!result.locked) return result.results;
+    if (attempt < SEARCH_MAX_RETRIES) {
+      const delay = SEARCH_RETRY_BASE_MS * Math.pow(2, attempt);
+      console.warn(`MemSearch: DB locked, retrying in ${delay}ms (attempt ${attempt + 1}/${SEARCH_MAX_RETRIES})`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  console.warn(`MemSearch: gave up after ${SEARCH_MAX_RETRIES} retries — DB stayed locked`);
+  return [];
 }
 
 async function doSearch(
   projectWorkdir: string,
   query: string,
   topK: number,
-): Promise<SearchResult[]> {
+): Promise<SearchAttempt> {
 
   return new Promise((resolve) => {
     const proc = spawn(
@@ -181,72 +207,48 @@ async function doSearch(
     proc.on("close", (code) => {
       clearTimeout(searchTimeout);
       if (code !== 0) {
-        if (stderr) console.warn(`MemSearch search failed: ${stderr.slice(0, 200)}`);
-        resolve([]);
+        // Detect Milvus Lite lock contention so the caller can retry.
+        const locked = /opened by another program|database is locked|file has been opened/i.test(stderr);
+        if (!locked && stderr) {
+          console.warn(`MemSearch search failed: ${stderr.slice(0, 200)}`);
+        }
+        resolve({ results: [], locked });
         return;
       }
       try {
         const results = JSON.parse(stdout);
         if (Array.isArray(results)) {
-          resolve(results.map((r: any) => ({
-            content: String(r.content ?? r.text ?? ""),
-            score: Number(r.score ?? r.distance ?? 0),
-            source: r.source ?? r.file ?? undefined,
-          })));
+          resolve({
+            locked: false,
+            results: results.map((r: any) => ({
+              content: String(r.content ?? r.text ?? ""),
+              score: Number(r.score ?? r.distance ?? 0),
+              source: r.source ?? r.file ?? undefined,
+            })),
+          });
         } else {
-          resolve([]);
+          resolve({ results: [], locked: false });
         }
       } catch {
-        resolve([]);
+        resolve({ results: [], locked: false });
       }
     });
 
-    proc.on("error", () => { clearTimeout(searchTimeout); resolve([]); });
+    proc.on("error", () => { clearTimeout(searchTimeout); resolve({ results: [], locked: false }); });
   });
 }
 
-// ─── Watch ──────────────────────────────────────────────────────────────────
-
-let watchProcess: ChildProcess | null = null;
+// ─── Cleanup ────────────────────────────────────────────────────────────────
 
 /**
- * Start the memsearch file watcher in the background.
- * Auto-indexes new/modified markdown files.
+ * Stop any pending reindex timers. Call on server shutdown.
+ *
+ * Note: there is no file watcher process. We rely on the post-write hook in
+ * persistent-memory.ts (registered above) to schedule reindexes after writes —
+ * a long-running `memsearch watch` subprocess would hold the Milvus DB file
+ * open and block search calls.
  */
-export function startMemsearchWatch(projectWorkdir: string): void {
-  if (!isMemsearchAvailable()) return;
-  if (watchProcess) return; // already watching
-
-  const paths = getMemoryPaths(projectWorkdir);
-
-  watchProcess = spawn("memsearch", ["watch", ...paths], {
-    cwd: projectWorkdir,
-    stdio: "ignore",
-    detached: true,
-  });
-
-  watchProcess.unref(); // don't keep the Node process alive for this
-
-  watchProcess.on("exit", (code) => {
-    console.log(`MemSearch watcher exited (code ${code})`);
-    watchProcess = null;
-  });
-
-  watchProcess.on("error", (err) => {
-    console.warn("MemSearch watcher failed to start:", err.message);
-    watchProcess = null;
-  });
-
-  console.log("MemSearch watcher started");
-}
-
-/** Stop the background watcher and clean up timers. */
 export function stopMemsearchWatch(): void {
-  if (watchProcess) {
-    watchProcess.kill();
-    watchProcess = null;
-    console.log("MemSearch watcher stopped");
-  }
   if (reindexTimer) {
     clearTimeout(reindexTimer);
     reindexTimer = null;
@@ -262,12 +264,27 @@ import {
   readMemory,
   readMemoryCategory,
   readConventions,
+  readConvention,
+  writeConvention,
+  deleteConvention,
   readProjectBrief,
   writeProjectBrief,
   categoryDir,
+  setMemoryWriteHook,
   PROJECT_BRIEF_FILENAME,
   type MemoryCategory,
 } from "./persistent-memory";
+
+// ─── Wire up the post-write reindex hook ────────────────────────────────────
+//
+// persistent-memory.ts is the lower-level write layer; memsearch.ts is the
+// higher-level search/index layer. Rather than have persistent-memory import
+// memsearch (circular dependency), persistent-memory exposes a write hook
+// that we register here at module load. Every memory write — including
+// episodic logs — will now trigger a debounced reindex automatically.
+setMemoryWriteHook((workdir) => {
+  scheduleReindex(workdir);
+});
 
 /**
  * Build all Director memory tools for a project.
@@ -313,7 +330,6 @@ export function makeMemoryTools(projectWorkdir: string) {
       execute: async ({ content }) => {
         const previous = readProjectBrief(projectWorkdir);
         writeProjectBrief(projectWorkdir, content);
-        scheduleReindex(projectWorkdir);
         const action = previous ? "Updated" : "Created";
         const warning = content.length > 3000
           ? ` ⚠️ Brief is ${content.length} chars — consider trimming to under 3000 for context efficiency.`
@@ -344,7 +360,6 @@ export function makeMemoryTools(projectWorkdir: string) {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         const existing = readMemory(projectWorkdir, "semantic", fname);
         writeMemory(projectWorkdir, "semantic", fname, content);
-        scheduleReindex(projectWorkdir);
         return existing
           ? `Updated semantic memory: ${fname}`
           : `Created semantic memory: ${fname}`;
@@ -379,16 +394,14 @@ export function makeMemoryTools(projectWorkdir: string) {
         if (fname === PROJECT_BRIEF_FILENAME) {
           return `Use updateProjectBrief to maintain ${PROJECT_BRIEF_FILENAME}, not writeConvention.`;
         }
-        const fs = await import("fs");
-        const dirPath = resolve(projectWorkdir, ".swe", "conventions");
-        const filePath = resolve(dirPath, fname);
-        const existing = fs.existsSync(filePath);
-        fs.mkdirSync(dirPath, { recursive: true });
-        fs.writeFileSync(filePath, content);
-        scheduleReindex(projectWorkdir);
-        return existing
-          ? `Updated convention: ${fname}`
-          : `Created convention: ${fname}`;
+        try {
+          const result = writeConvention(projectWorkdir, fname, content);
+          return result.created
+            ? `Created convention: ${fname}`
+            : `Updated convention: ${fname}`;
+        } catch (err) {
+          return `Failed to write convention: ${err instanceof Error ? err.message : String(err)}`;
+        }
       },
     }),
 
@@ -408,7 +421,6 @@ export function makeMemoryTools(projectWorkdir: string) {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         const existing = readMemory(projectWorkdir, "procedural", fname);
         writeMemory(projectWorkdir, "procedural", fname, content);
-        scheduleReindex(projectWorkdir);
         return existing
           ? `Updated procedure: ${fname}`
           : `Created procedure: ${fname}`;
@@ -460,12 +472,8 @@ export function makeMemoryTools(projectWorkdir: string) {
             const brief = readProjectBrief(projectWorkdir);
             return brief ?? `${PROJECT_BRIEF_FILENAME} does not exist yet.`;
           }
-          const fs = await import("fs");
-          const filePath = resolve(projectWorkdir, ".swe", "conventions", fname);
-          if (!fs.existsSync(filePath)) {
-            return `File not found: convention/${fname}`;
-          }
-          return fs.readFileSync(filePath, "utf-8");
+          const content = readConvention(projectWorkdir, fname);
+          return content ?? `File not found: convention/${fname}`;
         }
         const content = readMemory(projectWorkdir, category as MemoryCategory, filename);
         if (!content) {
@@ -489,18 +497,9 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ category, filename, old_text, new_text }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-
-        const filePath = category === "convention"
-          ? resolve(projectWorkdir, ".swe", "conventions", fname)
-          : resolve(categoryDir(projectWorkdir, category as MemoryCategory), fname);
-
-        let content: string | null;
-        try {
-          const { readFileSync } = await import("fs");
-          content = readFileSync(filePath, "utf-8");
-        } catch {
-          content = null;
-        }
+        const content = category === "convention"
+          ? readConvention(projectWorkdir, fname)
+          : readMemory(projectWorkdir, category as MemoryCategory, fname);
 
         if (!content) {
           return `File not found: ${category}/${fname}`;
@@ -510,9 +509,11 @@ export function makeMemoryTools(projectWorkdir: string) {
         }
 
         const updated = content.replace(old_text, new_text);
-        const { writeFileSync } = await import("fs");
-        writeFileSync(filePath, updated);
-
+        if (category === "convention") {
+          writeConvention(projectWorkdir, fname, updated);
+        } else {
+          writeMemory(projectWorkdir, category as MemoryCategory, fname, updated);
+        }
         return `Edited ${category}/${fname}`;
       },
     }),
@@ -527,18 +528,21 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ category, filename }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-        const fs = await import("fs");
         const { createSnapshot } = await import("./persistent-memory");
+        createSnapshot(projectWorkdir, `pre-delete-${fname.replace(".md", "")}`);
 
-        const filePath = category === "convention"
-          ? resolve(projectWorkdir, ".swe", "conventions", fname)
-          : resolve(categoryDir(projectWorkdir, category as MemoryCategory), fname);
+        if (category === "convention") {
+          const deleted = deleteConvention(projectWorkdir, fname);
+          return deleted
+            ? `Deleted convention/${fname} (snapshot created)`
+            : `File not found: convention/${fname}`;
+        }
 
+        const fs = await import("fs");
+        const filePath = resolve(categoryDir(projectWorkdir, category as MemoryCategory), fname);
         if (!fs.existsSync(filePath)) {
           return `File not found: ${category}/${fname}`;
         }
-
-        createSnapshot(projectWorkdir, `pre-delete-${fname.replace(".md", "")}`);
         fs.unlinkSync(filePath);
         return `Deleted ${category}/${fname} (snapshot created)`;
       },
