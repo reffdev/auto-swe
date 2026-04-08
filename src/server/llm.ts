@@ -97,7 +97,7 @@ export async function warmUpLlm(execution: LlmExecution): Promise<void> {
   if (machine.machine_type !== "inference") return;
 
   // Build the upstream URL from the machine's base_url
-  // base_url is like "http://192.168.2.2/v1" — upstream is at the root: "http://192.168.2.2/upstream/:model"
+  // base_url is like "http://inference.local/v1" — upstream is at the root: "http://inference.local/upstream/:model"
   let baseOrigin: string;
   try {
     const url = new URL(machine.base_url);

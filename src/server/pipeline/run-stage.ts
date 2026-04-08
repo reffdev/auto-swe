@@ -247,10 +247,20 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     "readFile", "listDirectory", "searchFiles", "getFileInfo",
     "gitStatus", "gitDiff", "gitLog", "gitShow", "gitBlame",
   ]);
+  // Inspection-shell-command detector. Real runCommand args are wrapped:
+  //   `cd /path/.../foreman-XXX && timeout 60 sed -n '1,10p' file.gd`
+  //   `cd /path/.../foreman-XXX && godot --headless --path . --check-only foo.gd`
+  // The previous patterns anchored to ^\s* which never matched because the
+  // command starts with `cd`. We use word-boundary patterns that find the
+  // inspection token ANYWHERE in the command string, AND we accept any
+  // godot invocation that mentions `--check-only` (the form varies a lot —
+  // `--headless --path . --check-only`, `--headless --check-only -`,
+  // `--check-only --path .`).
   const INSPECTION_RUNCOMMAND_PATTERNS = [
-    /^\s*sed\s/, /^\s*head\s/, /^\s*tail\s/, /^\s*cat\s/, /^\s*wc\s/,
-    /^\s*ls\s/, /^\s*find\s/, /^\s*grep\s/, /^\s*file\s/,
-    /godot\s+--headless\s+--check/,
+    /\b(?:sed|head|tail|cat|wc|ls|find|grep|file|xxd|od|md5sum|stat)\b/,
+    /\bgodot\b[^|]*--check-only/,
+    // GUT/test-mode godot is also inspection — agent is running tests, not editing
+    /\bgodot\b[^|]*--run-tests/,
   ];
   const NO_WRITE_STREAK_LIMIT = 30;
   const RUNCOMMAND_BURN_LIMIT = 25;
@@ -493,10 +503,21 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
       textOnlySteps = 0;
       compactionAbort = new AbortController();
 
-      // Merge abort signals: external cancel + compaction
+      // Merge abort signals: external cancel + compaction.
+      //
+      // Both signals propagate UNCONDITIONALLY to combinedAbort. Earlier
+      // code gated the compaction propagation on `compactionNeeded ||
+      // expandFilesNeeded || reasoningLoopDetected`, which silently broke
+      // the wall-clock timeout, the repeated-tool-call loop guard, AND the
+      // categorical-stall detector — none of those flags are set when those
+      // mechanisms fire, so the abort never reached the streamText, the
+      // stream kept running, and the agent burned past wall-clock timeouts
+      // against already-deleted worktrees. The catch handler downstream is
+      // responsible for distinguishing failure modes; the abort propagation
+      // is unconditional.
       const combinedAbort = new AbortController();
       const onExternalAbort = () => { try { combinedAbort.abort(); } catch { /* already aborted */ } };
-      const onCompactionAbort = () => { if (compactionNeeded || expandFilesNeeded || reasoningLoopDetected) { try { combinedAbort.abort(); } catch { /* already aborted */ } } };
+      const onCompactionAbort = () => { try { combinedAbort.abort(); } catch { /* already aborted */ } };
       abortSignal?.addEventListener("abort", onExternalAbort, { once: true });
       compactionAbort.signal.addEventListener("abort", onCompactionAbort, { once: true });
 

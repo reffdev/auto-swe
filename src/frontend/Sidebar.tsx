@@ -366,7 +366,7 @@ function NewMachineDialog({ open, onClose, onCreated }: {
               >NPU</button>
             </div>
           </div>
-          <Input placeholder="Base URL (e.g. http://192.168.1.50:8080/v1)" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} />
+          <Input placeholder="Base URL (e.g. http://inference.local:8080/v1)" value={baseUrl} onChange={(e) => { setBaseUrl(e.target.value); }} />
           <p className="text-xs text-muted-foreground">Bind logical models to this machine after creation, on its detail page.</p>
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>

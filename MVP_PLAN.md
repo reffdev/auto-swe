@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS machines (
 );
 ```
 
-- `base_url`: Full URL to OpenAI-compatible API, e.g. `http://192.168.1.50:8080/v1`
+- `base_url`: Full URL to OpenAI-compatible API, e.g. `http://inference.local:8080/v1`
 - `model_id`: Model name the server expects, e.g. `qwen2.5-coder-32b`
 - `status`: `idle` | `working`
 - `current_run_id`: FK to runs.id when working, null when idle
@@ -635,7 +635,7 @@ The existing `PromptInput` component is not used for MVP (no interactive chat wi
    → POST /api/projects → project appears in sidebar
 
 3. No machines yet → clicks "Add Machine"
-   → Enters: name="local-gpu", base_url="http://192.168.1.50:8080/v1",
+   → Enters: name="local-gpu", base_url="http://inference.local:8080/v1",
      model_id="qwen2.5-coder-32b"
    → POST /api/machines → machine appears in sidebar
 

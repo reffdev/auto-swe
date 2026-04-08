@@ -276,8 +276,8 @@ describe("npu machine type", () => {
 describe("host colocation", () => {
   it("blocks inference when comfyui is active on same host", async () => {
     // Both on same IP, different ports
-    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
-    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
+    db.updateMachine(machineId, { base_url: "http://10.0.0.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://10.0.0.10:8188", machine_type: "comfyui", name: "comfy" });
 
     // Lease comfyui first
     const comfyLease = await acquireLease(db, "foreman", "art task", { machineType: "comfyui" });
@@ -296,8 +296,8 @@ describe("host colocation", () => {
   });
 
   it("blocks comfyui when inference is active on same host", async () => {
-    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
-    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
+    db.updateMachine(machineId, { base_url: "http://10.0.0.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://10.0.0.10:8188", machine_type: "comfyui", name: "comfy" });
 
     // Lease inference first
     const inferLease = await acquireLease(db, "foreman", "code task", { machineType: "inference" });
@@ -316,8 +316,8 @@ describe("host colocation", () => {
   });
 
   it("does NOT block NPU by colocated inference", async () => {
-    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
-    const npu = db.createMachine({ base_url: "http://192.168.1.10:52625/v1", machine_type: "npu", name: "npu", model_id: "small" });
+    db.updateMachine(machineId, { base_url: "http://10.0.0.10:8080/v1", machine_type: "inference" });
+    const npu = db.createMachine({ base_url: "http://10.0.0.10:52625/v1", machine_type: "npu", name: "npu", model_id: "small" });
 
     // Lease inference
     const inferLease = await acquireLease(db, "foreman", "code task", { machineType: "inference" });
@@ -332,8 +332,8 @@ describe("host colocation", () => {
   });
 
   it("does NOT block NPU by colocated comfyui", async () => {
-    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
-    const npu = db.createMachine({ base_url: "http://192.168.1.10:52625/v1", machine_type: "npu", name: "npu", model_id: "small" });
+    const comfy = db.createMachine({ base_url: "http://10.0.0.10:8188", machine_type: "comfyui", name: "comfy" });
+    const npu = db.createMachine({ base_url: "http://10.0.0.10:52625/v1", machine_type: "npu", name: "npu", model_id: "small" });
 
     const comfyLease = await acquireLease(db, "foreman", "art", { machineType: "comfyui" });
     expect(comfyLease).not.toBeNull();
@@ -346,8 +346,8 @@ describe("host colocation", () => {
   });
 
   it("does not block machines on different hosts", async () => {
-    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
-    const comfy = db.createMachine({ base_url: "http://192.168.1.20:8188", machine_type: "comfyui", name: "comfy" });
+    db.updateMachine(machineId, { base_url: "http://10.0.0.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://10.0.0.20:8188", machine_type: "comfyui", name: "comfy" });
 
     const comfyLease = await acquireLease(db, "foreman", "art", { machineType: "comfyui" });
     expect(comfyLease).not.toBeNull();
@@ -361,9 +361,9 @@ describe("host colocation", () => {
   });
 
   it("preferred machine respects colocation blocking", async () => {
-    db.updateMachine(machineId, { base_url: "http://192.168.1.10:8080/v1", machine_type: "inference" });
-    const comfy = db.createMachine({ base_url: "http://192.168.1.10:8188", machine_type: "comfyui", name: "comfy" });
-    const other = db.createMachine({ base_url: "http://192.168.1.20:8080/v1", machine_type: "inference", name: "other" });
+    db.updateMachine(machineId, { base_url: "http://10.0.0.10:8080/v1", machine_type: "inference" });
+    const comfy = db.createMachine({ base_url: "http://10.0.0.10:8188", machine_type: "comfyui", name: "comfy" });
+    const other = db.createMachine({ base_url: "http://10.0.0.20:8080/v1", machine_type: "inference", name: "other" });
 
     // ComfyUI active on .10
     const comfyLease = await acquireLease(db, "foreman", "art", { machineType: "comfyui" });

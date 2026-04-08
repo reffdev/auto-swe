@@ -166,7 +166,7 @@ export function MachineDetail({ machine, onBack, onDataChange }: MachineDetailPr
 
           <div>
             <label htmlFor="machine-release-url" className="text-xs font-medium text-muted-foreground uppercase tracking-wider block mb-1.5">Release URL</label>
-            <Input id="machine-release-url" value={releaseUrl} onChange={(e) => { setReleaseUrl(e.target.value); }} placeholder="http://192.168.1.10:8188/free" />
+            <Input id="machine-release-url" value={releaseUrl} onChange={(e) => { setReleaseUrl(e.target.value); }} placeholder="http://comfyui.local:8188/free" />
             <p className="text-xs text-muted-foreground mt-1">URL to call to free GPU resources when a colocated machine needs the GPU. For ComfyUI: <code className="text-[10px] bg-muted px-1 rounded">http://host:8188/free</code> — For llama-swap: <code className="text-[10px] bg-muted px-1 rounded">http://host:8080/api/models/unload</code></p>
           </div>
 
