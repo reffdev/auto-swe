@@ -7,6 +7,7 @@
  * - After a milestone transitions (new milestone tasks)
  */
 
+import { randomUUID } from "crypto";
 import { stream as llmStream } from "../llm";
 import { withLlmSession } from "../llm-dispatch";
 import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
@@ -129,6 +130,14 @@ export async function planNextTasks(
         }
         console.log(`[director:planner] calling ${session.machine.name || session.providerModelId} ...`);
         const llmStartTime = Date.now();
+        // Synthetic identifiers used for the per-step llm_requests rows so the
+        // Director planner's reasoning is browsable in the existing LLM logs UI
+        // alongside Foreman pipeline steps. The frontend filters by issue_id
+        // prefix; "director-planner:<milestone>" is greppable and groups all
+        // calls within one planning attempt.
+        const plannerIssueId = `director-planner:${milestone.id}`;
+        const plannerRunId = `director-planner-run:${randomUUID()}`;
+        let stepIndex = 0;
         const opinionTools = makeDirectorOpinionTools(db, project, {
           model: session.llm,
           sandbox: directorSandbox,
@@ -150,14 +159,51 @@ export async function planNextTasks(
           tools,
           maxSteps: 50,
           abortSignal: abortController.signal,
-          onStepFinish: ({ toolCalls }) => {
+          onStepFinish: (step) => {
+            stepIndex++;
+            const toolCalls = step.toolCalls as Array<{ toolName?: string; args?: unknown }> | undefined;
+            const toolResults = step.toolResults as Array<{ toolName?: string; result?: unknown }> | undefined;
+            const stepText = (step as { text?: string }).text;
+            const usage = (step as { usage?: { promptTokens?: number; completionTokens?: number } }).usage;
+            const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+
             if (toolCalls?.length) {
               const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
-              const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
               console.log(`[director:planner] step — ${toolNames} (${elapsed}s)`);
+            }
+
+            // Persist this step into llm_requests so the Director's reasoning
+            // is visible in the existing LLM logs UI. Each step records the
+            // tool results that fed into it (input) and the model's response
+            // (output: text + tool calls). Failures here are non-critical.
+            try {
+              const inputParts: string[] = [];
+              for (const tr of toolResults ?? []) {
+                inputParts.push(`[tool_result: ${tr.toolName ?? "unknown"}] ${String(tr.result).slice(0, 2000)}`);
+              }
+              const outputParts: string[] = [];
+              if (stepText) outputParts.push(stepText);
+              for (const tc of toolCalls ?? []) {
+                outputParts.push(`[tool_call: ${tc.toolName ?? "unknown"}] ${JSON.stringify(tc.args ?? {}).slice(0, 2000)}`);
+              }
+              db.createLlmRequest({
+                issue_id: plannerIssueId,
+                run_id: plannerRunId,
+                model_id: session.providerModelId,
+                input_text: inputParts.join("\n") || `[director-planner step ${stepIndex} input]`,
+                output_text: outputParts.join("\n") || `[director-planner step ${stepIndex} output]`,
+                prompt_tokens: usage?.promptTokens ?? 0,
+                completion_tokens: usage?.completionTokens ?? 0,
+                duration_ms: Date.now() - llmStartTime,
+              });
+            } catch (logErr) {
+              console.warn("[director:planner] failed to log step to llm_requests:", logErr instanceof Error ? logErr.message : logErr);
+            }
+
+            if (toolCalls?.length) {
               const summary = toolCalls.map(tc => ({
                 tool: tc.toolName ?? "unknown",
-                args: JSON.stringify((tc as { args?: unknown }).args ?? {}),
+                args: JSON.stringify(tc.args ?? {}),
               }));
               const obs = loopGuard.observe(summary);
               if (obs.looping && !loopTripped) {
@@ -434,13 +480,9 @@ export async function planNextTasks(
   }
 
   const totalTime = Math.round((Date.now() - planStartTime) / 1000);
+  let createdTitles: string[] = [];
   if (created > 0) {
     // Only list the tasks that were actually created (non-null batchMap entries).
-    const createdIds = new Set<string>();
-    for (const id of batchMap.values()) {
-      if (id !== null) createdIds.add(id);
-    }
-    const createdTitles: string[] = [];
     for (const [num, id] of batchMap) {
       if (id !== null) {
         const pt = parsedTasks[num - 1];
@@ -454,6 +496,36 @@ export async function planNextTasks(
   } else {
     const skipped = rawTasks.length;
     console.log(`[director:planner] 0 new tasks in ${totalTime}s${skipped > 0 ? ` (${skipped} duplicate${skipped > 1 ? "s" : ""} skipped)` : ""}`);
+  }
+
+  // Persist a one-line summary of this planner run into the directive's
+  // conversation as a system message. The user can see in the conversation UI
+  // that a planning attempt happened and what came out of it, without digging
+  // through llm_requests for the per-step trace. This is the cheap surface;
+  // the rich per-step trace is in llm_requests under issue_id =
+  // "director-planner:<milestone.id>".
+  try {
+    if (directive.conversation_id) {
+      const summaryParts: string[] = [];
+      summaryParts.push(`**Director planning** [${reason}] for milestone "${milestone.title}" — ${totalTime}s`);
+      if (created > 0) {
+        summaryParts.push(`Created ${created} task(s):`);
+        for (const t of createdTitles) summaryParts.push(`- ${t}`);
+      } else {
+        summaryParts.push(`No new tasks generated.`);
+      }
+      if (verificationIssues?.length) {
+        summaryParts.push("Triggered by verification failures:");
+        for (const issue of verificationIssues.slice(0, 5)) summaryParts.push(`- ${issue}`);
+      }
+      db.createDirectorMessage({
+        conversation_id: directive.conversation_id,
+        role: "assistant",
+        content: summaryParts.join("\n"),
+      });
+    }
+  } catch (logErr) {
+    console.warn("[director:planner] failed to write planning summary to conversation:", logErr instanceof Error ? logErr.message : logErr);
   }
 
   return created;
