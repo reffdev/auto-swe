@@ -125,6 +125,10 @@ export async function planNextTasks(
   // Hoisted out of the session callback so post-stream logic can read it.
   // Set inside onStepFinish when the agent calls advanceMilestone.
   let advanceMilestoneCalled = false;
+  // True iff the agent called advanceMilestone AND it returned advanced=true.
+  // Used post-stream to short-circuit parsing — there's nothing to parse,
+  // the milestone was committed by the tool itself.
+  let advanceMilestoneSucceededOuter = false;
   try {
     resultText = await withLlmSession(
       db,
@@ -271,6 +275,7 @@ export async function planNextTasks(
                 try { parsed = JSON.parse(String(tr.result ?? "")); } catch { /* non-JSON result — ignore */ }
                 if (parsed?.advanced === true) {
                   advanceMilestoneSuccess = true;
+                  advanceMilestoneSucceededOuter = true;
                   advanceMilestoneAborted = "success";
                   console.log(`[director:planner] advanceMilestone succeeded for "${milestone.title}" — aborting stream, work is done`);
                   abortController.abort();
@@ -422,6 +427,14 @@ export async function planNextTasks(
   }
   if (resultText === null) {
     console.error("[director:planner] no machine available");
+    return 0;
+  }
+
+  // If advanceMilestone succeeded inside the planner stream, the milestone
+  // was already committed by the tool. There is nothing to parse out of the
+  // (likely empty) stream text. Skip the parse-and-warn dance entirely.
+  if (advanceMilestoneSucceededOuter) {
+    console.log(`[director:planner] "${milestone.title}" advanced via tool — skipping post-stream task parsing`);
     return 0;
   }
 

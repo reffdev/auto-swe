@@ -29,7 +29,7 @@ import { generate, type LlmModel } from "../llm";
 import { runShellCommand, runProcess } from "../util/async-process";
 import type { SandboxProfile } from "../util/sandbox";
 import { verifyMilestone as runVerifyMilestone } from "../director/verifier";
-import { clearVerificationBackstop } from "../director/scheduler";
+import { clearVerificationBackstop, nudgeDirector } from "../director/scheduler";
 import type { LlmSession } from "../llm-dispatch";
 
 interface DirectorOpinionOpts {
@@ -257,6 +257,13 @@ export function makeDirectorOpinionTools(
         // No next milestone — the directive is complete
         db.updateDirectorDirective(milestone.directive_id, { status: "completed", completed_at: new Date().toISOString() });
       }
+
+      // Nudge the Director scheduler so the next tick picks up the newly
+      // active milestone (or the completed-directive cleanup) immediately.
+      // Without this nudge, nothing fires until an external event arrives —
+      // and a freshly-activated milestone has no foreman tasks yet, so no
+      // foreman lifecycle nudge will come. The Director sits idle.
+      nudgeDirector(db);
 
       return JSON.stringify({
         advanced: true,
