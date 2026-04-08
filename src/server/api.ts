@@ -5,6 +5,7 @@
  */
 
 import { Router } from "express";
+import { z } from "zod";
 import { spawn } from "child_process";
 import {
   stat as fsStat,
@@ -207,17 +208,24 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     const machine = db.createMachine({ name, base_url, max_concurrent, api_key, machine_type });
 
-    // Auto-bootstrap ComfyUI workflows for the active project
+    // Auto-bootstrap ComfyUI workflows for the active project. Best-effort
+    // and intentionally fire-and-forget — the new machine is already created
+    // and usable; bootstrap failure does not invalidate the machine row.
+    // Both the dynamic import() and the bootstrap call have explicit catch
+    // handlers so a failure in either is logged instead of silently swallowed
+    // as an unhandled rejection.
     if (machine_type === "comfyui") {
       const config = db.getForemanConfig();
       if (config?.project_id) {
         const project = db.getProject(config.project_id);
         if (project) {
-          import("./foreman/comfyui-bootstrap").then(({ bootstrapComfyUI }) => {
-            bootstrapComfyUI(base_url, project.workdir).catch(err =>
-              console.warn("[comfyui:bootstrap] failed:", err),
-            );
-          });
+          import("./foreman/comfyui-bootstrap")
+            .then(({ bootstrapComfyUI }) =>
+              bootstrapComfyUI(base_url, project.workdir).catch(err =>
+                console.warn(`[comfyui:bootstrap] failed for ${base_url}:`, err instanceof Error ? err.message : err),
+              ),
+            )
+            .catch(err => console.warn("[comfyui:bootstrap] dynamic import failed:", err instanceof Error ? err.message : err));
         }
       }
     }
@@ -324,10 +332,34 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json(model);
   });
 
+  // Zod schemas for /models routes. Keep field-level constraints (slug regex,
+  // non-empty name) in models.ts where the business logic is; the schemas
+  // here just enforce shape and reject unknown keys.
+  const modelCreateSchema = z.object({
+    name: z.string().min(1),
+    slug: z.string().min(1),
+    family: z.string().nullable().optional(),
+    default_context_limit: z.number().int().positive().nullable().optional(),
+    description: z.string().nullable().optional(),
+  }).strict();
+
+  const modelPatchSchema = z.object({
+    name: z.string().min(1).optional(),
+    slug: z.string().min(1).optional(),
+    family: z.string().nullable().optional(),
+    default_context_limit: z.number().int().positive().nullable().optional(),
+    description: z.string().nullable().optional(),
+    archived_at: z.string().nullable().optional(),
+  }).strict();
+
   router.post("/models", async (req, res) => {
+    const parsed = modelCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid model create", issues: parsed.error.issues });
+    }
     const { createLogicalModel } = await import("./models");
     try {
-      const model = createLogicalModel(db, req.body);
+      const model = createLogicalModel(db, parsed.data);
       res.status(201).json(model);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -335,9 +367,13 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   });
 
   router.patch("/models/:id", async (req, res) => {
+    const parsed = modelPatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid model update", issues: parsed.error.issues });
+    }
     const { updateLogicalModel } = await import("./models");
     try {
-      const model = updateLogicalModel(db, req.params.id, req.body);
+      const model = updateLogicalModel(db, req.params.id, parsed.data);
       res.json(model);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -357,23 +393,23 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
   // ─── Issues ─────────────────────────────────────────────────────────────
 
+  const issueCreateSchema = z.object({
+    project_id: z.string().min(1),
+    title: z.string().min(1),
+    description: z.string().optional(),
+    review_lenses: z.array(z.string()).optional(),
+  }).strict();
+
   router.post("/issues", (req, res) => {
-    const { project_id, title, description } = req.body;
-    if (!project_id || typeof project_id !== "string") {
-      res.status(400).json({ error: "project_id is required" });
-      return;
+    const parsed = issueCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid issue create", issues: parsed.error.issues });
     }
-    if (!title || typeof title !== "string") {
-      res.status(400).json({ error: "title is required" });
-      return;
-    }
-    const project = db.getProject(project_id);
+    const project = db.getProject(parsed.data.project_id);
     if (!project) {
-      res.status(404).json({ error: "project not found" });
-      return;
+      return res.status(404).json({ error: "project not found" });
     }
-    const review_lenses = Array.isArray(req.body.review_lenses) ? req.body.review_lenses : undefined;
-    const issue = db.createIssue({ project_id, title, description, review_lenses });
+    const issue = db.createIssue(parsed.data);
     res.status(201).json(issue);
   });
 
@@ -451,7 +487,15 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
 
     // Fire-and-forget: executePipeline opens its own LLM session.
     if (options?.pipelineCtx) {
-      const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
+      let lenses: string[] = ["general"];
+      if (freshIssue.review_lenses) {
+        try {
+          const parsed = JSON.parse(freshIssue.review_lenses);
+          if (Array.isArray(parsed)) lenses = parsed;
+        } catch {
+          console.warn(`[api] issue ${freshIssue.id} has malformed review_lenses JSON, defaulting to ["general"]`);
+        }
+      }
       executePipeline(options.pipelineCtx, freshIssue, project, lenses)
         .catch((err) => { console.error(`[pipeline] error (approve):`, err); });
     }
@@ -617,7 +661,15 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.status(202).json({ issue: freshIssue });
 
     if (options?.pipelineCtx) {
-      const lenses: string[] = freshIssue.review_lenses ? JSON.parse(freshIssue.review_lenses) : ["general"];
+      let lenses: string[] = ["general"];
+      if (freshIssue.review_lenses) {
+        try {
+          const parsed = JSON.parse(freshIssue.review_lenses);
+          if (Array.isArray(parsed)) lenses = parsed;
+        } catch {
+          console.warn(`[api] issue ${freshIssue.id} has malformed review_lenses JSON, defaulting to ["general"]`);
+        }
+      }
       executePipeline(options.pipelineCtx, freshIssue, project, lenses)
         .catch((err) => { console.error(`[pipeline] error (retry):`, err); });
     }

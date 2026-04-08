@@ -54,6 +54,10 @@ async function gitSafe(args: string[], cwd: string): Promise<string> {
       shell: true,
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 30_000,
+      // Default Node kill signal is SIGTERM, which a hung git operation can
+      // ignore. SIGKILL is uncatchable and guarantees the timeout actually
+      // terminates the process instead of leaving an orphan.
+      killSignal: "SIGKILL",
     });
     let stdout = "";
     let stderr = "";
@@ -78,6 +82,7 @@ async function gitCommit(message: string, cwd: string): Promise<string> {
       shell: true,
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 30_000,
+      killSignal: "SIGKILL",
     });
     let stdout = "";
     let stderr = "";
@@ -314,6 +319,61 @@ export async function setupWorktree(
     console.error(`[git] failed to create worktree for ${branch}:`, msg);
     return { ok: false, error: msg };
   }
+}
+
+/**
+ * Startup orphan worktree sweep.
+ *
+ * Worktree creation can leak on hard crashes: a task starts, sets up its
+ * worktree, the process dies, the task gets reset to "queued" by
+ * recoverFromCrash() but the worktree directory survives on disk. Over time
+ * these accumulate and fill the disk. Each call removes worktrees under the
+ * given project's `.orch-worktrees` (or `WORKTREE_BASE`) base directory that
+ * are NOT referenced by any of the still-active task IDs.
+ *
+ * Returns the number of orphans pruned.
+ */
+export async function sweepOrphanWorktrees(
+  projectWorkdir: string,
+  activeTaskIds: ReadonlySet<string>,
+): Promise<number> {
+  const base =
+    process.env.WORKTREE_BASE ??
+    resolve(projectWorkdir, "..", ".orch-worktrees");
+  if (!(await pathExists(base))) return 0;
+
+  let entries: string[];
+  try {
+    entries = await fsReaddir(base);
+  } catch (err) {
+    console.warn(`[git] sweepOrphanWorktrees: cannot read ${base}:`, err instanceof Error ? err.message : err);
+    return 0;
+  }
+
+  let pruned = 0;
+  for (const entry of entries) {
+    // Worktree dir names are either an issue UUID or "foreman-<8-char-prefix>".
+    // Extract the lookup key for both shapes.
+    const isForemanWorktree = entry.startsWith("foreman-");
+    const key = isForemanWorktree ? entry.slice("foreman-".length) : entry;
+    // For foreman worktrees, the key is an 8-char prefix of the task UUID;
+    // for legacy issue worktrees, it's the full issue ID. We accept either
+    // a full match OR an 8-char prefix match against any active task id.
+    const isActive = [...activeTaskIds].some(id => id === key || id.startsWith(key));
+    if (isActive) continue;
+
+    const fullPath = resolve(base, entry);
+    const removed = await removeWorktree(projectWorkdir, fullPath);
+    if (removed) {
+      pruned++;
+      console.log(`[git:sweep] pruned orphan worktree ${entry}`);
+    }
+  }
+
+  if (pruned > 0) {
+    console.log(`[git:sweep] removed ${pruned} orphan worktree(s) from ${base}`);
+  }
+  return pruned;
 }
 
 export async function removeWorktree(

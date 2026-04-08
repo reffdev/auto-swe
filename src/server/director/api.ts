@@ -3,7 +3,35 @@
  */
 
 import { Router } from "express";
+import { z } from "zod";
 import { runProcess } from "../util/async-process";
+
+/**
+ * Convert a fire-and-forget error (typically from withLlmSession failing to
+ * acquire a machine, or a logical-model error before generateDirectorResponse
+ * even runs) into a durable assistant message in the conversation. Without
+ * this the user sees a stuck "generating..." spinner and the error only lands
+ * in console.error. With it, the polling frontend sees a real assistant
+ * message it can act on.
+ */
+function recordConversationError(
+  db: import("../db").Db,
+  conversationId: string,
+  context: string,
+  err: unknown,
+): void {
+  const errMsg = err instanceof Error ? err.message : String(err);
+  console.error(`[director:${context}] error:`, errMsg);
+  try {
+    db.createDirectorMessage({
+      conversation_id: conversationId,
+      role: "assistant",
+      content: `(Error in ${context}: ${errMsg.slice(0, 500)})`,
+    });
+  } catch (writeErr) {
+    console.error(`[director:${context}] failed to record error in conversation:`, writeErr);
+  }
+}
 import type { Db } from "../db";
 import { getUnattributedCommits } from "./unattributed-commits";
 import { generateDirectorResponse, getDirectorStream, isDirectorGenerating } from "./conversation";
@@ -125,7 +153,7 @@ export function createDirectorRouter(db: Db): Router {
             messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
           }),
           { preferMachineId: getDirectorPreferredMachineId(db) },
-        ).catch(err => console.error("[director] initial response error:", err));
+        ).catch(err => recordConversationError(db, conversation.id, "initial-response", err));
       }
     }
 
@@ -192,7 +220,7 @@ export function createDirectorRouter(db: Db): Router {
         });
       },
       { preferMachineId: getDirectorPreferredMachineId(db) },
-    ).catch(err => console.error("[director:conversation] error:", err));
+    ).catch(err => recordConversationError(db, conversation.id, "conversation", err));
 
     res.status(202).json({ message_id: msg.id });
   });
@@ -264,7 +292,7 @@ export function createDirectorRouter(db: Db): Router {
         });
       },
       { preferMachineId: getDirectorPreferredMachineId(db) },
-    ).catch(err => console.error("[director:retry] error:", err));
+    ).catch(err => recordConversationError(db, conversation.id, "retry", err));
 
     res.status(202).json({ retrying: true });
   });
@@ -389,19 +417,21 @@ export function createDirectorRouter(db: Db): Router {
    * Submit manual commits as a completed task.
    * Creates a foreman task with status=completed, linking the commit SHAs.
    */
-  router.post("/submit-commits", async (req, res) => {
-    const { project_id, title, description, commit_shas, directive_id, milestone_id } = req.body as {
-      project_id: string;
-      title: string;
-      description: string;
-      commit_shas: string[];
-      directive_id?: string;
-      milestone_id?: string;
-    };
+  const submitCommitsSchema = z.object({
+    project_id: z.string().min(1),
+    title: z.string().min(1),
+    description: z.string(),
+    commit_shas: z.array(z.string().min(1)).min(1),
+    directive_id: z.string().optional(),
+    milestone_id: z.string().optional(),
+  }).strict();
 
-    if (!project_id || !title || !commit_shas?.length) {
-      return res.status(400).json({ error: "project_id, title, and commit_shas required" });
+  router.post("/submit-commits", async (req, res) => {
+    const parsed = submitCommitsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid submit-commits", issues: parsed.error.issues });
     }
+    const { project_id, title, description, commit_shas, directive_id, milestone_id } = parsed.data;
 
     const project = db.getProject(project_id);
     if (!project) return res.status(404).json({ error: "Project not found" });

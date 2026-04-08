@@ -96,6 +96,16 @@ const zeroTaskCounts = new Map<string, number>();
 const verificationBackstopCounts = new Map<string, number>();
 const VERIFICATION_BACKSTOP_THRESHOLD = 3;
 
+/**
+ * Clear the backstop counter for a milestone. Called by the `advanceMilestone`
+ * tool when the Director commits the milestone state transition itself, so
+ * the counter doesn't go stale if the same milestone id ever reappears in
+ * an active state during the same process lifetime.
+ */
+export function clearVerificationBackstop(milestoneId: string): void {
+  verificationBackstopCounts.delete(milestoneId);
+}
+
 /** Expose DB for episodic extractor (avoids circular import of full scheduler) */
 export function getGlobalDb(): Db | null { return schedulerDb; }
 
@@ -817,6 +827,10 @@ async function completeMilestone(
     }
   } else {
     db.updateDirectorMilestone(milestone.id, { status: "active" });
+    // Reset the backstop counter on a verification FAILURE — without this,
+    // the next time tasks complete the counter starts at the previous value
+    // and the backstop fires too early, robbing the Director of fresh attempts.
+    verificationBackstopCounts.delete(milestone.id);
     console.log(`[director] milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
     await logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
     await planTasks(db, directive, project, milestone, "corrective", verification.issues);

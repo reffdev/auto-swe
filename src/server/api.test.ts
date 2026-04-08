@@ -501,13 +501,14 @@ describe("validation edge cases", () => {
     const p = db.createProject({ name: "test", workdir: testDir });
     const res = await request(app).post("/api/issues").send({ project_id: p.id });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/title/);
+    // Zod schema returns { error, issues: [{ path: ["title"], ... }] }
+    expect(res.body.issues?.some((i: { path: string[] }) => i.path.includes("title"))).toBe(true);
   });
 
   it("POST /api/issues rejects missing project_id", async () => {
     const res = await request(app).post("/api/issues").send({ title: "x" });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/project_id/);
+    expect(res.body.issues?.some((i: { path: string[] }) => i.path.includes("project_id"))).toBe(true);
   });
 
   it("GET /api/llm-requests returns empty array", async () => {

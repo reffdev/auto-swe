@@ -3,6 +3,7 @@
  */
 
 import { Router } from "express";
+import { z } from "zod";
 import {
   readFile as fsReadFile,
   readdir as fsReaddir,
@@ -78,14 +79,41 @@ export function createForemanRouter(db: Db): Router {
     res.json({ files, diff });
   });
 
+  // Zod schemas for task create/update — same pattern as foreman/config.
+  // .strict() rejects unknown keys with a 400 instead of silently dropping them.
+  const foremanTaskCreateSchema = z.object({
+    project_id: z.string().min(1),
+    title: z.string().min(1),
+    description: z.string().optional(),
+    priority: z.number().int().min(1).max(5).optional(),
+    type: z.string().optional(),
+    model_id: z.string().nullable().optional(),
+    target_files: z.array(z.string()).optional(),
+    depends_on: z.array(z.string()).optional(),
+    acceptance_criteria: z.array(z.string()).optional(),
+    max_retries: z.number().int().min(0).max(20).optional(),
+  }).strict();
+
+  const foremanTaskPatchSchema = z.object({
+    title: z.string().min(1).optional(),
+    description: z.string().optional(),
+    priority: z.number().int().min(1).max(5).optional(),
+    type: z.string().optional(),
+    model_id: z.string().nullable().optional(),
+    target_files: z.array(z.string()).optional(),
+    depends_on: z.array(z.string()).optional(),
+    acceptance_criteria: z.array(z.string()).optional(),
+    max_retries: z.number().int().min(0).max(20).optional(),
+  }).strict();
+
   router.post("/tasks", (req, res) => {
-    const { project_id, title, description, priority, type, model_id, target_files, depends_on, acceptance_criteria, max_retries } = req.body;
-    if (!project_id || !title) {
-      return res.status(400).json({ error: "project_id and title are required" });
+    const parsed = foremanTaskCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid task create", issues: parsed.error.issues });
     }
     const task = db.createForemanTask({
-      project_id, title, description, priority, type, model_id: model_id ?? null,
-      target_files, depends_on, acceptance_criteria, max_retries,
+      ...parsed.data,
+      model_id: parsed.data.model_id ?? null,
     });
     res.status(201).json(task);
   });
@@ -94,17 +122,16 @@ export function createForemanRouter(db: Db): Router {
     const task = db.getForemanTask(req.params.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
-    const allowed = ["title", "description", "priority", "type", "model_id", "target_files", "depends_on", "acceptance_criteria", "max_retries"];
+    const parsed = foremanTaskPatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid task update", issues: parsed.error.issues });
+    }
+
+    // Serialize array fields to JSON for storage. Other fields pass through.
     const updates: Record<string, unknown> = {};
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) {
-        // Serialize arrays to JSON
-        if (Array.isArray(req.body[key])) {
-          updates[key] = JSON.stringify(req.body[key]);
-        } else {
-          updates[key] = req.body[key];
-        }
-      }
+    for (const [k, v] of Object.entries(parsed.data)) {
+      if (v === undefined) continue;
+      updates[k] = Array.isArray(v) ? JSON.stringify(v) : v;
     }
 
     db.updateForemanTask(task.id, updates);
@@ -325,12 +352,36 @@ export function createForemanRouter(db: Db): Router {
     res.json(config);
   });
 
+  // Zod schema = the API contract for `PATCH /config`. Adding a column to the
+  // foreman_config table does NOT auto-expose it through the API; it must be
+  // added here deliberately. The schema is the source of truth for what fields
+  // are settable, what types they are, and what bad input is rejected with a
+  // 400 (instead of being silently dropped or surfacing as a 500).
+  const foremanConfigPatchSchema = z.object({
+    enabled: z.union([z.literal(0), z.literal(1), z.boolean()]).optional(),
+    project_id: z.string().nullable().optional(),
+    tasks_dir: z.string().nullable().optional(),
+    priority_mode: z.enum(["yield", "parallel", "exclusive"]).optional(),
+    tick_interval_ms: z.number().int().positive().optional(),
+    director_machine_id: z.string().nullable().optional(),
+    director_model_id: z.string().nullable().optional(),
+    foreman_code_model_id: z.string().nullable().optional(),
+    analysis_enabled: z.union([z.literal(0), z.literal(1)]).optional(),
+    continuous_exploration: z.union([z.literal(0), z.literal(1)]).optional(),
+    exploration_preset: z.string().optional(),
+    sandbox_enabled: z.union([z.literal(0), z.literal(1)]).optional(),
+    director_initiated_verification: z.union([z.literal(0), z.literal(1)]).optional(),
+  }).strict(); // .strict() rejects unknown keys with a 400 instead of dropping them
+
   router.patch("/config", (req, res) => {
-    const allowed = ["enabled", "project_id", "tasks_dir", "priority_mode", "tick_interval_ms", "director_machine_id", "director_model_id", "foreman_code_model_id", "analysis_enabled", "continuous_exploration", "exploration_preset"];
-    const updates: Record<string, unknown> = {};
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    const parsed = foremanConfigPatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid config update", issues: parsed.error.issues });
+      return;
     }
+    // Normalize `enabled: boolean` → 0|1 to match the storage shape
+    const updates: Record<string, unknown> = { ...parsed.data };
+    if (typeof updates.enabled === "boolean") updates.enabled = updates.enabled ? 1 : 0;
     const config = db.upsertForemanConfig(updates);
     nudgeForeman(db);
 
@@ -402,8 +453,28 @@ export function createForemanRouter(db: Db): Router {
     }
   });
 
+  // Schemas for the asset routes — these protect against the NaN bypass:
+  // parseInt("abc") returns NaN, NaN < 0 is false, NaN >= n is also false,
+  // so without validation an "abc" index would access files[NaN] = undefined.
+  const assetIndexParamsSchema = z.object({
+    id: z.string().min(1),
+    index: z.coerce.number().int().min(0),
+  });
+  const assetRunQuerySchema = z.object({
+    run: z.coerce.number().int().min(1).optional(),
+  });
+
   router.get("/tasks/:id/asset/:index", async (req, res) => {
-    const task = db.getForemanTask(req.params.id);
+    const params = assetIndexParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return res.status(400).json({ error: "invalid asset path", issues: params.error.issues });
+    }
+    const query = assetRunQuerySchema.safeParse(req.query);
+    if (!query.success) {
+      return res.status(400).json({ error: "invalid asset query", issues: query.error.issues });
+    }
+
+    const task = db.getForemanTask(params.data.id);
     if (!task) return res.status(404).json({ error: "Task not found" });
 
     const config = db.getForemanConfig();
@@ -413,7 +484,8 @@ export function createForemanRouter(db: Db): Router {
     const project = db.getProject(projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    const runParam = req.query.run ? parseInt(req.query.run as string, 10) : null;
+    const runParam = query.data.run ?? null;
+    const idx = params.data.index;
     const galleryDir = runParam
       ? styleExplorationRunDir(project.workdir, task.id, runParam)
       : styleExplorationDir(project.workdir, task.id);
@@ -421,8 +493,7 @@ export function createForemanRouter(db: Db): Router {
     try {
       const all = await fsReaddir(galleryDir);
       const files = all.filter((f: string) => (f.endsWith(".png") || f.endsWith(".jpg")) && !f.startsWith(".")).sort(numericSort);
-      const idx = parseInt(req.params.index, 10);
-      if (idx < 0 || idx >= files.length) return res.status(404).json({ error: "Index out of range" });
+      if (idx >= files.length) return res.status(404).json({ error: "Index out of range" });
 
       const filePath = resolve(galleryDir, files[idx]);
       const buffer = await fsReadFile(filePath);
@@ -435,8 +506,7 @@ export function createForemanRouter(db: Db): Router {
           const histDir = artHistoryRunDir(project.workdir, task.id, runParam);
           const all = await fsReaddir(histDir);
           const files = all.filter((f: string) => !f.startsWith(".")).sort();
-          const idx = parseInt(req.params.index, 10);
-          if (idx >= 0 && idx < files.length) {
+          if (idx < files.length) {
             const filePath = resolve(histDir, files[idx]);
             const buffer = await fsReadFile(filePath);
             const ext2 = extname(filePath).toLowerCase();

@@ -29,6 +29,7 @@ import { generate, type LlmModel } from "../llm";
 import { runShellCommand, runProcess } from "../util/async-process";
 import type { SandboxProfile } from "../util/sandbox";
 import { verifyMilestone as runVerifyMilestone } from "../director/verifier";
+import { clearVerificationBackstop } from "../director/scheduler";
 
 interface DirectorOpinionOpts {
   /** LLM model used by the LLM-backed tools (compareCodeToClaim, summarizeRecentFailures, verifyAcceptanceCriterion). */
@@ -232,6 +233,8 @@ export function makeDirectorOpinionTools(
 
       // Verification passed — commit the state transition
       db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString() });
+      // Clear the in-memory backstop counter so it doesn't go stale.
+      clearVerificationBackstop(milestone.id);
 
       // Activate the next milestone if there is one
       const allMilestones = db.getDirectorMilestones(milestone.directive_id);

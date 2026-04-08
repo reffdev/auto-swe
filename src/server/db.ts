@@ -62,7 +62,7 @@ export class Db {
         id TEXT PRIMARY KEY, name TEXT NOT NULL, workdir TEXT NOT NULL,
         git_remote TEXT, git_server_token TEXT,
         git_default_branch TEXT NOT NULL DEFAULT 'main',
-        build_command TEXT, test_command TEXT,
+        build_command TEXT, test_command TEXT, lint_command TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS models (
@@ -719,7 +719,7 @@ export class Db {
 
   // ─── Crash recovery ──────────────────────────────────────────────────────
 
-  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanRuns: number; directorDirectives: number; analysisRuns: number } {
+  recoverFromCrash(): { machines: number; runs: number; issues: number; foremanTasks: number; foremanTasksValidating: number; foremanRuns: number; directorDirectives: number; directorMilestones: number; analysisRuns: number } {
     const db = this.drizzle;
     const m = db.update(schema.machines)
       .set({ status: "idle", current_run_id: null })
@@ -738,6 +738,13 @@ export class Db {
       .set({ status: "queued", machine_id: null })
       .where(eq(schema.foremanTasks.status, "running"))
       .run();
+    // Tasks crashed mid-LLM-verification (validating). The verification has
+    // not completed and the result is unknown — re-queue so the scheduler
+    // picks them up; the validator will run again on next dispatch.
+    const ftv = db.update(schema.foremanTasks)
+      .set({ status: "queued", machine_id: null })
+      .where(eq(schema.foremanTasks.status, "validating"))
+      .run();
     const fr = db.update(schema.foremanRuns)
       .set({ status: "fail", completed_at: sql`datetime('now')` })
       .where(eq(schema.foremanRuns.status, "running"))
@@ -751,15 +758,93 @@ export class Db {
       .set({ status: "active" })
       .where(eq(schema.directorDirectives.status, "planning"))
       .run();
+    // Milestones crashed mid-verification — reset to active so the Director's
+    // next tick re-evaluates them. Without this, a milestone can be left in
+    // "verifying" forever if no active directive happens to run a tick that
+    // notices the stuck state.
+    const dm = db.update(schema.directorMilestones)
+      .set({ status: "active" })
+      .where(eq(schema.directorMilestones.status, "verifying"))
+      .run();
     return {
       machines: m.changes,
       runs: r.changes,
       issues: i.changes,
       foremanTasks: ft.changes,
+      foremanTasksValidating: ftv.changes,
       foremanRuns: fr.changes,
       directorDirectives: dd.changes,
+      directorMilestones: dm.changes,
       analysisRuns: ar.changes,
     };
+  }
+
+  // ─── Record cleanup ──────────────────────────────────────────────────────
+
+  /**
+   * Delete records older than `retentionDays` from the high-volume history
+   * tables (llm_requests, foreman_runs, runs, analysis_runs). Without this
+   * the DB grows unbounded — every issue run, every foreman task run, and
+   * every per-step LLM request is logged forever. Long-running deployments
+   * accumulate gigabytes within weeks.
+   *
+   * Returns the per-table delete counts. Idempotent and cheap to run on
+   * startup; can also be invoked from a maintenance route.
+   *
+   * Records are NOT deleted if they belong to a still-active issue / task /
+   * directive — only history rows whose parent has been completed for more
+   * than `retentionDays` get pruned. This keeps the recent activity intact
+   * even if a task ran many times before completing.
+   */
+  cleanupOldRecords(retentionDays: number = 30): { llmRequests: number; foremanRuns: number; runs: number; analysisRuns: number } {
+    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const cutoffIso = new Date(cutoffMs).toISOString();
+
+    // Each delete is independent — if one fails, the others should still run.
+    // Wrap each in its own try so we report partial progress instead of
+    // throwing the whole sweep on a single failure.
+    let llmRequests = 0;
+    let foremanRuns = 0;
+    let runs = 0;
+    let analysisRuns = 0;
+
+    try {
+      const r = this.sqlite.prepare(
+        "DELETE FROM llm_requests WHERE created_at < ?"
+      ).run(cutoffIso);
+      llmRequests = r.changes;
+    } catch (err) {
+      console.warn("[db:cleanup] llm_requests prune failed:", err instanceof Error ? err.message : err);
+    }
+
+    try {
+      const r = this.sqlite.prepare(
+        "DELETE FROM foreman_runs WHERE completed_at IS NOT NULL AND completed_at < ?"
+      ).run(cutoffIso);
+      foremanRuns = r.changes;
+    } catch (err) {
+      console.warn("[db:cleanup] foreman_runs prune failed:", err instanceof Error ? err.message : err);
+    }
+
+    try {
+      const r = this.sqlite.prepare(
+        "DELETE FROM runs WHERE completed_at IS NOT NULL AND completed_at < ?"
+      ).run(cutoffIso);
+      runs = r.changes;
+    } catch (err) {
+      console.warn("[db:cleanup] runs prune failed:", err instanceof Error ? err.message : err);
+    }
+
+    try {
+      const r = this.sqlite.prepare(
+        "DELETE FROM analysis_runs WHERE completed_at IS NOT NULL AND completed_at < ?"
+      ).run(cutoffIso);
+      analysisRuns = r.changes;
+    } catch (err) {
+      console.warn("[db:cleanup] analysis_runs prune failed:", err instanceof Error ? err.message : err);
+    }
+
+    return { llmRequests, foremanRuns, runs, analysisRuns };
   }
 
   // ─── Machines ─────────────────────────────────────────────────────────────
@@ -1002,11 +1087,15 @@ export class Db {
   }
 
   deleteIssue(id: string): boolean {
-    // Delete associated runs and LLM requests first
-    this.sqlite.prepare("DELETE FROM runs WHERE issue_id = ?").run(id);
-    this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(id);
-    const result = this.drizzle.delete(schema.issues).where(eq(schema.issues.id, id)).run();
-    return result.changes > 0;
+    // Wrapped in a transaction so a partial failure (e.g. a cascade write
+    // mid-delete) leaves the original state intact instead of orphaning
+    // some rows but not others.
+    return this.sqlite.transaction(() => {
+      this.sqlite.prepare("DELETE FROM runs WHERE issue_id = ?").run(id);
+      this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(id);
+      const result = this.drizzle.delete(schema.issues).where(eq(schema.issues.id, id)).run();
+      return result.changes > 0;
+    })();
   }
 
   // ─── Runs ─────────────────────────────────────────────────────────────────
@@ -1417,6 +1506,18 @@ export class Db {
       .get() ?? null;
   }
 
+  /**
+   * Create a foreman task. The input shape is INTENTIONALLY narrower than the
+   * `foreman_tasks` schema — only fields that are settable at creation time
+   * are exposed here. Post-execution fields (retry_count, error_message,
+   * git_branch, started_at, completed_at, duration_ms, prompt_tokens,
+   * verification_result, executor_notes, knowledge_extracted, etc.) are
+   * deliberately not in this input because they have no meaning until the
+   * task has run. They are written by the executor via `updateForemanTask`.
+   *
+   * If you add a new schema column that SHOULD be settable at create time,
+   * add it here. If it's post-execution state, it goes through update only.
+   */
   createForemanTask(data: {
     project_id: string; title: string; description?: string;
     yaml_id?: string; priority?: number; type?: string; model_id?: string | null;
@@ -1457,27 +1558,33 @@ export class Db {
     // Prune this task from any other task's depends_on list BEFORE deleting,
     // so dependent tasks don't get marked failed later when the scheduler sees
     // a dangling reference. Manual deletion means "this prereq is no longer
-    // relevant" — not "abort everything downstream".
-    const dependents = this.sqlite.prepare(
-      "SELECT id, title, depends_on FROM foreman_tasks WHERE depends_on IS NOT NULL AND depends_on LIKE ?"
-    ).all(`%${id}%`) as Array<{ id: string; title: string; depends_on: string }>;
-    for (const dep of dependents) {
-      let parsed: string[];
-      try { parsed = JSON.parse(dep.depends_on); } catch { continue; }
-      if (!Array.isArray(parsed) || !parsed.includes(id)) continue;
-      const pruned = parsed.filter(d => d !== id);
-      const newDepsJson = pruned.length > 0 ? JSON.stringify(pruned) : null;
-      this.drizzle.update(schema.foremanTasks)
-        .set({ depends_on: newDepsJson })
-        .where(eq(schema.foremanTasks.id, dep.id))
-        .run();
-      console.log(`[foreman] pruned deleted task ${id} from dependent "${dep.title}" (${dep.id}) — ${pruned.length} dep(s) remaining`);
-    }
+    // relevant" — not "abort everything downstream". Wrapped in a transaction
+    // so a partial failure doesn't leave dependents pointing to a deleted id.
+    return this.sqlite.transaction(() => {
+      // Use json_each for the dependents lookup so we don't substring-match
+      // task IDs (the LIKE form was a footgun: yaml_id "abc" would match
+      // "abcdef" too). This restricts the match to actual array elements.
+      const dependents = this.sqlite.prepare(
+        "SELECT t.id, t.title, t.depends_on FROM foreman_tasks t, json_each(t.depends_on) e WHERE t.depends_on IS NOT NULL AND e.value = ?"
+      ).all(id) as Array<{ id: string; title: string; depends_on: string }>;
+      for (const dep of dependents) {
+        let parsed: string[];
+        try { parsed = JSON.parse(dep.depends_on); } catch { continue; }
+        if (!Array.isArray(parsed) || !parsed.includes(id)) continue;
+        const pruned = parsed.filter(d => d !== id);
+        const newDepsJson = pruned.length > 0 ? JSON.stringify(pruned) : null;
+        this.drizzle.update(schema.foremanTasks)
+          .set({ depends_on: newDepsJson })
+          .where(eq(schema.foremanTasks.id, dep.id))
+          .run();
+        console.log(`[foreman] pruned deleted task ${id} from dependent "${dep.title}" (${dep.id}) — ${pruned.length} dep(s) remaining`);
+      }
 
-    this.sqlite.prepare("DELETE FROM foreman_runs WHERE task_id = ?").run(id);
-    this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(`foreman:${id}`);
-    const result = this.drizzle.delete(schema.foremanTasks).where(eq(schema.foremanTasks.id, id)).run();
-    return result.changes > 0;
+      this.sqlite.prepare("DELETE FROM foreman_runs WHERE task_id = ?").run(id);
+      this.sqlite.prepare("DELETE FROM llm_requests WHERE issue_id = ?").run(`foreman:${id}`);
+      const result = this.drizzle.delete(schema.foremanTasks).where(eq(schema.foremanTasks.id, id)).run();
+      return result.changes > 0;
+    })();
   }
 
   /** Get tasks ready for dispatch: queued, dependencies met, not in backoff */
@@ -1547,7 +1654,18 @@ export class Db {
       if (task.next_retry_at && task.next_retry_at > now) return false;
       if (!task.depends_on) return true;
       let deps: string[];
-      try { deps = JSON.parse(task.depends_on); } catch { return false; }
+      try { deps = JSON.parse(task.depends_on); } catch {
+        // Malformed depends_on JSON — log and skip the task. Don't silently
+        // omit it; mark it failed so the user sees the corruption.
+        console.warn(`[db] task ${task.id} has malformed depends_on JSON, marking failed: ${task.depends_on}`);
+        try {
+          this.drizzle.update(schema.foremanTasks)
+            .set({ status: "failed", error_message: "corrupt depends_on JSON" })
+            .where(eq(schema.foremanTasks.id, task.id))
+            .run();
+        } catch { /* best-effort */ }
+        return false;
+      }
       if (deps.length === 0) return true;
       return deps.every(depId => {
         const dep = this.getForemanTask(depId);
@@ -1602,24 +1720,14 @@ export class Db {
       }
       return this.getForemanConfig()!;
     }
-    // Insert path: include every field on `data` so first-time setters
-    // (e.g. tests calling upsertForemanConfig({ director_model_id: ... }) on
-    // a fresh DB) don't lose them.
+    // Insert path: spread `data` and let drizzle apply schema defaults for
+    // anything unspecified. Adding a new column to foreman_config does NOT
+    // require updating this method — drizzle reads the schema definition
+    // for default values, so as long as the new column has a `.default(...)`
+    // in schema.ts it Just Works on first insert.
     this.drizzle.insert(schema.foremanConfig).values({
       id: "default",
-      enabled: data.enabled ?? 0,
-      project_id: data.project_id ?? null,
-      tasks_dir: data.tasks_dir ?? null,
-      priority_mode: data.priority_mode ?? "parallel",
-      tick_interval_ms: data.tick_interval_ms ?? 30000,
-      director_machine_id: data.director_machine_id ?? null,
-      director_model_id: data.director_model_id ?? null,
-      foreman_code_model_id: data.foreman_code_model_id ?? null,
-      analysis_enabled: data.analysis_enabled ?? 1,
-      continuous_exploration: data.continuous_exploration ?? 0,
-      exploration_preset: data.exploration_preset ?? "concept",
-      sandbox_enabled: data.sandbox_enabled ?? 0,
-      director_initiated_verification: data.director_initiated_verification ?? 1,
+      ...stripUndefined(data),
     }).run();
     return this.getForemanConfig()!;
   }
@@ -1663,20 +1771,22 @@ export class Db {
   }
 
   deleteDirectorDirective(id: string): void {
-    // Cascade: delete related foreman tasks, milestones, reviews, conversations, messages
-    const tasks = this.getDirectiveTasks(id);
-    for (const task of tasks) {
-      this.deleteForemanTask(task.id);
-    }
-    this.drizzle.delete(schema.directorReviews).where(eq(schema.directorReviews.directive_id, id)).run();
-    this.drizzle.delete(schema.directorMilestones).where(eq(schema.directorMilestones.directive_id, id)).run();
-    // Delete conversations and their messages
-    const conversations = this.sqlite.prepare("SELECT id FROM director_conversations WHERE directive_id = ?").all(id) as Array<{ id: string }>;
-    for (const conv of conversations) {
-      this.drizzle.delete(schema.directorMessages).where(eq(schema.directorMessages.conversation_id, conv.id)).run();
-    }
-    this.drizzle.delete(schema.directorConversations).where(eq(schema.directorConversations.directive_id, id)).run();
-    this.drizzle.delete(schema.directorDirectives).where(eq(schema.directorDirectives.id, id)).run();
+    // Cascade delete in a transaction so a partial failure doesn't leave
+    // orphaned milestones / reviews / messages pointing to a missing directive.
+    this.sqlite.transaction(() => {
+      const tasks = this.getDirectiveTasks(id);
+      for (const task of tasks) {
+        this.deleteForemanTask(task.id);
+      }
+      this.drizzle.delete(schema.directorReviews).where(eq(schema.directorReviews.directive_id, id)).run();
+      this.drizzle.delete(schema.directorMilestones).where(eq(schema.directorMilestones.directive_id, id)).run();
+      const conversations = this.sqlite.prepare("SELECT id FROM director_conversations WHERE directive_id = ?").all(id) as Array<{ id: string }>;
+      for (const conv of conversations) {
+        this.drizzle.delete(schema.directorMessages).where(eq(schema.directorMessages.conversation_id, conv.id)).run();
+      }
+      this.drizzle.delete(schema.directorConversations).where(eq(schema.directorConversations.directive_id, id)).run();
+      this.drizzle.delete(schema.directorDirectives).where(eq(schema.directorDirectives.id, id)).run();
+    })();
   }
 
   getActiveDirectives(): DirectorDirective[] {
@@ -1913,16 +2023,18 @@ export class Db {
 
   createPlannerMessage(data: { conversation_id: string; role: string; content: string }): PlannerMessage {
     const id = randomUUID();
-    this.drizzle.insert(schema.plannerMessages).values({
-      id,
-      conversation_id: data.conversation_id,
-      role: data.role,
-      content: data.content,
-    }).run();
-    // Update conversation timestamp
-    this.drizzle.update(schema.plannerConversations)
-      .set({ updated_at: new Date().toISOString() })
-      .where(eq(schema.plannerConversations.id, data.conversation_id)).run();
+    // Insert the message and bump the conversation timestamp atomically.
+    this.sqlite.transaction(() => {
+      this.drizzle.insert(schema.plannerMessages).values({
+        id,
+        conversation_id: data.conversation_id,
+        role: data.role,
+        content: data.content,
+      }).run();
+      this.drizzle.update(schema.plannerConversations)
+        .set({ updated_at: new Date().toISOString() })
+        .where(eq(schema.plannerConversations.id, data.conversation_id)).run();
+    })();
     return this.getPlannerMessage(id)!;
   }
 

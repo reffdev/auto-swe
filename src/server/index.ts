@@ -46,9 +46,62 @@ const db = new Db();
 
 // 2. Crash recovery — reset stuck machines/runs from prior crashes
 const recovered = db.recoverFromCrash();
-if (recovered.machines > 0 || recovered.runs > 0 || recovered.issues > 0 || recovered.foremanTasks > 0 || recovered.foremanRuns > 0 || recovered.directorDirectives > 0 || recovered.analysisRuns > 0) {
-  console.log(`[crash-recovery] reset ${recovered.machines} machine(s), ${recovered.runs} run(s), ${recovered.issues} issue(s), ${recovered.foremanTasks} foreman task(s), ${recovered.foremanRuns} foreman run(s), ${recovered.directorDirectives} directive(s), ${recovered.analysisRuns} analysis run(s)`);
+const recoveryParts: string[] = [];
+if (recovered.machines > 0) recoveryParts.push(`${recovered.machines} machine(s)`);
+if (recovered.runs > 0) recoveryParts.push(`${recovered.runs} run(s)`);
+if (recovered.issues > 0) recoveryParts.push(`${recovered.issues} issue(s)`);
+if (recovered.foremanTasks > 0) recoveryParts.push(`${recovered.foremanTasks} stuck-running task(s)`);
+if (recovered.foremanTasksValidating > 0) recoveryParts.push(`${recovered.foremanTasksValidating} stuck-validating task(s)`);
+if (recovered.foremanRuns > 0) recoveryParts.push(`${recovered.foremanRuns} foreman run(s)`);
+if (recovered.directorDirectives > 0) recoveryParts.push(`${recovered.directorDirectives} directive(s)`);
+if (recovered.directorMilestones > 0) recoveryParts.push(`${recovered.directorMilestones} stuck-verifying milestone(s)`);
+if (recovered.analysisRuns > 0) recoveryParts.push(`${recovered.analysisRuns} analysis run(s)`);
+if (recoveryParts.length > 0) {
+  console.log(`[crash-recovery] reset ${recoveryParts.join(", ")}`);
 }
+
+// 2a. Prune old history rows. Without this the high-volume tables
+// (llm_requests, foreman_runs, runs, analysis_runs) grow unbounded — every
+// agent step is logged forever. Retention defaults to 30 days, override
+// with SWE_RETENTION_DAYS=N. Setting it to 0 disables the sweep entirely.
+const retentionDays = parseInt(process.env.SWE_RETENTION_DAYS ?? "30", 10);
+if (Number.isFinite(retentionDays) && retentionDays > 0) {
+  const pruned = db.cleanupOldRecords(retentionDays);
+  const prunedParts: string[] = [];
+  if (pruned.llmRequests > 0) prunedParts.push(`${pruned.llmRequests} llm_request(s)`);
+  if (pruned.foremanRuns > 0) prunedParts.push(`${pruned.foremanRuns} foreman_run(s)`);
+  if (pruned.runs > 0) prunedParts.push(`${pruned.runs} run(s)`);
+  if (pruned.analysisRuns > 0) prunedParts.push(`${pruned.analysisRuns} analysis_run(s)`);
+  if (prunedParts.length > 0) {
+    console.log(`[startup:cleanup] pruned ${prunedParts.join(", ")} older than ${retentionDays}d`);
+  }
+}
+
+// 2b. Worktree orphan sweep — best-effort, fire-and-forget. Removes
+// worktrees on disk that don't correspond to any active foreman task. Hard
+// crashes can leave these stranded; recoverFromCrash() resets the DB row but
+// the directory persists. Run per project so cross-project worktrees aren't
+// touched. Uses dynamic import so the startup path doesn't pull git.ts
+// before the rest of the app is wired.
+void (async () => {
+  try {
+    const { sweepOrphanWorktrees } = await import("./git");
+    const projects = db.getProjects();
+    const activeTasks = new Set<string>();
+    for (const t of db.getForemanTasks()) {
+      if (t.status === "queued" || t.status === "running" || t.status === "validating" || t.status === "awaiting_review") {
+        activeTasks.add(t.id);
+      }
+    }
+    let total = 0;
+    for (const p of projects) {
+      total += await sweepOrphanWorktrees(p.workdir, activeTasks);
+    }
+    if (total > 0) console.log(`[startup] worktree sweep removed ${total} orphan(s) across ${projects.length} project(s)`);
+  } catch (err) {
+    console.warn("[startup] worktree sweep failed:", err instanceof Error ? err.message : err);
+  }
+})();
 
 // 3. Create Express app
 const app = express();
