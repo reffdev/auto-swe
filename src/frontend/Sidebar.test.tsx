@@ -8,6 +8,7 @@ jest.mock('./api', () => ({
   updateAndRestart: () => mockUpdateAndRestart(),
   getForemanConfig: () => Promise.resolve(null),
   updateForemanConfig: () => Promise.resolve({}),
+  getDashboardActivity: () => Promise.resolve({ activity: [], summary: { activeMachines: 0, idleMachines: 0, totalMachines: 0 }, now: Date.now() }),
 }))
 
 // Mock the dialogs

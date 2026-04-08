@@ -23,11 +23,15 @@
  * skipped colocation release, missing warmup, no circuit breaker check) was
  * caused by 17 different consumers each reinventing the same boilerplate.
  *
- * Nothing outside this file should call selectPlannerMachine, selectLightMachine,
- * acquireLease, releaseLease, instantiateLlm, warmUpLlm, prepareColocatedMachine,
- * or touch circuit breakers directly. If you find yourself wanting to import
- * one of those, you should be calling withLlmSession or withLightLlmSession
- * instead.
+ * Nothing outside this file should call acquireLease, releaseLease,
+ * instantiateLlm, warmUpLlm, resolveInferenceCandidates, or touch circuit
+ * breakers directly. If you find yourself wanting to import one of those,
+ * you should be calling withLlmSession / withLightLlmSession /
+ * withLightOrFallbackLlmSession instead.
+ *
+ * (The only exception is `acquireLease` for ComfyUI dispatch, which has no
+ * logical-model concept — see `foreman/executor.ts` for the one place that
+ * legitimately calls acquireLease directly with `machineType: "comfyui"`.)
  */
 
 import type { Db, Machine, MachineModel } from "./db";
@@ -224,7 +228,7 @@ export async function withLightLlmSession<T>(
  *
  * Returns null without invoking `fn` if BOTH paths have no capacity.
  */
-export async function withLightOrLogicalLlmSession<T>(
+export async function withLightOrFallbackLlmSession<T>(
   db: Db,
   consumer: LeaseConsumer,
   label: string,

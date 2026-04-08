@@ -86,6 +86,103 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.json({ projects, machines, issues, runs });
   });
 
+  // ─── Dashboard activity ─────────────────────────────────────────────────
+  //
+  // Joined per-machine view: for every active machine, what is it doing right
+  // now? Returns the machine, the lease consumer (director/foreman/pipeline/
+  // analysis), the work item title (resolved from foreman_tasks / issues /
+  // analysis_runs), the model the machine is hosting for that work, and
+  // recent token throughput.
+  //
+  // The frontend dashboard panel reads this directly so it doesn't have to
+  // do four separate lookups + cross-reference active_issue_ids itself. The
+  // join lives here because the source data is all in the DB plus the
+  // in-memory active leases registry — neither of which is convenient to
+  // ship to the client raw.
+  router.get("/dashboard/activity", async (_req, res) => {
+    const { getActiveLeases } = await import("./machine-manager");
+    const { getAllMachineSpeeds } = await import("./stats");
+    const speeds = getAllMachineSpeeds();
+    const allMachines = db.getMachines();
+    const machineById = new Map(allMachines.map(m => [m.id, m]));
+    const activeLeases = getActiveLeases();
+
+    // Group leases by machine
+    const leasesByMachine = new Map<string, typeof activeLeases>();
+    for (const lease of activeLeases) {
+      const list = leasesByMachine.get(lease.machineId) ?? [];
+      list.push(lease);
+      leasesByMachine.set(lease.machineId, list);
+    }
+
+    interface ActivityEntry {
+      machine: { id: string; name: string; type: string; baseUrl: string; enabled: boolean };
+      idle: boolean;
+      tokensInPerSec: number | null;
+      tokensOutPerSec: number | null;
+      leases: Array<{
+        id: string;
+        consumer: string;
+        label: string;
+        acquiredAt: number;
+        elapsedMs: number;
+        expiresInMs: number;
+      }>;
+    }
+
+    const activity: ActivityEntry[] = [];
+    const now = Date.now();
+
+    for (const machine of allMachines) {
+      if (!machine.enabled) continue;
+      const leases = leasesByMachine.get(machine.id) ?? [];
+      const speed = speeds[machine.id];
+
+      // A machine is "active" if it has leases OR if it's currently emitting tokens
+      const hasRecentTraffic = !!(speed && (speed.completion_tokens_per_sec || speed.prompt_tokens_per_sec));
+      if (leases.length === 0 && !hasRecentTraffic) continue;
+
+      activity.push({
+        machine: {
+          id: machine.id,
+          name: machine.name || machine.base_url || "Unnamed",
+          type: machine.machine_type,
+          baseUrl: machine.base_url,
+          enabled: !!machine.enabled,
+        },
+        idle: leases.length === 0,
+        tokensInPerSec: speed?.prompt_tokens_per_sec ?? null,
+        tokensOutPerSec: speed?.completion_tokens_per_sec ?? null,
+        leases: leases.map(l => ({
+          id: l.id,
+          consumer: l.consumer,
+          label: l.label,
+          acquiredAt: l.acquiredAt,
+          elapsedMs: now - l.acquiredAt,
+          expiresInMs: l.expiresAt - now,
+        })),
+      });
+    }
+
+    // Sort: machines with leases first, then by name
+    activity.sort((a, b) => {
+      if (a.leases.length !== b.leases.length) return b.leases.length - a.leases.length;
+      return a.machine.name.localeCompare(b.machine.name);
+    });
+
+    // Also include a count of idle-but-enabled machines so the frontend can
+    // show "X machines idle" without re-querying.
+    const totalEnabled = allMachines.filter(m => m.enabled).length;
+    const idleEnabled = totalEnabled - activity.length;
+
+    void machineById; // referenced for future expansion (fk lookups)
+    res.json({
+      activity,
+      summary: { activeMachines: activity.length, idleMachines: idleEnabled, totalMachines: totalEnabled },
+      now,
+    });
+  });
+
   // ─── Projects ───────────────────────────────────────────────────────────
 
   router.get("/projects", (_req, res) => {

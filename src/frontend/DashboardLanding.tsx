@@ -2,9 +2,155 @@ import { useState, useEffect, useRef } from 'react'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Plus, FolderGit2, Server, AlertCircle, Terminal } from 'lucide-react'
+import { Plus, FolderGit2, Server, AlertCircle, Terminal, Cpu, Palette, BrainCircuit, Zap, Activity, Clock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import * as api from './api'
+
+// ─── Machine activity panel ──────────────────────────────────────────────
+//
+// Per-machine "what is this machine doing right now" view. Polls
+// /api/dashboard/activity every 2 seconds. Each row shows the machine, its
+// current model throughput (tokens/sec), and a list of active leases with
+// the consumer (director / foreman / pipeline / analysis), the work item
+// label, elapsed time, and expiry countdown. Idle but enabled machines are
+// summarized at the bottom rather than listed individually so the panel
+// stays compact.
+
+const CONSUMER_STYLES: Record<string, { label: string; color: string }> = {
+  director:  { label: "Director", color: "border-blue-500/50 bg-blue-500/10 text-blue-300" },
+  foreman:   { label: "Foreman",  color: "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" },
+  pipeline:  { label: "Pipeline", color: "border-violet-500/50 bg-violet-500/10 text-violet-300" },
+  analysis:  { label: "Analysis", color: "border-amber-500/50 bg-amber-500/10 text-amber-300" },
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 0) return "—"
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+}
+
+function MachineTypeIcon({ type }: { type: string }) {
+  if (type === 'comfyui') return <Palette className="size-3.5 shrink-0 text-purple-400" />
+  if (type === 'npu') return <BrainCircuit className="size-3.5 shrink-0 text-cyan-400" />
+  return <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
+}
+
+function MachineActivityPanel() {
+  const [data, setData] = useState<api.DashboardActivityResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchActivity = async () => {
+      try {
+        const result = await api.getDashboardActivity()
+        if (!cancelled) {
+          setData(result)
+          setError(null)
+          setLoading(false)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e))
+          setLoading(false)
+        }
+      }
+    }
+    void fetchActivity()
+    const interval = setInterval(() => { void fetchActivity() }, 2000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [])
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+        <div className="flex items-center gap-2">
+          <Activity className="size-4 text-emerald-400" />
+          <CardTitle className="text-sm font-medium">Machine Activity</CardTitle>
+        </div>
+        {data && (
+          <span className="text-xs text-muted-foreground">
+            {data.summary.activeMachines} active · {data.summary.idleMachines} idle · {data.summary.totalMachines} total
+          </span>
+        )}
+      </CardHeader>
+      <CardContent className="pt-0">
+        {loading && <p className="text-xs text-muted-foreground py-4 text-center">Loading...</p>}
+        {error && <p className="text-xs text-destructive py-4 text-center">Error: {error}</p>}
+        {!loading && !error && data && data.activity.length === 0 && (
+          <p className="text-xs text-muted-foreground py-4 text-center">
+            No machines are currently working. {data.summary.idleMachines > 0 && `${data.summary.idleMachines} machine${data.summary.idleMachines === 1 ? '' : 's'} idle and ready.`}
+          </p>
+        )}
+        {!loading && !error && data && data.activity.length > 0 && (
+          <div className="space-y-2">
+            {data.activity.map(entry => (
+              <div
+                key={entry.machine.id}
+                className={cn(
+                  "rounded-md border border-border bg-muted/10 p-3",
+                  entry.idle && "opacity-70",
+                )}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <MachineTypeIcon type={entry.machine.type} />
+                  <span className="text-sm font-medium truncate flex-1">{entry.machine.name}</span>
+                  {(entry.tokensInPerSec || entry.tokensOutPerSec) && (
+                    <span
+                      className="text-[10px] font-mono text-muted-foreground flex items-center gap-1 shrink-0"
+                      title="Tokens per second: prompt / completion"
+                    >
+                      <Zap className="size-2.5 text-yellow-500/70" />
+                      {entry.tokensInPerSec ? Math.round(entry.tokensInPerSec) : '—'}
+                      {' / '}
+                      {entry.tokensOutPerSec ? Math.round(entry.tokensOutPerSec) : '—'}
+                      <span className="text-muted-foreground/50">tok/s</span>
+                    </span>
+                  )}
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60 font-mono shrink-0">
+                    {entry.machine.type}
+                  </span>
+                </div>
+                {entry.leases.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground italic ml-5">
+                    Recent traffic, no active lease — finishing up
+                  </p>
+                ) : (
+                  <div className="space-y-1 ml-5">
+                    {entry.leases.map(lease => {
+                      const style = CONSUMER_STYLES[lease.consumer] ?? { label: lease.consumer, color: "border-muted bg-muted text-muted-foreground" }
+                      return (
+                        <div key={lease.id} className="flex items-center gap-2 text-xs">
+                          <span className={cn(
+                            "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border shrink-0",
+                            style.color,
+                          )}>
+                            {style.label}
+                          </span>
+                          <span className="truncate flex-1" title={lease.label}>{lease.label}</span>
+                          <span
+                            className="text-[10px] text-muted-foreground font-mono flex items-center gap-1 shrink-0"
+                            title={`Acquired ${new Date(lease.acquiredAt).toLocaleTimeString()}, expires in ${formatElapsed(lease.expiresInMs)}`}
+                          >
+                            <Clock className="size-2.5" />
+                            {formatElapsed(lease.elapsedMs)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
 
 interface SummaryCounts {
   projects: number
@@ -176,6 +322,9 @@ export function DashboardLanding({ counts, onRefresh }: { counts: SummaryCounts;
             </Button>
           </div>
         </div>
+
+        {/* Live machine activity — what each machine is doing right now */}
+        <MachineActivityPanel />
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Card>

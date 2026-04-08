@@ -29,7 +29,7 @@ import { handleStyleLock } from "./style-lock-handler";
 import { archiveCurrentAssets } from "../foreman/asset-archive";
 import { createStyleExplorationTask, queueContinuousExploration, createFluxEnhanceTask } from "./style-exploration";
 import { extractTaskKnowledge } from "./task-knowledge-extractor";
-import { withLightLlmSession, withLightOrLogicalLlmSession, type LlmSession } from "../llm-dispatch";
+import { withLightLlmSession, withLightOrFallbackLlmSession, type LlmSession } from "../llm-dispatch";
 import {
   getDirectorModelId,
   getDirectorPreferredMachineId,
@@ -518,7 +518,7 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
 
     let result: "ok" | "error" | null;
     if (directorModelId) {
-      result = await withLightOrLogicalLlmSession(db, "director", `knowledge: ${task.title.slice(0, 40)}`, directorModelId, runner);
+      result = await withLightOrFallbackLlmSession(db, "director", `knowledge: ${task.title.slice(0, 40)}`, directorModelId, runner);
     } else {
       result = await withLightLlmSession(db, "director", `knowledge: ${task.title.slice(0, 40)}`, runner);
     }

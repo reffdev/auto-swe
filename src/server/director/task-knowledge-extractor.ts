@@ -82,7 +82,7 @@ function parseExtractions(text: string): Extraction[] {
  * Uses the task's run output (tool calls) and git diff as source material.
  *
  * The caller provides an open LlmSession (typically opened via
- * withLightLlmSession or withLightOrLogicalLlmSession in the director scheduler).
+ * withLightLlmSession or withLightOrFallbackLlmSession in the director scheduler).
  */
 export async function extractTaskKnowledge(
   db: Db,

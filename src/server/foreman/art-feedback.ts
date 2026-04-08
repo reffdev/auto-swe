@@ -8,7 +8,7 @@
  */
 
 import { generate } from "../llm";
-import { withLightOrLogicalLlmSession } from "../llm-dispatch";
+import { withLightOrFallbackLlmSession } from "../llm-dispatch";
 import { getDirectorModelId, ModelSlotUnconfiguredError } from "../models";
 import type { Db } from "../db";
 import { serializeConfig, type ComfyUITaskConfig } from "./comfyui-config";
@@ -202,7 +202,7 @@ async function revisePromptsWithLLM(
 ): Promise<string[]> {
   const fallbackModelId = getFallbackModelId(db);
 
-  const result = await withLightOrLogicalLlmSession(
+  const result = await withLightOrFallbackLlmSession(
     db,
     "director",
     "revise-style-exploration-prompts",
@@ -252,7 +252,7 @@ async function revisePromptWithLLM(
 ): Promise<string> {
   const fallbackModelId = getFallbackModelId(db);
 
-  const result = await withLightOrLogicalLlmSession(
+  const result = await withLightOrFallbackLlmSession(
     db,
     "director",
     "revise-art-prompt",

@@ -6,12 +6,12 @@
  * - Streaming by default (avoids proxy timeouts on long-running requests)
  * - Consistent error handling
  *
- * Usage:
- *   import { instantiateLlm, generate, stream } from "../llm";
- *   import { resolveInferenceExecution } from "../models";
- *   const execution = resolveInferenceExecution(db, modelId);
- *   const model = instantiateLlm(execution);
- *   const text = await generate(model, { system, prompt });
+ * Usage: feature code should NOT call `instantiateLlm` directly. The
+ * canonical entry points are `withLlmSession` / `withLightLlmSession` /
+ * `withLightOrFallbackLlmSession` from `llm-dispatch.ts`, which produce a
+ * ready-to-use `session.llm` for you. The functions in this file
+ * (instantiateLlm, warmUpLlm, generate, stream) are the building blocks
+ * those dispatch helpers use internally.
  */
 
 import { streamText, type CoreMessage, type ToolSet } from "ai";

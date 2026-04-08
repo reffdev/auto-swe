@@ -14,7 +14,7 @@ export const machines = sqliteTable("machines", {
   machine_type: text("machine_type").notNull().default("inference"), // inference | comfyui | npu
   enabled: integer("enabled").notNull().default(1),
   status: text("status").notNull().default("idle"),  // derived from active run count
-  current_run_id: text("current_run_id"),  // legacy — kept for migration, not used
+  current_run_id: text("current_run_id"),  // ID of the run currently holding this machine; cleared on completion + crash recovery
   max_concurrent: integer("max_concurrent").notNull().default(1),
   context_limit: integer("context_limit"),
   api_key: text("api_key"),

@@ -28,6 +28,21 @@ export function ForemanConfig() {
   const [directorModelId, setDirectorModelId] = useState('')
   const [directorMachineId, setDirectorMachineId] = useState('')
   const [foremanCodeModelId, setForemanCodeModelId] = useState('')
+  const [slotTestResult, setSlotTestResult] = useState<{ slot: string; result: api.SlotTestResult } | null>(null)
+  const [testingSlot, setTestingSlot] = useState<string | null>(null)
+
+  const handleTestSlot = async (slot: "director" | "foreman_code") => {
+    setTestingSlot(slot)
+    setSlotTestResult(null)
+    try {
+      const result = await api.testForemanSlot(slot)
+      setSlotTestResult({ slot, result })
+    } catch (e) {
+      setSlotTestResult({ slot, result: { ok: false, error: e instanceof Error ? e.message : String(e) } })
+    } finally {
+      setTestingSlot(null)
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -231,23 +246,34 @@ export function ForemanConfig() {
 
             <div className="space-y-2">
               <label className="text-sm font-medium block">Director model</label>
-              <select
-                value={directorModelId}
-                onChange={e => {
-                  setDirectorModelId(e.target.value)
-                  // If the previously-preferred director machine no longer hosts the new model, clear it
-                  if (e.target.value) {
-                    const stillHosts = bindings.some(b => b.enabled === 1 && b.model_id === e.target.value && b.machine_id === directorMachineId)
-                    if (!stillHosts) setDirectorMachineId('')
-                  }
-                }}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-              >
-                <option value="">— Select a model —</option>
-                {inferenceModels.map(m => (
-                  <option key={m.id} value={m.id}>{m.name} — {m.slug}{m.family ? ` · ${m.family}` : ''}</option>
-                ))}
-              </select>
+              <div className="flex items-center gap-2">
+                <select
+                  value={directorModelId}
+                  onChange={e => {
+                    setDirectorModelId(e.target.value)
+                    // If the previously-preferred director machine no longer hosts the new model, clear it
+                    if (e.target.value) {
+                      const stillHosts = bindings.some(b => b.enabled === 1 && b.model_id === e.target.value && b.machine_id === directorMachineId)
+                      if (!stillHosts) setDirectorMachineId('')
+                    }
+                  }}
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">— Select a model —</option>
+                  {inferenceModels.map(m => (
+                    <option key={m.id} value={m.id}>{m.name} — {m.slug}{m.family ? ` · ${m.family}` : ''}</option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleTestSlot("director")}
+                  disabled={!directorModelId || testingSlot !== null}
+                  title="Resolve the Director slot, acquire a lease, warm up the model, and report which machine answered."
+                >
+                  {testingSlot === "director" ? "Testing..." : "Test"}
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">Used for Director conversation, planner, verifier, issue decomposition, and analysis runs.</p>
             </div>
 
@@ -269,18 +295,54 @@ export function ForemanConfig() {
 
             <div className="space-y-2">
               <label className="text-sm font-medium block">Foreman code model</label>
-              <select
-                value={foremanCodeModelId}
-                onChange={e => setForemanCodeModelId(e.target.value)}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-              >
-                <option value="">— Select a model —</option>
-                {inferenceModels.map(m => (
-                  <option key={m.id} value={m.id}>{m.name} — {m.slug}{m.family ? ` · ${m.family}` : ''}</option>
-                ))}
-              </select>
+              <div className="flex items-center gap-2">
+                <select
+                  value={foremanCodeModelId}
+                  onChange={e => setForemanCodeModelId(e.target.value)}
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">— Select a model —</option>
+                  {inferenceModels.map(m => (
+                    <option key={m.id} value={m.id}>{m.name} — {m.slug}{m.family ? ` · ${m.family}` : ''}</option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleTestSlot("foreman_code")}
+                  disabled={!foremanCodeModelId || testingSlot !== null}
+                  title="Resolve the Foreman code slot, acquire a lease, warm up the model, and report which machine answered."
+                >
+                  {testingSlot === "foreman_code" ? "Testing..." : "Test"}
+                </Button>
+              </div>
               <p className="text-xs text-muted-foreground">Used for Foreman code tasks (and pipeline runs). Tasks may also set their own per-task <code className="text-[10px] bg-muted px-1 rounded">model_id</code> override.</p>
             </div>
+
+            {slotTestResult && (
+              <div className={cn(
+                "rounded-md border px-3 py-2 text-xs",
+                slotTestResult.result.ok
+                  ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+                  : "border-destructive/40 bg-destructive/5 text-destructive",
+              )}>
+                <div className="font-medium mb-1">
+                  {slotTestResult.result.ok ? "✓" : "✗"} {slotTestResult.slot === "director" ? "Director" : "Foreman code"} slot test
+                </div>
+                {slotTestResult.result.ok ? (
+                  <div className="space-y-0.5 font-mono text-[11px]">
+                    <div>model: {slotTestResult.result.model?.name} ({slotTestResult.result.model?.slug})</div>
+                    <div>machine: {slotTestResult.result.machine}</div>
+                    <div>provider_model_id: {slotTestResult.result.providerModelId}</div>
+                    {slotTestResult.result.effectiveContextLimit && (
+                      <div>effective context: {slotTestResult.result.effectiveContextLimit.toLocaleString()} tokens</div>
+                    )}
+                  </div>
+                ) : (
+                  <div>{slotTestResult.result.error}</div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Continuous Art Exploration */}
@@ -439,6 +501,23 @@ export function ForemanConfig() {
                 <span className={config.director_initiated_verification ? 'text-emerald-500' : 'text-muted-foreground'}>
                   {config.director_initiated_verification ? 'Director-initiated (tool)' : 'Scheduler-driven (legacy)'}
                 </span>
+                <span className="text-muted-foreground">Lightweight pathway:</span>
+                {(() => {
+                  const npuMachines = machines.filter(m => !!m.enabled && m.machine_type === 'npu')
+                  if (npuMachines.length > 0) {
+                    const names = npuMachines.map(m => m.name || m.base_url).join(', ')
+                    return (
+                      <span className="text-emerald-500" title="Used by episodic-extractor, task-knowledge-extractor, art prompt revision">
+                        On — {npuMachines.length} NPU machine{npuMachines.length === 1 ? '' : 's'} ({names})
+                      </span>
+                    )
+                  }
+                  return (
+                    <span className="text-muted-foreground" title="Lightweight extractor / feedback work falls back to the Director model when no NPU is configured.">
+                      Off — falls back to Director model
+                    </span>
+                  )
+                })()}
               </div>
             </div>
           )}

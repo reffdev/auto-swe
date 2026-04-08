@@ -31,7 +31,7 @@ An autonomous software engineering orchestration system. It takes high-level dir
 │  ├─ Director lease   Conversation, planning, verify     │
 │  ├─ Foreman lease    Task execution                     │
 │  ├─ Pipeline lease   Full issue pipeline                │
-│  └─ acquireLeaseForModel  Dispatch by logical model     │
+│  └─ withLlmSession   Public dispatch (llm-dispatch.ts)  │
 ├─────────────────────────────────────────────────────────┤
 │  Director            High-level autonomy                │
 │  ├─ Conversation     Chat with user, research, plan     │
@@ -62,7 +62,7 @@ An autonomous software engineering orchestration system. It takes high-level dir
   Machines:
   ├─ Inference (Ollama/OpenRouter/llama.cpp) → code tasks (logical-model dispatch)
   ├─ ComfyUI (ROCm/CUDA)                     → art/music/sfx (preset dispatch)
-  └─ NPU (small fast models)                 → light helpers (selectLightMachine)
+  └─ NPU (small fast models)                 → light helpers (withLightLlmSession)
 ```
 
 ## Director Flow
@@ -110,7 +110,8 @@ src/server/
 │   ├── fetch.ts        # URL fetcher
 │   └── context7.ts     # Library docs lookup
 ├── machine-manager.ts  # Centralized lease system + acquireLease/strictPreferred
-├── models.ts           # Logical models: CRUD, resolver, acquireLeaseForModel
+├── models.ts           # Logical models: CRUD, resolveInferenceCandidates, resolveLightNpuExecution
+├── llm-dispatch.ts     # PUBLIC dispatch: withLlmSession / withLightLlmSession / withLightOrFallbackLlmSession
 ├── llm.ts              # AI SDK wrapper: instantiateLlm(execution), warmUpLlm
 ├── terminal.ts         # PTY WebSocket for Claude CLI
 ├── schema.ts           # Drizzle ORM (SQLite)
@@ -166,49 +167,74 @@ machines with different provider strings.
 **Per-task override:** `foreman_tasks.model_id` (FK to `models.id`, nullable).
 NULL = use the Foreman code slot default.
 
-**Resolution flow** (everyone goes through `src/server/models.ts`):
+**Resolution flow** (everyone goes through `src/server/llm-dispatch.ts` —
+`models.ts` is the resolver, `llm-dispatch.ts` is the public dispatch entry).
+There are exactly THREE entry points and you should never need anything else:
+
 ```ts
-// Read the configured slot
-const modelId = getForemanCodeModelId(db);  // throws ModelSlotUnconfiguredError if unset
+// Logical model dispatch (Director slot, Foreman code slot, per-task override).
+// Resolves the model, picks a candidate machine, acquires the lease, releases
+// colocated GPUs, warms up, builds the SDK provider, runs your callback, and
+// releases on every exit path. Returns null if no machine has capacity.
+const result = await withLlmSession(
+  db, "foreman", taskLabel, modelId,
+  async (session) => {
+    // session.llm           — instantiated LLM model
+    // session.machine       — the chosen machine
+    // session.providerModelId
+    // session.effectiveContextLimit
+    return await generate(session.llm, { system, prompt });
+  },
+  { preferMachineId: optionalHint },  // optional preferred-machine hint
+);
 
-// Acquire a lease + resolved execution in one call
-const result = acquireLeaseForModel(db, "foreman", taskLabel, modelId);
-// returns null if all hosting machines are at capacity (caller should defer)
-// throws NoMachineHostsModelError if no enabled inference machine has an enabled binding
+// NPU lightweight pathway. Used for episodic extraction, task-knowledge
+// extraction, art prompt revision, etc. Returns null if no NPU machine exists.
+const result = await withLightLlmSession(
+  db, "director", label,
+  async (session) => { ... },
+);
 
-const { lease, execution } = result;
-// execution.machine, execution.providerModelId, execution.effectiveContextLimit
-
-// Talk to the model
-const llm = instantiateLlm(execution);
-await warmUpLlm(execution);
-const text = await generate(llm, { system, prompt });
-// finally: releaseLease(lease.id)
+// NPU first, fall back to a logical model if no NPU machine exists. Use this
+// for lightweight workloads that should still run when the user has no NPU.
+const result = await withLightOrFallbackLlmSession(
+  db, "director", label, fallbackModelId,
+  async (session) => { ... },
+);
 ```
+
+`withLlmSession` throws `ModelNotFoundError`, `NoMachineHostsModelError`, or
+`ModelSlotUnconfiguredError` for terminal failures (caller should mark the
+work failed) and returns `null` when all hosting machines are temporarily at
+capacity (caller should defer and retry later).
 
 **Effective context limit** = `min(machine.context_limit, binding.context_limit, model.default_context_limit)` — the smallest non-null value wins.
 
 **NPU pathway** (lightweight helpers — episodic extractor, task knowledge
 extractor, art prompt revision, art style exploration) is **not** managed by
-the slot system. Use `resolveLightNpuExecution(db)` or the legacy
-`selectLightMachine` shim to get any enabled NPU machine + its first enabled
-binding. NPU machines are excluded from the inference resolver.
+the slot system. The dispatch helpers above (`withLightLlmSession` /
+`withLightOrFallbackLlmSession`) handle it. Internally they call
+`resolveLightNpuExecution(db)`, which picks any enabled NPU machine's first
+enabled binding (sorted by binding `created_at` for determinism). NPU
+machines are excluded from the inference resolver.
 
 **ComfyUI dispatch** (art/music/sfx tasks) is also untouched by this layer — it
 uses the preset/workflow system in `foreman/comfyui-*.ts`.
 
 ## Machine Manager
 
-All machine access goes through `machine-manager.ts`. Consumers acquire leases:
-- `acquireLease(db, "director", label, { preferredMachineId, strictPreferred })`
-- `acquireLeaseForModel(db, consumer, label, modelId)` — preferred entry point
-  for inference workloads (handles candidate iteration + capacity-aware fallback)
-- `releaseLease(leaseId)` in finally block
-- Leases expire automatically (5min director, 30min foreman, 60min pipeline, 10min analysis)
-- `hasCapacity(machine)` respects `max_concurrent`
+All machine access goes through `machine-manager.ts`. Most consumers should
+use `withLlmSession` / `withLightLlmSession` from `llm-dispatch.ts` instead of
+calling the machine manager directly. The lower-level helpers are:
+
+- `acquireLease(db, consumer, label, { preferredMachineId, strictPreferred, machineType })`
+  — used by `withLlmSession` and by ComfyUI dispatch (`machineType: "comfyui"`).
+- `releaseLease(leaseId)` in finally block.
+- Leases expire automatically (5min director, 30min foreman, 60min pipeline, 10min analysis).
+- `hasCapacity(machine)` respects `max_concurrent`.
 - `strictPreferred: true` disables type-based fallback when a specific machine
-  is required (used by `acquireLeaseForModel` to guarantee the chosen machine
-  hosts the requested logical model)
+  is required (used internally by `withLlmSession` to guarantee the chosen
+  machine hosts the requested logical model).
 
 ## Memory System (.swe/)
 
@@ -264,10 +290,12 @@ This gives ~77% token savings on multi-lens reviews.
 
 - TypeScript, strict mode
 - AI SDK (`ai` package) for all LLM calls — `streamText`, `generateText`, `tool()`
-- LLM model instances always come from `instantiateLlm(execution)` in `llm.ts`
-- LLM model resolution always goes through `models.ts` (`resolveInferenceExecution`,
-  `resolveLightNpuExecution`, `acquireLeaseForModel`) — never read provider strings
-  directly from machine fields
+- LLM dispatch always goes through `llm-dispatch.ts` (`withLlmSession`,
+  `withLightLlmSession`, `withLightOrFallbackLlmSession`) — these are the only
+  public entry points. They internally handle resolution via `models.ts`,
+  lease acquisition, colocation release, warmup, and provider construction.
+  Do not call `acquireLease`, `instantiateLlm`, `warmUpLlm`, or
+  `resolveInferenceCandidates` directly from feature code.
 - Zod for tool parameter schemas
 - Express routes with explicit error handling
 - Git worktrees for task isolation
@@ -294,14 +322,14 @@ npx tsc --noEmit     # Type check
 ## What NOT To Do
 
 - Don't add migrations by modifying the schema alone — add ALTER TABLE to `db.ts` `migrate()`
-- Don't bypass the machine manager — always use `acquireLease`/`releaseLease` or `acquireLeaseForModel`
+- Don't bypass `llm-dispatch.ts` for LLM calls — always use `withLlmSession`,
+  `withLightLlmSession`, or `withLightOrFallbackLlmSession`. They handle lease
+  acquisition, colocation release, warmup, provider construction, and
+  guaranteed cleanup. Calling `acquireLease` / `instantiateLlm` / `warmUpLlm`
+  directly from feature code is how leaked leases happen.
 - Don't read provider strings from machine fields (`machines.model_id` no longer
-  exists). Always go through `models.ts` resolvers — they return the right
-  binding, machine, and effective context limit in one call.
-- Don't call `acquireLease` with `preferredMachineId` and expect the result to
-  always be that machine — without `strictPreferred: true`, acquireLease may
-  fall through to a type-based search and pick a different machine. For
-  logical-model dispatch, use `acquireLeaseForModel`.
+  exists). Resolution happens inside `withLlmSession` via `resolveInferenceCandidates` —
+  feature code never needs to know about provider strings or bindings directly.
 - Don't make the Director write project files — it has read-only filesystem access
 - Don't skip `shell: false` in spawn calls — prevents injection and special char issues
 - Don't add `shell: true` to memsearch or other subprocess calls

@@ -224,6 +224,35 @@ export function poll(projectId?: string): Promise<PollResponse> {
   return json(`/api/poll${qs}`);
 }
 
+// ─── Dashboard activity ──────────────────────────────────────────────────
+
+export interface DashboardActivityLease {
+  id: string;
+  consumer: "director" | "foreman" | "pipeline" | "analysis";
+  label: string;
+  acquiredAt: number;
+  elapsedMs: number;
+  expiresInMs: number;
+}
+
+export interface DashboardActivityEntry {
+  machine: { id: string; name: string; type: string; baseUrl: string; enabled: boolean };
+  idle: boolean;
+  tokensInPerSec: number | null;
+  tokensOutPerSec: number | null;
+  leases: DashboardActivityLease[];
+}
+
+export interface DashboardActivityResponse {
+  activity: DashboardActivityEntry[];
+  summary: { activeMachines: number; idleMachines: number; totalMachines: number };
+  now: number;
+}
+
+export function getDashboardActivity(): Promise<DashboardActivityResponse> {
+  return json("/api/dashboard/activity");
+}
+
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
 export function createProject(data: {
@@ -692,6 +721,20 @@ export function getForemanConfig(): Promise<ForemanConfig | null> {
 
 export function updateForemanConfig(data: Partial<ForemanConfig>): Promise<ForemanConfig> {
   return json("/api/foreman/config", { method: "PATCH", body: JSON.stringify(data) });
+}
+
+export interface SlotTestResult {
+  ok: boolean;
+  model?: { id: string; name: string; slug: string };
+  machine?: string;
+  machineId?: string;
+  providerModelId?: string;
+  effectiveContextLimit?: number | null;
+  error?: string;
+}
+
+export function testForemanSlot(slot: "director" | "foreman_code"): Promise<SlotTestResult> {
+  return json("/api/foreman/config/test-slot", { method: "POST", body: JSON.stringify({ slot }) });
 }
 
 // ─── Director ────────────────────────────────────────────────────────────────

@@ -124,6 +124,28 @@ function useStats(): Stats | null {
   return stats
 }
 
+// Lease-based activity is the source of truth for "is this machine working".
+// /api/poll's `active_issue_ids` only counts work that has a row in
+// runs/foreman_runs/analysis_runs — it MISSES Director conversation/planner/
+// verifier work, which holds a lease but writes no per-step run row. Without
+// this, the sidebar showed Director-occupied machines as idle.
+let _cachedActivity: api.DashboardActivityResponse | null = null;
+function useActivity(): api.DashboardActivityResponse | null {
+  const [activity, setActivity] = useState(_cachedActivity)
+  useEffect(() => {
+    const fetchActivity = () => {
+      api.getDashboardActivity().then(a => {
+        _cachedActivity = a
+        setActivity(a)
+      }).catch(() => {})
+    }
+    if (!_cachedActivity) fetchActivity()
+    const interval = setInterval(fetchActivity, 3_000)
+    return () => { clearInterval(interval) }
+  }, [])
+  return activity
+}
+
 function StatsPanel({ stats }: { stats: Stats | null }) {
   if (!stats) return null
 
@@ -470,6 +492,18 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
   const [restarting, setRestarting] = useState(false)
   const [serverInfo, setServerInfo] = useState<{ commit: string; branch: string } | null>(null)
   const stats = useStats()
+  const activity = useActivity()
+  // Build a quick lookup: machine id → lease count from the lease registry.
+  // This is the lease-based "is working" signal that complements (and
+  // overrides on disagreement) the run-table-based active_issue_ids.
+  const leaseCountByMachine = new Map<string, number>()
+  const leaseConsumersByMachine = new Map<string, string[]>()
+  if (activity) {
+    for (const entry of activity.activity) {
+      leaseCountByMachine.set(entry.machine.id, entry.leases.length)
+      leaseConsumersByMachine.set(entry.machine.id, entry.leases.map(l => l.consumer))
+    }
+  }
 
   useEffect(() => {
     fetch('/api/server-info').then(r => r.json()).then(setServerInfo).catch(() => {})
@@ -589,6 +623,20 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
           const machineSpd = stats?.machineSpeed?.[m.id]
           const outTps = machineSpd?.completion_tokens_per_sec
           const isDirectorReserved = stats?.director?.reservedMachineId === m.id
+          // Lease registry is the source of truth — counts Director conversation/
+          // planner/verifier work that has no row in the run tables.
+          const leaseCount = leaseCountByMachine.get(m.id) ?? 0
+          const leaseConsumers = leaseConsumersByMachine.get(m.id) ?? []
+          // Effective "is doing work" count: max of run-table count and lease
+          // count. They usually agree; when they disagree, leases win.
+          const effectiveActiveCount = Math.max(activeIds.length, leaseCount)
+          const isWorking = effectiveActiveCount > 0
+          // If we have leases but no run-table active IDs, surface what kind
+          // of work it is (e.g. "director" / "foreman") so the sidebar isn't
+          // misleading about why the machine is busy.
+          const leaseOnlyConsumer = activeIds.length === 0 && leaseConsumers.length > 0
+            ? leaseConsumers[0]
+            : null
 
           // Cycling arrow: find which active issue/task to link to
           const currentPath = location.pathname
@@ -638,7 +686,7 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                     : <Cpu className="size-3.5 shrink-0 text-muted-foreground" />
                   }
                   <span className="truncate flex-1">{m.name || m.base_url || 'Unnamed'}</span>
-                  {(activeIds.length > 0 || (m.machine_type === 'npu' && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec))) && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
+                  {(isWorking || (m.machine_type === 'npu' && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec))) && machineSpd && (outTps || machineSpd.prompt_tokens_per_sec) ? (
                     <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0 flex items-center gap-0.5">
                       <Zap className="size-2.5 text-yellow-500/70" />
                       {machineSpd.prompt_tokens_per_sec ? Math.round(machineSpd.prompt_tokens_per_sec) : '—'}
@@ -646,8 +694,18 @@ export function Sidebar({ projects, machines, issues, selectedProjectId, selecte
                       {outTps ? Math.round(outTps) : '—'}
                     </span>
                   ) : null}
-                  {activeIds.length > 0 ? (
-                    <span className="text-[10px] font-mono text-emerald-400 shrink-0">{activeIds.length}/{m.max_concurrent}</span>
+                  {isWorking ? (
+                    <span
+                      className="text-[10px] font-mono text-emerald-400 shrink-0"
+                      title={leaseOnlyConsumer
+                        ? `${effectiveActiveCount}/${m.max_concurrent} active (${leaseOnlyConsumer} lease — no run row)`
+                        : `${effectiveActiveCount}/${m.max_concurrent} active`}
+                    >
+                      {effectiveActiveCount}/{m.max_concurrent}
+                      {leaseOnlyConsumer && (
+                        <span className="ml-1 text-blue-400/80">{leaseOnlyConsumer.slice(0, 3)}</span>
+                      )}
+                    </span>
                   ) : isDirectorReserved ? (
                     <span className="text-[10px] font-mono text-blue-400 shrink-0 flex items-center gap-0.5" title="Director is using this machine">
                       <Target className="size-2.5" />

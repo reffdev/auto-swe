@@ -25,7 +25,6 @@ import {
   listInferenceModels,
   // Resolver
   resolveInferenceCandidates,
-  resolveInferenceExecution,
   resolveLightNpuExecution,
   // Slot accessors
   getDirectorModelId,
@@ -189,7 +188,23 @@ describe("bindings CRUD", () => {
 
 // ─── Resolver ────────────────────────────────────────────────────────────────
 
-describe("resolveInferenceCandidates / resolveInferenceExecution", () => {
+// Thin test helper — picks the first candidate, mirrors what
+// `resolveInferenceExecution` used to do before it was deleted as production
+// dead code. Keeps the existing test assertions readable; production code goes
+// through `withLlmSession` which iterates the full candidate list.
+function resolveInferenceExecution(db: Db, modelId: string, opts?: { preferMachineId?: string | null }) {
+  const { model, candidates } = resolveInferenceCandidates(db, modelId, opts);
+  const c = candidates[0];
+  return {
+    model,
+    binding: c.binding,
+    machine: c.machine,
+    providerModelId: c.providerModelId,
+    effectiveContextLimit: c.effectiveContextLimit,
+  };
+}
+
+describe("resolveInferenceCandidates / resolveInferenceExecution (test helper)", () => {
   let modelId: string;
 
   beforeEach(() => {

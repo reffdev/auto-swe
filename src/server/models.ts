@@ -6,16 +6,26 @@
  * a logical model to a machine that hosts it, and carries the per-machine
  * `provider_id` (the literal string passed to the AI SDK on that machine).
  *
- * Resolution flow:
- *   1. Caller asks for a logical model id (e.g. from foreman_config.director_model_id).
- *   2. resolveInferenceExecution() returns the chosen binding + machine + provider_id
- *      + effective context limit.
- *   3. Caller calls acquireLease() with the chosen machine as preferredMachineId,
- *      OR uses acquireLeaseForModel() which handles candidate iteration.
- *   4. Caller calls llm.instantiateLlm(execution) to get an AI SDK provider.
+ * **This module is the resolver, not the public dispatch API.** Feature code
+ * should call `withLlmSession` / `withLightLlmSession` / `withLightOrFallbackLlmSession`
+ * from `llm-dispatch.ts` instead. Those helpers internally use the resolvers
+ * here, then handle lease acquisition, colocation release, warmup, and
+ * guaranteed cleanup. The pieces in this file are:
  *
- * NPU pathway (selectLightMachine equivalent) is not part of this module —
- * see resolveLightNpuExecution() at the bottom for the dedicated helper.
+ *   - getDirectorModelId / getForemanCodeModelId / getDirectorPreferredMachineId
+ *     — read the configured slots from foreman_config.
+ *   - resolveInferenceCandidates(db, modelId, opts) — given a logical model id,
+ *     return the model + an ordered list of candidate (machine, binding,
+ *     providerModelId, effectiveContextLimit) tuples. The order respects
+ *     `preferMachineId`, then capacity, then current lease count. Throws
+ *     ModelNotFoundError / NoMachineHostsModelError on terminal failures.
+ *   - resolveLightNpuExecution(db) — pick any enabled NPU machine's first
+ *     enabled binding for the lightweight pathway. Returns null if no NPU
+ *     machine exists.
+ *
+ * Effective context limit = min(model.default_context_limit,
+ *                                binding.context_limit,
+ *                                machine.context_limit) — smallest non-null wins.
  */
 
 import { randomUUID } from "crypto";
@@ -342,10 +352,10 @@ export function getDirectorPreferredMachineId(db: Db): string | null {
  *   - NoMachineHostsModelError if no enabled inference machine has an enabled
  *     binding for the model.
  *
- * Caller decides what to do with the list:
- *   - Pick the first one and call acquireLease (typical Director path).
- *   - Try them in order until one acquires a lease (typical Foreman path).
- *   - Use acquireLeaseForModel() below for the latter.
+ * Production callers do not call this directly — they go through
+ * `withLlmSession` in `llm-dispatch.ts`, which iterates the candidate list,
+ * acquires the lease, releases colocated machines, and warms up the model.
+ * This function is exposed for the dispatch helpers and for tests.
  */
 export function resolveInferenceCandidates(
   db: Db,
@@ -395,28 +405,6 @@ export function resolveInferenceCandidates(
   });
 
   return { model, candidates };
-}
-
-/**
- * Convenience: pick the single best candidate (the first one after sorting).
- * Throws the same errors as resolveInferenceCandidates(). The chosen
- * candidate may not have free capacity right now — the caller is responsible
- * for handling that case via acquireLease, which can return null.
- */
-export function resolveInferenceExecution(
-  db: Db,
-  modelId: string,
-  opts?: { preferMachineId?: string | null },
-): ResolvedExecution {
-  const { model, candidates } = resolveInferenceCandidates(db, modelId, opts);
-  const c = candidates[0];
-  return {
-    model,
-    binding: c.binding,
-    machine: c.machine,
-    providerModelId: c.providerModelId,
-    effectiveContextLimit: c.effectiveContextLimit,
-  };
 }
 
 // ─── NPU light pathway ──────────────────────────────────────────────────────

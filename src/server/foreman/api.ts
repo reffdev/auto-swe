@@ -16,6 +16,7 @@ async function pathExists(p: string): Promise<boolean> {
 }
 import { resolve, extname } from "path";
 import type { Db } from "../db";
+import { getModel } from "../models";
 import { cancelForemanTask, getActiveForemanTaskIds } from "./executor";
 import { syncTasksFromDisk } from "./yaml-sync";
 import { nudgeForeman } from "./scheduler";
@@ -382,6 +383,43 @@ export function createForemanRouter(db: Db): Router {
     // Normalize `enabled: boolean` → 0|1 to match the storage shape
     const updates: Record<string, unknown> = { ...parsed.data };
     if (typeof updates.enabled === "boolean") updates.enabled = updates.enabled ? 1 : 0;
+
+    // Cross-field validation: foreman_config has no SQL FK constraints on
+    // model/machine references (drizzle doesn't enforce these on SQLite without
+    // PRAGMA foreign_keys), so we check at the API boundary. If the user picks
+    // a deleted/disabled machine or a missing model, fail at save time instead
+    // of letting it land in the DB and surface as a confusing runtime error.
+    if (updates.director_machine_id != null && updates.director_machine_id !== "") {
+      const machine = db.getMachine(updates.director_machine_id as string);
+      if (!machine) {
+        return res.status(400).json({ error: `director_machine_id "${updates.director_machine_id}" does not exist` });
+      }
+      if (machine.machine_type !== "inference") {
+        return res.status(400).json({ error: `director_machine_id "${machine.name || machine.id}" is type "${machine.machine_type}", not "inference"` });
+      }
+      if (!machine.enabled) {
+        return res.status(400).json({ error: `director_machine_id "${machine.name || machine.id}" is disabled` });
+      }
+    }
+    if (updates.director_model_id != null && updates.director_model_id !== "") {
+      const model = getModel(db, updates.director_model_id as string);
+      if (!model) {
+        return res.status(400).json({ error: `director_model_id "${updates.director_model_id}" does not exist` });
+      }
+      if (model.archived_at) {
+        return res.status(400).json({ error: `director_model_id "${model.name}" is archived` });
+      }
+    }
+    if (updates.foreman_code_model_id != null && updates.foreman_code_model_id !== "") {
+      const model = getModel(db, updates.foreman_code_model_id as string);
+      if (!model) {
+        return res.status(400).json({ error: `foreman_code_model_id "${updates.foreman_code_model_id}" does not exist` });
+      }
+      if (model.archived_at) {
+        return res.status(400).json({ error: `foreman_code_model_id "${model.name}" is archived` });
+      }
+    }
+
     const config = db.upsertForemanConfig(updates);
     nudgeForeman(db);
 
@@ -397,6 +435,80 @@ export function createForemanRouter(db: Db): Router {
     }
 
     res.json(config);
+  });
+
+  // Probe a configured slot end-to-end: resolve the model, acquire a lease,
+  // warm up the machine, and report which machine actually answered. The
+  // user can click "Test" in the Foreman config UI to confirm a slot is
+  // wired correctly without dispatching a real task. Pure read; no DB writes,
+  // no LLM generation, just resolution + warmup ping.
+  router.post("/config/test-slot", async (req, res) => {
+    const slotSchema = z.object({
+      slot: z.enum(["director", "foreman_code"]),
+    }).strict();
+    const parsed = slotSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "invalid test-slot request", issues: parsed.error.issues });
+    }
+
+    const config = db.getForemanConfig();
+    if (!config) return res.status(400).json({ error: "Foreman config not initialized" });
+
+    const modelId = parsed.data.slot === "director"
+      ? config.director_model_id
+      : config.foreman_code_model_id;
+    if (!modelId) {
+      return res.status(400).json({ ok: false, error: `${parsed.data.slot} slot is not configured` });
+    }
+
+    const model = getModel(db, modelId);
+    if (!model) {
+      return res.status(400).json({ ok: false, error: `slot points to missing model id "${modelId}"` });
+    }
+    if (model.archived_at) {
+      return res.status(400).json({ ok: false, error: `slot model "${model.name}" is archived` });
+    }
+
+    const { withLlmSession } = await import("../llm-dispatch");
+    const { getDirectorPreferredMachineId } = await import("../models");
+    try {
+      const result = await withLlmSession(
+        db,
+        parsed.data.slot === "director" ? "director" : "foreman",
+        `slot-test:${model.slug}`,
+        modelId,
+        async (session) => ({
+          machine: session.machine.name || session.machine.base_url,
+          machineId: session.machine.id,
+          providerModelId: session.providerModelId,
+          effectiveContextLimit: session.effectiveContextLimit,
+        }),
+        parsed.data.slot === "director"
+          ? { preferMachineId: getDirectorPreferredMachineId(db) }
+          : undefined,
+      );
+      if (result === null) {
+        return res.json({
+          ok: false,
+          model: { id: model.id, name: model.name, slug: model.slug },
+          error: "All hosting machines are at capacity right now. Try again when something frees up.",
+        });
+      }
+      return res.json({
+        ok: true,
+        model: { id: model.id, name: model.name, slug: model.slug },
+        machine: result.machine,
+        machineId: result.machineId,
+        providerModelId: result.providerModelId,
+        effectiveContextLimit: result.effectiveContextLimit,
+      });
+    } catch (err) {
+      return res.status(200).json({
+        ok: false,
+        model: { id: model.id, name: model.name, slug: model.slug },
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   // ─── Multi-Asset List (for style exploration) ──────────────────────────
