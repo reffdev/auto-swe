@@ -16,7 +16,7 @@ Agents read [`AGENTS.md`](AGENTS.md)
 
 - **Director** — chats with you, drafts a design doc, decomposes it into milestones, plans task batches, and verifies completed work.
 - **Foreman** — schedules tasks onto inference / ComfyUI / NPU machines, runs LLM agents inside isolated git worktrees, and gates submissions on build / test / lint.
-- **Pipeline** — multi-stage issue processing: scout → implement → build → test → review → git ops, with cache-friendly multi-lens code review (~77% token savings across lenses).
+- **Issues Pipeline** — multi-stage processing for standalone issues: scout → implement → build → test → review → git ops, with cache-friendly multi-lens code review (~77% token savings across lenses).
 - **Memory** — persistent `.swe/` directory per project: conventions, semantic notes, episodic activity logs, with semantic search via an external `memsearch` CLI.
 - **Sandbox** — optional per-subprocess isolation via [bubblewrap](https://github.com/containers/bubblewrap) on Linux, with per-stage network and worktree-write policies.
 - **Voice** (optional) — STT / LLM / TTS pipeline using llama.cpp + Piper.
@@ -31,7 +31,7 @@ Express server (Node, SQLite/WAL, Drizzle ORM)
         │
         ├─ Director (conversation, planner, verifier, memory)
         ├─ Foreman  (scheduler, executor, validator, routing)
-        ├─ Pipeline (scout → implement → review → gitops)
+        ├─ Issues Pipeline (scout → implement → review → gitops)
         └─ Machine Manager (lease-based access control)
                 │
                 ▼

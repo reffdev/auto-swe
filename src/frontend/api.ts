@@ -824,6 +824,25 @@ export function directorPoll(id: string): Promise<DirectorPollResponse> {
   return json(`/api/director/directives/${id}/poll`);
 }
 
+export interface DirectorActivityRow {
+  id: string;
+  /** What kind of Director step this row is. */
+  kind: "plan" | "verify-task" | "verify-milestone" | "other";
+  /** Milestone title (for plan / verify-milestone) or task title (for verify-task). */
+  label: string | null;
+  modelId: string | null;
+  input: string | null;
+  output: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  durationMs: number | null;
+  createdAt: string;
+}
+
+export function getDirectorActivity(directiveId: string, limit = 50): Promise<{ activity: DirectorActivityRow[] }> {
+  return json(`/api/director/directives/${directiveId}/activity?limit=${limit}`);
+}
+
 export function pauseDirective(id: string): Promise<DirectorDirective> {
   return json(`/api/director/directives/${id}/pause`, { method: "POST" });
 }

@@ -7,7 +7,7 @@ An autonomous software engineering orchestration system. It takes high-level dir
 It operates at two levels:
 
 1. **Director + Foreman** (primary): High-level directives decomposed into milestones and tasks, dispatched to inference and ComfyUI machines for code + art + music + SFX generation, with human-in-the-loop review gates.
-2. **Pipeline** (single-issue): Scout → implement → build/test gates → review (11 lenses) → GitOps for standalone issues.
+2. **Issues Pipeline** (single-issue): Scout → implement → build/test gates → review (11 lenses) → GitOps for standalone issues.
 
 ## How To Run
 
@@ -49,7 +49,7 @@ The Vite dev server proxies `/api` to `localhost:3001`.
 │  Machine Manager     Lease-based access control         │
 │  ├─ Director lease   Conversation, planning, verify     │
 │  ├─ Foreman lease    Task execution                     │
-│  ├─ Pipeline lease   Full issue pipeline                │
+│  ├─ Issues lease     Full issues pipeline               │
 │  └─ withLlmSession   Public dispatch (llm-dispatch.ts)  │
 ├─────────────────────────────────────────────────────────┤
 │  Director            High-level autonomy                │
@@ -68,7 +68,7 @@ The Vite dev server proxies `/api` to `localhost:3001`.
 │  ├─ Art Feedback     LLM-revised prompts on rejection   │
 │  └─ Routing          Task type → machine type mapping   │
 ├─────────────────────────────────────────────────────────┤
-│  Pipeline            Multi-stage issue processing       │
+│  Issues Pipeline     Multi-stage issue processing       │
 │  ├─ Scout → Implement → Build → Test → Review → GitOps  │
 │  └─ Review caching   Shared context across lenses       │
 ├─────────────────────────────────────────────────────────┤
@@ -440,7 +440,7 @@ to direct spawn on non-Linux hosts or when bwrap is missing. See
 - **Line ending normalization**: All file-reading tools normalize `\r\n` → `\n` for Windows compat.
 - **Shell safety**: `shell: false` in spawn calls prevents injection. Commit messages piped via stdin.
 - **Context budget**: Tracks chars consumed by tool results. Truncates large outputs as budget fills.
-- **Crash recovery**: Orchestrator clears leases and stale worktrees on startup. Pipeline resets stuck machines/runs/issues.
+- **Crash recovery**: Orchestrator clears leases and stale worktrees on startup. The Issues Pipeline resets stuck machines/runs/issues.
 - **Structured live output**: Runner saves `liveSteps[]` JSON to run.output. Frontend polls and renders.
 - **Task knowledge extraction**: Post-completion LLM analysis extracts reusable patterns → `.swe/semantic/`.
 

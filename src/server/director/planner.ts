@@ -122,6 +122,9 @@ export async function planNextTasks(
   // Open a session for the LLM call. Hold the lease only for the duration of
   // the LLM streaming — task creation/parsing happens after the session closes.
   let resultText: string | null;
+  // Hoisted out of the session callback so post-stream logic can read it.
+  // Set inside onStepFinish when the agent calls advanceMilestone.
+  let advanceMilestoneCalled = false;
   try {
     resultText = await withLlmSession(
       db,
@@ -192,6 +195,34 @@ export async function planNextTasks(
         // the detection and keeps going — which is what happened in the
         // earlier "readFile Big.gd repeated 5 times" incident.
         const abortController = new AbortController();
+
+        // Wall-clock cap for the entire planner stream. Foreman/runStage has
+        // a wallTimeoutMs but the planner did not, and we observed runs of
+        // 19+ minutes spinning on advanceMilestone retries. Cap at 12 min;
+        // this is plenty for both planning and verification mode.
+        const PLANNER_WALL_TIMEOUT_MS = 12 * 60 * 1000;
+        let wallTimedOut = false;
+        const wallTimer = setTimeout(() => {
+          wallTimedOut = true;
+          const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
+          console.error(`[director:planner] wall-clock timeout after ${elapsed}s — aborting stream for "${milestone.title}"`);
+          abortController.abort();
+        }, PLANNER_WALL_TIMEOUT_MS);
+
+        // Track advanceMilestone outcomes per stream. The agent has been
+        // observed calling advanceMilestone repeatedly when it fails (each
+        // call returns "verificationPassed: false" with the same blockers,
+        // and the agent ignores its own tool's "do NOT call again until
+        // issues are addressed" hint). And on success, it has been observed
+        // continuing to investigate instead of stopping. Both are bugs.
+        //
+        //   - First successful call → abort the stream. The work is done.
+        //   - Second failed call    → abort the stream. The agent is in
+        //     denial about the blockers; the right next step is for the
+        //     scheduler to surface the issues to the user, not to spin.
+        let advanceMilestoneSuccess = false;
+        let advanceMilestoneFailureCount = 0;
+        let advanceMilestoneAborted: "success" | "repeated-failure" | null = null;
         const stream = llmStream({
           model: session.llm,
           system,
@@ -216,6 +247,42 @@ export async function planNextTasks(
             if (toolCalls?.length) {
               const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
               console.log(`[director:planner] step — ${toolNames} (${elapsed}s)`);
+              for (const tc of toolCalls) {
+                if (tc.toolName === "advanceMilestone") {
+                  advanceMilestoneCalled = true;
+                }
+              }
+            }
+
+            // Inspect advanceMilestone tool RESULTS (not just calls) so we
+            // know whether the milestone was actually advanced. The tool
+            // returns JSON: { advanced: true/false, ... }. On the first
+            // success we abort — the work is done. On the second failure
+            // we abort — the agent is ignoring its own blockers.
+            if (toolResults?.length && advanceMilestoneAborted === null) {
+              for (const tr of toolResults) {
+                if (tr.toolName !== "advanceMilestone") continue;
+                let parsed: { advanced?: boolean; verificationPassed?: boolean; issues?: string[]; blockers?: string[] } | null = null;
+                try { parsed = JSON.parse(String(tr.result ?? "")); } catch { /* non-JSON result — ignore */ }
+                if (parsed?.advanced === true) {
+                  advanceMilestoneSuccess = true;
+                  advanceMilestoneAborted = "success";
+                  console.log(`[director:planner] advanceMilestone succeeded for "${milestone.title}" — aborting stream, work is done`);
+                  abortController.abort();
+                  break;
+                }
+                if (parsed && parsed.advanced === false) {
+                  advanceMilestoneFailureCount++;
+                  const detail = parsed.blockers?.join("; ") || parsed.issues?.join("; ") || "(no detail)";
+                  console.warn(`[director:planner] advanceMilestone FAILED #${advanceMilestoneFailureCount} for "${milestone.title}": ${detail.slice(0, 300)}`);
+                  if (advanceMilestoneFailureCount >= 2) {
+                    advanceMilestoneAborted = "repeated-failure";
+                    console.error(`[director:planner] advanceMilestone has failed ${advanceMilestoneFailureCount} times with the same kind of blockers — aborting stream. The agent is ignoring its own tool's guidance. Surface the blockers and let the next tick re-plan.`);
+                    abortController.abort();
+                    break;
+                  }
+                }
+              }
             }
 
             // Persist this step into llm_requests so the Director's reasoning
@@ -282,33 +349,53 @@ export async function planNextTasks(
         });
         let text = "";
         try {
-          for await (const chunk of stream.textStream) {
-            text += chunk;
+          try {
+            for await (const chunk of stream.textStream) {
+              text += chunk;
+            }
+          } catch (streamErr) {
+            // If we aborted ourselves due to a loop / quota / lease /
+            // wall-clock / advanceMilestone trip, treat it as a planner
+            // termination (return whatever partial text we got) instead
+            // of re-throwing. The Director's next tick will re-evaluate.
+            if (loopTripped) {
+              console.warn(`[director:planner] stream aborted by loop guard after ${text.length} chars of output`);
+            } else if (quotaTripped) {
+              console.warn(`[director:planner] stream aborted by tool-category quota (${quotaTrippedCategory}) after ${text.length} chars of output`);
+            } else if (leaseExpiredAborted) {
+              console.warn(`[director:planner] stream aborted by lease idle-timeout after ${text.length} chars of output — LLM was likely hung mid-call between steps`);
+            } else if (wallTimedOut) {
+              console.warn(`[director:planner] stream aborted by wall-clock timeout (${PLANNER_WALL_TIMEOUT_MS / 1000}s) after ${text.length} chars of output`);
+            } else if (advanceMilestoneAborted) {
+              console.warn(`[director:planner] stream aborted by advanceMilestone-${advanceMilestoneAborted} after ${text.length} chars of output`);
+            } else {
+              throw streamErr;
+            }
           }
-        } catch (streamErr) {
-          // If we aborted ourselves due to a loop or quota trip, treat it
-          // as a planner failure (return whatever partial text we got so
-          // far) instead of re-throwing. The Director's next tick will retry
-          // with fresh context.
-          if (loopTripped) {
-            console.warn(`[director:planner] stream aborted by loop guard after ${text.length} chars of output`);
-          } else if (quotaTripped) {
-            console.warn(`[director:planner] stream aborted by tool-category quota (${quotaTrippedCategory}) after ${text.length} chars of output`);
-          } else if (leaseExpiredAborted) {
-            console.warn(`[director:planner] stream aborted by lease idle-timeout after ${text.length} chars of output — LLM was likely hung mid-call between steps`);
-          } else {
-            throw streamErr;
-          }
+        } finally {
+          clearTimeout(wallTimer);
         }
         const steps = await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-        const abortReason = loopTripped ? " (LOOP-ABORTED)" : quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` : leaseExpiredAborted ? " (LEASE-EXPIRED)" : "";
+        const abortReason =
+          loopTripped ? " (LOOP-ABORTED)" :
+          quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` :
+          leaseExpiredAborted ? " (LEASE-EXPIRED)" :
+          wallTimedOut ? " (WALL-CLOCK-TIMEOUT)" :
+          advanceMilestoneAborted === "success" ? " (ADVANCED)" :
+          advanceMilestoneAborted === "repeated-failure" ? " (ADVANCE-REPEATEDLY-FAILED)" :
+          "";
         console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s${abortReason}`);
         return text;
       },
       {
         preferMachineId: getDirectorPreferredMachineId(db),
-        workRef: { kind: "milestone", id: milestone.id, projectId: project.id },
+        // Route to the parent directive — there is no per-milestone detail
+        // page in the frontend, but the directive detail page lists all
+        // milestones and shows live planner activity. The lease label
+        // already names the milestone so the activity panel still shows
+        // which milestone is being planned.
+        workRef: { kind: "directive", id: directive.id, projectId: project.id },
       },
     );
   } catch (llmErr) {
@@ -327,6 +414,25 @@ export async function planNextTasks(
 
   // Parse tasks
   let rawTasks = parseNextTasks(resultText);
+
+  // Mutual exclusion: if the planner called `advanceMilestone` during this
+  // run, the milestone is being marked done. It is incoherent to also queue
+  // new tasks against it in the same invocation. Discard any next_tasks
+  // block and let the next director tick re-evaluate against the now-
+  // advanced state.
+  if (advanceMilestoneCalled && rawTasks.length > 0) {
+    console.warn(`[director:planner] LLM called advanceMilestone AND emitted ${rawTasks.length} next_tasks for "${milestone.title}" — these are mutually exclusive. Discarding next_tasks; advanceMilestone wins.`);
+    try {
+      if (directive.conversation_id) {
+        db.createDirectorMessage({
+          conversation_id: directive.conversation_id,
+          role: "assistant",
+          content: `**Director planning** [${reason}] for milestone "${milestone.title}" — Director both advanced the milestone and proposed ${rawTasks.length} new task(s). Discarded the new tasks (advanceMilestone is authoritative).`,
+        });
+      }
+    } catch { /* non-critical */ }
+    return 0;
+  }
 
   // For top-up requests, filter out tasks that don't match the requested machine types.
   // The planner was asked to generate work for idle machines, not create more work for busy ones.

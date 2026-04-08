@@ -3,8 +3,8 @@
 The harness is the infrastructure that runs LLM agents — managing their tools, context, prompts, and lifecycle. The agents themselves are stateless LLM calls; the harness provides everything around them.
 
 There are two harness implementations:
-1. **Pipeline harness** — runs pipeline stages (scout, implement, test-write, review) via LangGraph
-2. **Foreman executor** — runs foreman tasks (code, review, content, claude) in git worktrees
+1. **Issues Pipeline harness** — runs Issues Pipeline stages (scout, implement, test-write, review) via LangGraph
+2. **Foreman executor** — runs Foreman tasks (code, review, content, claude) in git worktrees
 
 Both share the same core pattern: build prompt → provide tools → run agent loop → enforce guards.
 
@@ -85,9 +85,9 @@ Key points:
 - The harness controls **which tools** each stage can access — scout gets read-only, implement gets read+write, review gets read+run
 - **`onStepFinish`** fires after each tool call round-trip, allowing the harness to log progress
 
-## Pipeline Harness: Tool Provisioning Per Stage
+## Issues Pipeline Harness: Tool Provisioning Per Stage
 
-The pipeline harness creates different tool sets per stage to enforce boundaries:
+The Issues Pipeline harness creates different tool sets per stage to enforce boundaries:
 
 | Tool | Scout | Implement | Test-Write | Review |
 |------|:-----:|:---------:|:----------:|:------:|
@@ -168,7 +168,7 @@ Each stage/task gets a focused prompt. The harness doesn't use a shared "mega-pr
 
 ```mermaid
 graph TD
-    subgraph PipelinePrompts["Pipeline Stage Prompts"]
+    subgraph PipelinePrompts["Issues Pipeline Stage Prompts"]
         SP["Scout: Codebase researcher\nFind relevant files\nOutput: file manifest"]
         IP["Implement: Implementer\nRead files, make changes\nStandards: additive only"]
         RP["Review: Reviewer with lens\nGit diff + issue + prior outputs\nOutput: accept/reject"]
@@ -180,7 +180,7 @@ graph TD
     end
 ```
 
-## Data Flow Between Pipeline Stages
+## Data Flow Between Issues Pipeline Stages
 
 Stages don't share context directly — the harness passes data through pipeline state:
 
@@ -217,7 +217,7 @@ graph TD
         Main[main branch]
     end
 
-    subgraph Pipeline["Pipeline Worktrees"]
+    subgraph Pipeline["Issues Pipeline Worktrees"]
         WT1["issue/abc-feature"]
         WT2["issue/def-bugfix"]
     end
@@ -242,7 +242,7 @@ Both pipeline issues and foreman tasks get their own git worktrees:
 - Multiple tasks/issues can run concurrently without conflicts
 - Each agent sees a clean copy of the codebase
 - Changes are isolated until merged
-- **Pipeline worktrees** are cleaned up after the pipeline finishes (success or failure)
+- **Issues Pipeline worktrees** are cleaned up after the pipeline finishes (success or failure)
 - **Foreman worktrees** are cleaned up on orchestrator startup via `cleanupWorktrees()` — removes worktrees for completed or failed tasks
 
 ## Error Handling
@@ -267,11 +267,11 @@ graph TD
     Retry -->|"retries left"| StageRun
     Retry -->|"exhausted"| StageFail
 
-    StageFail -->|"Pipeline: scout empty"| PipelineFail[Pipeline Fail]
+    StageFail -->|"Issues Pipeline: scout empty"| PipelineFail[Issues Pipeline Fail]
     StageFail -->|"Foreman: record failure"| CircuitUpdate[Update Circuit Breaker]
 
-    StagePass -->|"Pipeline: build gate fail (up to 3x)"| RetryImpl[Back to Implement]
-    StagePass -->|"Pipeline: review reject"| RetryImpl
+    StagePass -->|"Issues Pipeline: build gate fail (up to 3x)"| RetryImpl[Back to Implement]
+    StagePass -->|"Issues Pipeline: review reject"| RetryImpl
     StagePass -->|"Foreman: validation fail"| TaskFail[Task Failed]
     StagePass -->|"All clear"| Done[Complete]
 ```

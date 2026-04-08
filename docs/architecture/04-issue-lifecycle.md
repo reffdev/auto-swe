@@ -132,7 +132,7 @@ stateDiagram-v2
 
 Tasks can declare `depends_on` (JSON array of task IDs). The Foreman scheduler only dispatches a task when all dependencies are `completed`.
 
-## Issue Lifecycle (Pipeline System)
+## Issue Lifecycle (Issues Pipeline)
 
 ```mermaid
 stateDiagram-v2
@@ -156,7 +156,7 @@ stateDiagram-v2
     }
 
     Pending --> Running: "Approve & Run"
-    Running --> AwaitingReview: Pipeline complete
+    Running --> AwaitingReview: Issues Pipeline complete
     Running --> Failed: Error / timeout
     Failed --> Running: Retry
     AwaitingReview --> Completed: "Approve PR"
@@ -169,10 +169,10 @@ stateDiagram-v2
 |--------|---------|-------------|
 | `pending` | Created, waiting for approval | Approve & Run, Break into Stories, edit lenses |
 | `approved` | Approved, waiting for machine | (automatic transition) |
-| `running` | Pipeline is executing | Cancel |
+| `running` | Issues Pipeline is executing | Cancel |
 | `awaiting_review` | PR created, waiting for human | Approve PR, Reject PR, View Diff |
 | `completed` | PR merged | (terminal) |
-| `failed` | Pipeline or PR rejected | Retry All, Resume from Checkpoint |
+| `failed` | Issues Pipeline or PR rejected | Retry All, Resume from Checkpoint |
 | `epic` | Container for child stories | View stories |
 
 ### Epic Decomposition

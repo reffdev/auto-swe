@@ -2,9 +2,136 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, RefreshCw, Play, Pause, MessageSquare, Check, Clock, Loader2, X, AlertTriangle, ExternalLink } from 'lucide-react'
+import { ArrowLeft, RefreshCw, Play, Pause, MessageSquare, Check, Clock, Loader2, X, AlertTriangle, ExternalLink, Activity } from 'lucide-react'
 import * as api from './api'
-import type { DirectorDirective, DirectorMilestone, ForemanTask, DirectorReview } from './api'
+import type { DirectorDirective, DirectorMilestone, ForemanTask, DirectorReview, DirectorActivityRow } from './api'
+
+function formatActivityAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 0) return 'now'
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
+
+// Pull a one-line summary out of the planner step's output_text. Each row's
+// output is the LLM's text + any [tool_call: ...] markers — we want to show
+// "tool: args (excerpt)" as a compact line. If there's no tool call, fall
+// back to the leading text.
+function summarizeActivity(row: DirectorActivityRow): string {
+  const out = row.output ?? ''
+  const m = out.match(/\[tool_call: ([^\]]+)\] ?({[^\n]*})?/)
+  if (m) {
+    const tool = m[1]
+    const args = m[2] ?? ''
+    return `${tool}${args ? ' ' + args.slice(0, 120) : ''}`
+  }
+  const text = out.replace(/\s+/g, ' ').trim()
+  return text.slice(0, 160) || '(no output)'
+}
+
+function DirectorActivityPanel({ directiveId }: { directiveId: string }) {
+  const [rows, setRows] = useState<DirectorActivityRow[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const fetchActivity = async () => {
+      try {
+        const result = await api.getDirectorActivity(directiveId, 50)
+        if (!cancelled) { setRows(result.activity); setError(null) }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      }
+    }
+    void fetchActivity()
+    const interval = setInterval(() => { void fetchActivity() }, 3000)
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [directiveId])
+
+  if (error) {
+    return (
+      <div className="border-b border-border px-6 py-2 text-xs text-destructive">
+        Director activity error: {error}
+      </div>
+    )
+  }
+  if (!rows) {
+    return (
+      <div className="border-b border-border px-6 py-2 text-xs text-muted-foreground">
+        Loading Director activity...
+      </div>
+    )
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="border-b border-border px-6 py-2 text-xs text-muted-foreground flex items-center gap-2">
+        <Activity className="size-3" />
+        No Director planner activity yet for this directive.
+      </div>
+    )
+  }
+
+  const visible = expanded ? rows : rows.slice(0, 8)
+
+  return (
+    <div className="border-b border-border bg-muted/5">
+      <div className="px-6 py-2 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Activity className="size-3 text-emerald-400" />
+          <span className="font-medium text-foreground">Director Activity</span>
+          <span>· {rows.length} step{rows.length === 1 ? '' : 's'}</span>
+        </div>
+        {rows.length > 8 && (
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {expanded ? 'Show recent only' : `Show all ${rows.length}`}
+          </button>
+        )}
+      </div>
+      <div className="px-6 pb-2 space-y-0.5 max-h-64 overflow-y-auto">
+        {visible.map(row => {
+          const kindStyle =
+            row.kind === 'plan' ? 'border-blue-500/50 bg-blue-500/10 text-blue-300' :
+            row.kind === 'verify-task' ? 'border-amber-500/50 bg-amber-500/10 text-amber-300' :
+            row.kind === 'verify-milestone' ? 'border-violet-500/50 bg-violet-500/10 text-violet-300' :
+            'border-muted bg-muted text-muted-foreground'
+          const kindLabel =
+            row.kind === 'plan' ? 'plan' :
+            row.kind === 'verify-task' ? 'verify' :
+            row.kind === 'verify-milestone' ? 'verify-ms' :
+            row.kind
+          return (
+            <div key={row.id} className="flex items-start gap-2 text-[11px] font-mono">
+              <span className="text-muted-foreground/60 shrink-0 w-16 truncate" title={new Date(row.createdAt).toLocaleString()}>
+                {formatActivityAge(row.createdAt)}
+              </span>
+              <span className={cn('inline-flex items-center px-1 py-0 rounded text-[9px] font-medium border shrink-0', kindStyle)}>
+                {kindLabel}
+              </span>
+              {row.label && (
+                <span className="text-foreground/70 shrink-0 max-w-[25%] truncate" title={row.label}>
+                  {row.label}
+                </span>
+              )}
+              <span className="flex-1 truncate text-foreground/90" title={row.output ?? ''}>
+                {summarizeActivity(row)}
+              </span>
+              {row.durationMs != null && row.durationMs > 0 && (
+                <span className="text-muted-foreground/60 shrink-0">{Math.round(row.durationMs / 1000)}s</span>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 const MILESTONE_STATUS_COLORS: Record<string, string> = {
   pending: 'border-muted-foreground/30 text-muted-foreground',
@@ -133,6 +260,9 @@ export function DirectorDetail({ directiveId, onBack }: { directiveId: string; o
           )}
         </div>
       </div>
+
+      {/* Live Director activity (planner steps) */}
+      <DirectorActivityPanel directiveId={directiveId} />
 
       {/* Pending reviews */}
       {pendingReviews.length > 0 && (

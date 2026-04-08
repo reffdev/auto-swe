@@ -4,7 +4,7 @@
 
 ```mermaid
 sequenceDiagram
-    participant Stage as Pipeline / Foreman
+    participant Stage as Issues Pipeline / Foreman
     participant LLM as LLM Client (llm.ts)
     participant Server as LLM Server
 
@@ -44,7 +44,7 @@ sequenceDiagram
 |-------|---------|------------------------|
 | **Connection timeout** | 10 minutes | Initial connection to LLM server fails or hangs |
 | **Stream inactivity monitor** | 20 minutes | LLM connection hangs mid-stream (no data arriving) |
-| **Stage hard timeout** | 15 minutes | Pipeline stage runs forever (infinite tool call loops) |
+| **Stage hard timeout** | 15 minutes | Issues Pipeline stage runs forever (infinite tool call loops) |
 | **Cancel button** | Immediate | User wants to stop — `Promise.race` rejection breaks out |
 
 ## LLM Client Resilience (llm.ts)
@@ -63,7 +63,7 @@ The cancel button sets an `AbortController.abort()`. This:
 1. Fires the abort signal on `streamText` (best effort — may not respond if stream is hung)
 2. Rejects `cancelPromise` in `Promise.race` — **guaranteed** to break out immediately
 3. Stage catch block marks the run as failed
-4. Pipeline/foreman finally block releases the machine and cleans up the worktree
+4. Issues Pipeline / Foreman finally block releases the machine and cleans up the worktree
 
 ## Circuit Breaker (Foreman)
 
@@ -93,7 +93,7 @@ All machine access goes through the lease system (`machine-manager.ts`),
 fronted by the public dispatch helpers in `llm-dispatch.ts` (`withLlmSession`,
 `withLightLlmSession`, `withLightOrFallbackLlmSession`):
 
-- **Idle timeouts**: 10 min Director, 30 min Foreman, 60 min Pipeline, 10 min Analysis
+- **Idle timeouts**: 10 min Director, 30 min Foreman, 60 min Issues Pipeline, 10 min Analysis
 - **Auto-renewal**: agent loops call `renewLease(leaseId)` on every step,
   so a healthy in-progress task never expires. The timeout is an *idle*
   timeout, not a wall-clock cap.
@@ -159,7 +159,7 @@ On server startup, `startOrchestrator()`:
 4. Starts Foreman scheduler (gated until Director's first tick completes)
 5. `cleanupWorktrees()` — removes stale worktrees from failed/completed foreman tasks
 
-### Pipeline Recovery
+### Issues Pipeline Recovery
 
 `recoverFromCrash()` resets:
 - Machines stuck in `"working"` → `"idle"`

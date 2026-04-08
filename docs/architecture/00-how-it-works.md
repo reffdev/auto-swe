@@ -169,7 +169,7 @@ graph LR
 
 Style exploration generates prompts with 4–6 specific colors each, varied rendering techniques, and no UI elements. When continuous exploration is enabled, new prompts are auto-queued after each batch.
 
-## The Pipeline (Single-Issue Execution)
+## The Issues Pipeline (Single-Issue Execution)
 
 For standalone issues (not part of a directive), the original pipeline still operates:
 
@@ -194,7 +194,7 @@ graph LR
     Review -->|reject| Implement
 ```
 
-See [Pipeline Stages](02-pipeline-stages.md) for details.
+See [Issues Pipeline Stages](02-pipeline-stages.md) for details.
 
 ## Review Lenses
 
@@ -304,7 +304,7 @@ direct spawn on non-Linux hosts or when bwrap is missing, with a one-time
 warning logged at startup. See `src/server/util/sandbox.ts` and
 `docs/sandbox-smoke.md` for the manual smoke test procedure.
 
-## Epics & Stories (Pipeline System)
+## Epics & Stories (Issues Pipeline)
 
 Large features can be broken into independent stories that run in parallel:
 

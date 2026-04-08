@@ -51,8 +51,8 @@ graph TD
         Routing["Routing\n(task type → machine type)"]
     end
 
-    subgraph Pipeline["Pipeline (single-issue)"]
-        PipeEngine["Pipeline Engine\n(LangGraph)"]
+    subgraph Pipeline["Issues Pipeline (single-issue)"]
+        PipeEngine["Issues Pipeline Engine\n(LangGraph)"]
         PipePlanner["Planner LLM\n(conversation)"]
     end
 
@@ -118,7 +118,7 @@ graph TD
 | **Machine Manager** | Lease-based access control with priority queuing, auto-expiry (5min director, 30min foreman) |
 | **Director** | High-level autonomy — conversations, decomposition, planning, verification, memory, review gates |
 | **Foreman** | Task-level execution — dispatch, routing, execution in worktrees/ComfyUI, validation, circuit breakers |
-| **Pipeline** | Original single-issue flow — scout → implement → build → test → review → PR (LangGraph) |
+| **Issues Pipeline** | Original single-issue flow — scout → implement → build → test → review → PR (LangGraph) |
 | **Voice** | Speech-to-speech — pluggable STT/LLM/TTS adapters |
 | **Analysis** | Scheduled static analysis with per-lens frequency tracking |
 

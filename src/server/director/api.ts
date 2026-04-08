@@ -159,6 +159,53 @@ export function createDirectorRouter(db: Db): Router {
     res.json({ directive, milestones, tasks, reviews });
   });
 
+  /**
+   * Recent Director planner activity for this directive — newest first.
+   * Each row is one planner agent step (tool call + result, with tokens
+   * and elapsed time). Powers the live "Director Activity" panel on the
+   * directive detail page.
+   */
+  router.get("/directives/:id/activity", (req, res) => {
+    const directive = db.getDirectorDirective(req.params.id);
+    if (!directive) return res.status(404).json({ error: "Directive not found" });
+    const limit = Math.min(parseInt(String(req.query.limit ?? "50"), 10) || 50, 200);
+    const rows = db.getDirectorActivity(directive.id, limit);
+    // Map milestone / task id back to a human label for the panel.
+    const milestones = db.getDirectorMilestones(directive.id);
+    const milestoneNames = new Map(milestones.map(m => [m.id, m.title]));
+    const tasks = db.getDirectiveTasks(directive.id);
+    const taskNames = new Map(tasks.map(t => [t.id, t.title]));
+    res.json({
+      activity: rows.map(r => {
+        let kind: "plan" | "verify-task" | "verify-milestone" | "other" = "other";
+        let label: string | null = null;
+        const issueId = r.issue_id ?? "";
+        if (issueId.startsWith("director-planner:")) {
+          kind = "plan";
+          label = milestoneNames.get(issueId.slice("director-planner:".length)) ?? null;
+        } else if (issueId.startsWith("verify-milestone:")) {
+          kind = "verify-milestone";
+          label = milestoneNames.get(issueId.slice("verify-milestone:".length)) ?? null;
+        } else if (issueId.startsWith("verifier:")) {
+          kind = "verify-task";
+          label = taskNames.get(issueId.slice("verifier:".length)) ?? null;
+        }
+        return {
+          id: r.id,
+          kind,
+          label,
+          modelId: r.model_id,
+          input: r.input_text,
+          output: r.output_text,
+          promptTokens: r.prompt_tokens,
+          completionTokens: r.completion_tokens,
+          durationMs: r.duration_ms,
+          createdAt: r.created_at,
+        };
+      }),
+    });
+  });
+
   router.post("/directives/:id/pause", (req, res) => {
     const directive = db.getDirectorDirective(req.params.id);
     if (!directive) return res.status(404).json({ error: "Directive not found" });

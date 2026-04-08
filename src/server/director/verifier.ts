@@ -411,7 +411,25 @@ export async function verifyMilestone(
       directorModelId,
       async (session): Promise<{ passed: boolean; issues: string[] }> => {
         const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
+        const startedAt = Date.now();
         const text = await generate(session.llm, { system, prompt: user, abortSignal: milestoneTimeout });
+        // Log to llm_requests so the Director Activity panel can show this
+        // verification step. Failures here are non-critical — never let
+        // logging break the verification.
+        if (milestone.id) {
+          try {
+            db.createLlmRequest({
+              issue_id: `verify-milestone:${milestone.id}`,
+              run_id: `verify-milestone-run:${milestone.id}:${startedAt}`,
+              model_id: session.providerModelId,
+              input_text: `[verify-milestone: ${milestone.title}]\n\n${user.slice(0, 4000)}`,
+              output_text: text.slice(0, 8000),
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              duration_ms: Date.now() - startedAt,
+            });
+          } catch { /* non-critical */ }
+        }
         const parsed = parseVerdict(text);
         if (!parsed) {
           console.warn(`[director:verifier] milestone could not parse verdict for "${milestone.title}" — failing to be safe`);
@@ -421,9 +439,9 @@ export async function verifyMilestone(
       },
       {
         preferMachineId: getDirectorPreferredMachineId(db),
-        workRef: milestone.id
-          ? { kind: "milestone", id: milestone.id, projectId: project.id }
-          : undefined,
+        // Route to the parent directive — there is no per-milestone detail
+        // page. The lease label already identifies the milestone.
+        workRef: { kind: "directive", id: directiveId, projectId: project.id },
       },
     );
   } catch (err) {

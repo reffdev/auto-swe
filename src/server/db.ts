@@ -1210,6 +1210,44 @@ export class Db {
       .all();
   }
 
+  /**
+   * Recent Director activity for a directive: returns per-step llm_requests
+   * rows from three sources, newest first. Used by the Director detail page
+   * to show what the Director is doing right now (and what it just did).
+   *
+   * Sources:
+   *  - `director-planner:<milestoneId>` — planner agent steps (one row per
+   *    LLM step, written by planner.ts onStepFinish).
+   *  - `verifier:<taskId>` — task verifier agent steps for any task in this
+   *    directive (written by runStage when the verifier streams).
+   *  - `verify-milestone:<milestoneId>` — milestone verifier single LLM
+   *    calls (written by verifyMilestone after generate()).
+   */
+  getDirectorActivity(directiveId: string, limit = 50): LlmRequest[] {
+    const milestones = this.drizzle.select({ id: schema.directorMilestones.id })
+      .from(schema.directorMilestones)
+      .where(eq(schema.directorMilestones.directive_id, directiveId))
+      .all();
+    const tasks = this.drizzle.select({ id: schema.foremanTasks.id })
+      .from(schema.foremanTasks)
+      .where(eq(schema.foremanTasks.directive_id, directiveId))
+      .all();
+    const issueIds: string[] = [];
+    for (const m of milestones) {
+      issueIds.push(`director-planner:${m.id}`);
+      issueIds.push(`verify-milestone:${m.id}`);
+    }
+    for (const t of tasks) {
+      issueIds.push(`verifier:${t.id}`);
+    }
+    if (issueIds.length === 0) return [];
+    return this.drizzle.select().from(schema.llmRequests)
+      .where(inArray(schema.llmRequests.issue_id, issueIds))
+      .orderBy(desc(schema.llmRequests.created_at))
+      .limit(limit)
+      .all();
+  }
+
   // ─── Grouped LLM Logs ──────────────────────────────────────────────────────
 
   getGroupedLlmLogs(params: {

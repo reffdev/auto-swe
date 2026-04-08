@@ -8,14 +8,14 @@ Documentation for the Open-SWE autonomous software engineering system.
 
 ### System Architecture
 0. **[How It Works](00-how-it-works.md)** — The big picture: two-level orchestration from directive to PR
-1. **[System Overview](01-system-overview.md)** — Frontend, API, orchestrator, Director, Foreman, pipeline, infrastructure
-2. **[Pipeline Stages](02-pipeline-stages.md)** — Scout → Implement → Build Gate → Test-Write → Test Gate → Review → GitOps
+1. **[System Overview](01-system-overview.md)** — Frontend, API, orchestrator, Director, Foreman, Issues Pipeline, infrastructure
+2. **[Issues Pipeline Stages](02-pipeline-stages.md)** — Scout → Implement → Build Gate → Test-Write → Test Gate → Review → GitOps
 3. **[Review Lenses](03-review-lenses.md)** — 11 focused review passes (6 core + 5 stack-specific) with cache-friendly prompts
 4. **[Issue & Directive Lifecycle](04-issue-lifecycle.md)** — Directives, milestones, foreman tasks, issues, review gates
 5. **[Data Model](05-data-model.md)** — All database tables and relationships (20+ tables)
 6. **[Voice Pipeline](06-voice-pipeline.md)** — Speech-to-speech: pluggable STT → LLM → TTS adapters
 7. **[Resilience](07-resilience.md)** — Timeouts, crash recovery, circuit breakers, lease expiry, guardrails
-8. **[Agent Harness](08-agent-harness.md)** — Tool provisioning, prompt strategy, isolation (pipeline + foreman)
+8. **[Agent Harness](08-agent-harness.md)** — Tool provisioning, prompt strategy, isolation (Issues Pipeline + Foreman)
 
 ## Quick Start Concepts
 
@@ -33,7 +33,7 @@ Documentation for the Open-SWE autonomous software engineering system.
 
 **Review Gate** — A human-in-the-loop checkpoint. Gates pause directives for human decisions on task verification, design choices, milestone completion, failure escalation, and style selection. Behavior controlled by autonomy level (conservative/standard/aggressive).
 
-**Pipeline** — Single-issue execution flow: scout → implement → build gate → test → review → PR. Used for standalone issues; Director+Foreman is the primary system for directives.
+**Issues Pipeline** — Single-issue execution flow: scout → implement → build gate → test → review → PR. Used for standalone issues; Director+Foreman is the primary system for directives.
 
 **Orchestrator** — Single entry point (`orchestrator.ts`) managing startup/shutdown of all background services: Machine Manager, Stats, Analysis, Director, Foreman.
 

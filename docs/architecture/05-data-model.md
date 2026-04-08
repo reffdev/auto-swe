@@ -189,8 +189,8 @@ erDiagram
 |-------|---------|
 | `machines` | LLM/ComfyUI server endpoints. Fields: base_url, model_id, machine_type (`inference`/`comfyui`), status, max_concurrent, api_key |
 | `projects` | Git repos to work on. Fields: workdir, git_remote, default_branch, build/test/lint commands, model_id override |
-| `issues` | Pipeline work items — standalone, epic parents, or epic children. Fields: status, review_lenses, parent_id, depends_on, branch, pr_url |
-| `runs` | Pipeline stage executions (scout, implement, build_gate, test_write, test_gate, review:lens, git_ops). Token tracking per run |
+| `issues` | Issues Pipeline work items — standalone, epic parents, or epic children. Fields: status, review_lenses, parent_id, depends_on, branch, pr_url |
+| `runs` | Issues Pipeline stage executions (scout, implement, build_gate, test_write, test_gate, review:lens, git_ops). Token tracking per run |
 | `llm_requests` | Per-step LLM call audit log with prompt/completion/cache token counts and duration |
 
 ### Director Tables
