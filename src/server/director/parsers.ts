@@ -20,9 +20,21 @@ export interface ParsedTask {
 
 /**
  * Parse a ```next_tasks block from the Director's planner output.
+ *
+ * The closing-fence match REQUIRES the trailing ``` to be on its own line
+ * (preceded by a newline, followed by whitespace or end-of-string). Without
+ * this, an inner markdown code fence like ```gdscript inside a description
+ * body gets greedily matched as the closing fence and the description is
+ * silently truncated at the start of the inner code block. We hit this twice
+ * — first with a regex that matched any `\w+:` as a field-name terminator
+ * inside the description body, now with a regex that matched any ``` as the
+ * closing fence. Both fixes have the same shape: tighten the terminator so
+ * it only matches the actual structural marker.
  */
+const NEXT_TASKS_BLOCK = /```next_tasks\s*\n([\s\S]*?)\n```(?=\s|$)/;
+
 export function parseNextTasks(content: string): ParsedTask[] {
-  const match = content.match(/```next_tasks\s*\n([\s\S]*?)```/);
+  const match = content.match(NEXT_TASKS_BLOCK);
   if (!match) return [];
 
   const body = match[1];
@@ -108,7 +120,9 @@ export interface ParsedMilestone {
  * Parse a ```milestones block from the Director's decomposer output.
  */
 export function parseMilestones(content: string): ParsedMilestone[] {
-  const match = content.match(/```milestones\s*\n([\s\S]*?)```/);
+  // Same closing-fence-on-its-own-line requirement as parseNextTasks — see
+  // the NEXT_TASKS_BLOCK comment above for why.
+  const match = content.match(/```milestones\s*\n([\s\S]*?)\n```(?=\s|$)/);
   if (!match) return [];
 
   const body = match[1];
@@ -144,7 +158,7 @@ export interface ParsedVerdict {
  * Parse a ```verdict block from the Verifier's output.
  */
 export function parseVerdict(content: string): ParsedVerdict | null {
-  const match = content.match(/```verdict\s*\n([\s\S]*?)```/);
+  const match = content.match(/```verdict\s*\n([\s\S]*?)\n```(?=\s|$)/);
   if (!match) return null;
 
   const body = match[1];
@@ -171,7 +185,7 @@ export function parseVerdict(content: string): ParsedVerdict | null {
  * The design doc is wrapped in ```design_doc fences.
  */
 export function parseDesignDoc(content: string): string | null {
-  const match = content.match(/```design_doc\s*\n([\s\S]*?)```/);
+  const match = content.match(/```design_doc\s*\n([\s\S]*?)\n```(?=\s|$)/);
   return match ? match[1].trim() : null;
 }
 

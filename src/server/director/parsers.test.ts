@@ -78,6 +78,65 @@ description: |
     expect(tasks[0].description).toContain("emit_signal");
   });
 
+  it("preserves description body containing inner markdown code fences", () => {
+    // Regression: the outer next_tasks fence regex used a non-greedy `[\s\S]*?\`\`\``
+    // closing match. If the description body had a markdown code fence
+    // (\`\`\`gdscript ... \`\`\`), the regex matched the OPENING fence of the inner
+    // code block as the closing fence of the outer next_tasks block, and
+    // the description was silently truncated at the line right before the
+    // inner code fence. The fix: require the closing fence to be on its
+    // own line. This test pins that behavior with the exact failure shape
+    // the user observed.
+    const input = [
+      "```next_tasks",
+      "task: 1",
+      "title: Fix CurrencyManager bugs",
+      "type: code",
+      "priority: 1",
+      "target_files:",
+      "  - engine/autoloads/currency_manager.gd",
+      "depends_on: []",
+      "acceptance_criteria:",
+      "  - \"All tests pass\"",
+      "needs_human_review: false",
+      "description: |",
+      "  Fix 3 critical bugs in CurrencyManager causing 13 test failures:",
+      "",
+      "  1. **Wrong method name** (line ~99): Change `isGreaterThanOrEqual` to `isGreaterThanOrEqualTo`",
+      "     in the `can_afford()` function.",
+      "",
+      "  2. **Wrong serialization format** (lines ~115-120): Change `get_all_balances()` and",
+      "     `get_all_lifetime_earned()` to use `mantissa`/`exponent` instead of `value`/`exponent`:",
+      "",
+      "     BEFORE:",
+      "     ```gdscript",
+      "     func get_all_balances() -> Dictionary:",
+      "         return { \"gold\": { \"value\": 100, \"exponent\": 0 } }",
+      "     ```",
+      "",
+      "     AFTER:",
+      "     ```gdscript",
+      "     func get_all_balances() -> Dictionary:",
+      "         return { \"gold\": { \"mantissa\": 100, \"exponent\": 0 } }",
+      "     ```",
+      "",
+      "  3. **Missing emit_signal** (line ~178): The mutator must call `emit_signal(\"changed\")`.",
+      "```",
+    ].join("\n");
+    const tasks = parseNextTasks(input);
+    expect(tasks).toHaveLength(1);
+    // Every section of the description must survive — if the parser cut at
+    // the inner ```gdscript fence, sections 2 and 3 would be missing.
+    expect(tasks[0].description).toContain("Fix 3 critical bugs");
+    expect(tasks[0].description).toContain("Wrong method name");
+    expect(tasks[0].description).toContain("Wrong serialization format");
+    expect(tasks[0].description).toContain("BEFORE:");
+    expect(tasks[0].description).toContain("AFTER:");
+    expect(tasks[0].description).toContain("mantissa");
+    expect(tasks[0].description).toContain("Missing emit_signal");
+    expect(tasks[0].description).toContain("emit_signal");
+  });
+
   it("parses multiple tasks", () => {
     const input = `
 \`\`\`next_tasks

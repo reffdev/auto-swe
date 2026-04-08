@@ -380,17 +380,11 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     updateProjectBrief: tool({
       description:
-        "Maintain the PROJECT BRIEF — the single document that is ALWAYS injected into " +
-        "every agent's context. This is the project's identity card: what it is, what " +
-        "it's built with, the most critical rules and patterns. Keep it under ~3000 " +
-        "characters — it should be scannable in a few seconds. Update it in-place when " +
-        "fundamentals change. Do NOT use this for status updates, learnings, or detailed " +
-        "specs — those go in semantic memory or conventions.\n\n" +
-        "Good content: tech stack, key architectural decisions, critical invariants " +
-        "(e.g. 'all currency math via Big.gd', 'no anti-aliasing on pixel art'), " +
-        "essential file/directory layout.\n\n" +
-        "Bad content: task lists, status, what was done yesterday, debug findings, " +
-        "specifications longer than a few lines.",
+        "Maintain the PROJECT BRIEF — the single document injected into EVERY agent " +
+        "call. Hard cap ~3000 chars. Identity only: tech stack, hard invariants, " +
+        "top-level architecture. NO status, NO TODOs, NO activity logs (those bloat " +
+        "every agent call). Updates rarely — if you're updating more than once per " +
+        "milestone, you're writing status, not identity.",
       parameters: z.object({
         content: z.string().describe("Full markdown content of the project brief (replaces existing)"),
       }),
@@ -407,59 +401,85 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     writeSemanticMemory: tool({
       description:
-        "Save facts, learnings, status updates, and discoveries. This is the right place " +
-        "for things you want to remember but that should NOT be in every agent's context.\n\n" +
-        "Use this for:\n" +
-        "- Task completion notes and outcomes\n" +
-        "- Debug findings and root cause analyses\n" +
-        "- Milestone status and progress notes\n" +
-        "- User preferences and feedback patterns\n" +
-        "- Discovered patterns and behaviors\n" +
-        "- Architectural decisions worth recalling\n\n" +
-        "These files are surfaced via semantic search when relevant to the current task. " +
-        "Write freely — the search system handles relevance. Update existing files in " +
-        "place rather than creating new ones for the same topic.",
+        "Save durable project knowledge — the WHY behind a decision, a non-obvious " +
+        "gotcha, a user preference. Apply the durability test from the system prompt " +
+        "before saving (still true in 30 days AND not derivable from code/git/grep). " +
+        "Search first; update existing memories instead of creating new files on the " +
+        "same topic. Topic-named filenames only (NOT task-/fix-/status- shapes).",
       parameters: z.object({
-        filename: z.string().describe("Descriptive filename (e.g. 'currency-manager-bug-fix.md', 'milestone-2-status.md'). Must end in .md"),
-        content: z.string().describe("Markdown content to write"),
+        filename: z.string().describe("Topic name, e.g. 'big-gd-precision.md'. Must end in .md"),
+        content: z.string().describe("Markdown content"),
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
+        // Soft anti-pattern detection on filename — same shapes as
+        // writeConvention (per-task junk, status snapshots, fix recipes,
+        // activity logs). Returns a refusal message instead of writing,
+        // so the agent gets immediate feedback. Conventions reject
+        // outright; semantic memory is one notch more permissive (some
+        // 'fix-' shaped names are legitimate when documenting a known-bug
+        // workaround), so we WARN instead of REFUSE.
+        const ANTI_PATTERN_FILENAMES = [
+          { re: /^task-/i,           hint: "per-task notes — use the task list, not memory" },
+          { re: /-task\.md$/i,       hint: "per-task notes — use the task list, not memory" },
+          { re: /-task-/i,           hint: "per-task notes — use the task list, not memory" },
+          { re: /-status\.md$/i,     hint: "status snapshot — re-derive from git/tasks instead" },
+          { re: /-status-/i,         hint: "status snapshot — re-derive from git/tasks instead" },
+          { re: /-pending/i,         hint: "in-progress state — task list, not memory" },
+          { re: /-needed\.md$/i,     hint: "TODO state — task list, not memory" },
+          { re: /-bugs?-found/i,     hint: "bug-finding snapshot — once fixed it's stale, save the prevention rule instead" },
+          { re: /-verified\.md$/i,   hint: "verification snapshot — re-verify when needed instead" },
+          { re: /-batch[-.]/i,       hint: "activity log — episodic memory captures this automatically" },
+        ];
+        const warnings: string[] = [];
+        for (const { re, hint } of ANTI_PATTERN_FILENAMES) {
+          if (re.test(fname)) {
+            warnings.push(`filename pattern ${re} suggests ${hint}`);
+            break;
+          }
+        }
         const existing = await readMemory(projectWorkdir, "semantic", fname);
         await writeMemory(projectWorkdir, "semantic", fname, content);
-        return existing
+        const warningSuffix = warnings.length > 0
+          ? ` ⚠ ${warnings[0]}. Apply the durability test.`
+          : "";
+        return (existing
           ? `Updated semantic memory: ${fname}`
-          : `Created semantic memory: ${fname}`;
+          : `Created semantic memory: ${fname}`) + warningSuffix;
       },
     }),
 
     writeConvention: tool({
       description:
-        "Save detailed project knowledge: specifications, style guides, and reference " +
-        "material. Each convention is a focused document covering ONE topic in depth.\n\n" +
-        "Conventions are NOT all loaded at once — they are surfaced via semantic search " +
-        "when relevant to a task. Name files specifically so search can find them: " +
-        "`currency-manager-spec.md`, `art-guidelines.md`, `gdscript-naming.md`. " +
-        "Generic names like `notes.md` or `status.md` won't be found.\n\n" +
-        "Use this for KNOWLEDGE that an agent needs when working on a specific area:\n" +
-        "- System/module specifications\n" +
-        "- Style guides (code, art, naming, formatting)\n" +
-        "- File/schema/format definitions\n" +
-        "- Detailed reference material for a specific domain\n\n" +
-        "Do NOT use this for status updates, completion notes, debug findings, or " +
-        "transient state — those belong in semantic memory. If you find yourself writing " +
-        "a 'convention' that describes the past rather than how things should be, it's " +
-        "semantic memory.\n\n" +
-        "There is a separate `updateProjectBrief` tool for the always-injected project " +
-        "identity document. Use that for project-level essentials.",
+        "Save a project-wide RULE that constrains future work (style guide, naming " +
+        "convention, hard invariant). Loaded into context on every Director run — cost " +
+        "is high, bar is high. The single test: will this rule constrain how someone " +
+        "writes new code three months from now? If no, don't save it. See the system " +
+        "prompt for the full anti-pattern list. Topic-named filenames only.",
       parameters: z.object({
-        filename: z.string().describe("Specific filename (e.g. 'currency-manager-spec.md', 'art-guidelines.md'). Must end in .md"),
-        content: z.string().describe("Markdown content to write"),
+        filename: z.string().describe("Topic name, e.g. 'gdscript-naming.md'. Must end in .md"),
+        content: z.string().describe("Markdown content describing the rule"),
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         if (fname === PROJECT_BRIEF_FILENAME) {
           return `Use updateProjectBrief to maintain ${PROJECT_BRIEF_FILENAME}, not writeConvention.`;
+        }
+        // Soft anti-pattern detection on the filename. Reject obvious junk
+        // shapes at the tool boundary so the agent gets immediate feedback
+        // instead of a latent context-bloat problem.
+        const ANTI_PATTERN_FILENAMES = [
+          /^task-/i, /-task\.md$/i, /-task-/i,
+          /^fix-/i, /-fix\.md$/i, /-fix-/i,
+          /-status\.md$/i, /-status-/i,
+          /-pending/i, /-needed\.md$/i, /-bugs?-found/i,
+          /-verification\.md$/i, /-verified\.md$/i,
+          /-batch[-.]/i,
+          /-complete\.md$/i, /-completed\.md$/i,
+        ];
+        const matchedAntiPattern = ANTI_PATTERN_FILENAMES.find(re => re.test(fname));
+        if (matchedAntiPattern) {
+          return `Refused: "${fname}" looks like a per-task / status / fix-recipe / activity-log shape, none of which belong in conventions. See the system prompt's anti-pattern list. Use a topic-named filename (e.g. 'art-guidelines.md') for an actual rule, OR put this content in the task description / commit message / leave it out entirely.`;
         }
         try {
           const result = await writeConvention(projectWorkdir, fname, content);
@@ -474,12 +494,10 @@ export function makeMemoryTools(projectWorkdir: string) {
 
     writeProcedure: tool({
       description:
-        "Save a step-by-step workflow or how-to guide. Use this for repeatable processes " +
-        "an agent might need to follow: how to add a new game, how to generate pixel art, " +
-        "how to set up a new system. Procedures are surfaced via semantic search when " +
-        "relevant — they are not all loaded at once.\n\n" +
-        "A procedure answers 'how do I do X?'. If the answer is 'follow this rule' or " +
-        "'these are the constraints', that's a convention, not a procedure.",
+        "Save a REPEATABLE step-by-step workflow that future agents will follow many " +
+        "times (e.g. 'how to add a new game'). One-time fix instructions are NOT " +
+        "procedures. The single test: will an agent run these exact steps again, for a " +
+        "different task, in the future? If no, don't save it.",
       parameters: z.object({
         filename: z.string().describe("Filename (e.g. 'adding-a-new-game.md'). Must end in .md"),
         content: z.string().describe("Markdown content with step-by-step instructions"),
