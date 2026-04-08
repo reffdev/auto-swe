@@ -467,7 +467,31 @@ export async function planNextTasks(
     console.warn(`[director:planner] dropped ${droppedDuplicates} duplicate task(s) that targeted already-accepted work`);
   }
 
-  // Pass 2: Resolve depends_on references (task numbers → UUIDs)
+  // Pass 2: Resolve depends_on references (task numbers → UUIDs).
+  //
+  // Critical correctness rule: when a planned task is dropped as a duplicate
+  // of an EXISTING task (completed, in-flight, acknowledged, etc.), any
+  // dependents that referenced the dropped task by number/title must be
+  // REDIRECTED to the existing task, NOT silently stripped. The previous
+  // behavior was to log a warning and drop the dependency entirely, which
+  // produced the failure shape "task got scheduled before its dep was
+  // actually done" — the dependent had no dep recorded so the dispatcher
+  // happily ran it immediately.
+  //
+  // Build a lookup: task number → existing-task-id-it's-a-duplicate-of, so
+  // we can redirect references to the right place.
+  const droppedRedirects = new Map<number, string>();
+  // Re-walk the batch and recompute the dedupe decision for dropped entries
+  // to find which existing task they were duplicates of.
+  for (let i = 0; i < parsedTasks.length; i++) {
+    if (batchMap.get(i + 1) !== null) continue;
+    const droppedTitle = parsedTasks[i].title.toLowerCase();
+    const existing = allDirectiveTasks.find(t => t.title.toLowerCase() === droppedTitle);
+    if (existing) {
+      droppedRedirects.set(i + 1, existing.id);
+    }
+  }
+
   for (let i = 0; i < parsedTasks.length; i++) {
     const parsed = parsedTasks[i];
     const taskId = batchMap.get(i + 1);
@@ -485,7 +509,17 @@ export async function planNextTasks(
         if (numTarget !== null) {
           resolvedDeps.push(numTarget);
         } else {
-          console.warn(`[director:planner] task "${parsed.title}" depends on dropped duplicate #${depNum} — dependency removed`);
+          // The referenced task was dropped as a duplicate. Redirect the
+          // dependency to the existing task it was a duplicate OF, instead
+          // of silently removing it. Without this, the dependent gets
+          // dispatched before the existing in-flight task finishes.
+          const redirect = droppedRedirects.get(depNum);
+          if (redirect) {
+            resolvedDeps.push(redirect);
+            console.log(`[director:planner] task "${parsed.title}" depends on dropped duplicate #${depNum} — redirected to existing task ${redirect.slice(0, 8)}`);
+          } else {
+            console.warn(`[director:planner] task "${parsed.title}" depends on dropped duplicate #${depNum} but no existing task matches the dropped title — dependency removed`);
+          }
         }
       } else {
         // Try matching by title against this batch first, then existing directive tasks
@@ -496,7 +530,14 @@ export async function planNextTasks(
         if (byTitle && byTitle[1] !== null) {
           resolvedDeps.push(byTitle[1]);
         } else if (byTitle && byTitle[1] === null) {
-          console.warn(`[director:planner] task "${parsed.title}" depends on dropped duplicate "${dep}" — dependency removed`);
+          // Same redirect logic for title-based references to dropped duplicates.
+          const redirect = droppedRedirects.get(byTitle[0]);
+          if (redirect) {
+            resolvedDeps.push(redirect);
+            console.log(`[director:planner] task "${parsed.title}" depends on dropped duplicate "${dep}" — redirected to existing task ${redirect.slice(0, 8)}`);
+          } else {
+            console.warn(`[director:planner] task "${parsed.title}" depends on dropped duplicate "${dep}" but no existing task matches — dependency removed`);
+          }
         } else {
           const existing = allDirectiveTasks.find(t => t.title.toLowerCase() === dep.toLowerCase());
           if (existing) {
