@@ -353,6 +353,189 @@ setMemoryWriteHook((workdir) => {
   scheduleReindex(workdir);
 });
 
+// ─── Junk-write validator ────────────────────────────────────────────────
+//
+// Centralizes the rejection rules for memory writes so writeSemanticMemory
+// and writeConvention apply the same checks. The patterns come from a real
+// audit of accumulated junk in `.swe/memory/semantic/` — the agent had a
+// strong tendency to journal in-progress task state ("X-fix-needed.md",
+// "X-status.md", "X-implementation-plan.md") and to mirror specifications
+// from conventions/ into semantic/. Both shapes are caught here.
+
+interface MemoryValidationResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/** Filename patterns that indicate ephemeral/journal content. Hard reject. */
+const JUNK_FILENAME_PATTERNS: Array<{ re: RegExp; hint: string }> = [
+  { re: /(?:^|-)tasks?(?:-|\.md$)/i,           hint: "task notes — use the task list, not memory" },
+  { re: /(?:^|-)fix(?:es)?(?:-|\.md$)/i,       hint: "fix recipe — fix is in code, rationale is in commit" },
+  { re: /(?:^|-)bugs?(?:-|\.md$)/i,            hint: "bug snapshot — save the prevention rule, not the bug" },
+  { re: /(?:^|-)status(?:-|\.md$)/i,           hint: "status snapshot — re-derive from git/tasks" },
+  { re: /(?:^|-)pending(?:-|\.md$)/i,          hint: "in-progress state — task list" },
+  { re: /(?:^|-)needed(?:-|\.md$)/i,           hint: "TODO state — task list" },
+  { re: /(?:^|-)found(?:-|\.md$)/i,            hint: "discovery snapshot — save the durable lesson" },
+  { re: /(?:^|-)verified(?:-|\.md$)/i,         hint: "verification snapshot — re-verify when needed" },
+  { re: /(?:^|-)verification(?:-|\.md$)/i,     hint: "verification snapshot — re-verify when needed" },
+  { re: /(?:^|-)batch(?:-|\.md$)/i,            hint: "activity log — episodic memory captures this" },
+  { re: /(?:^|-)complete(?:d)?(?:-|\.md$)/i,   hint: "completion log — what was completed is in git" },
+  { re: /(?:^|-)created(?:-|\.md$)/i,          hint: "creation log — repo state is in git" },
+  { re: /(?:^|-)next-steps?(?:-|\.md$)/i,      hint: "TODO list — task list" },
+  { re: /(?:^|-)plan(?:ning)?(?:-|\.md$)/i,    hint: "planning notes — task list / planner output" },
+  { re: /(?:^|-)details?(?:-|\.md$)/i,         hint: "task details — task description" },
+  { re: /(?:^|-)blockers?(?:-|\.md$)/i,        hint: "blocker snapshot — task list" },
+  { re: /(?:^|-)current-state(?:-|\.md$)/i,    hint: "snapshot of repo state — derivable from ls/grep" },
+  { re: /(?:^|-)implementation-(?:plan|guide|status)(?:-|\.md$)/i, hint: "task-shaped planning notes — task description" },
+  { re: /(?:^|-)milestone-(?:blocker|unblock|resolution)(?:-|\.md$)/i, hint: "milestone state — re-derive from milestones table" },
+  { re: /(?:^|-)rewrite-plan(?:-|\.md$)/i,     hint: "rewrite plan — task description" },
+  { re: /(?:^|-)spec-compliance(?:-|\.md$)/i,  hint: "spec mirror — the spec is in conventions/, not semantic" },
+];
+
+/** Phrases inside the body that indicate ephemeral/journal content. */
+const JUNK_BODY_MARKERS: Array<{ re: RegExp; hint: string }> = [
+  { re: /\b(?:TODO|FIXME)\b/i,                          hint: "contains TODO/FIXME — that's a task, not durable knowledge" },
+  { re: /\bcurrent implementation\b/i,                  hint: "describes 'current implementation' — frozen snapshot, will drift" },
+  { re: /\bfailed tasks?\b/i,                           hint: "describes 'failed tasks' — task list state, not memory" },
+  { re: /\brequired fix order\b/i,                      hint: "describes a fix sequence — that's a task plan, not memory" },
+  { re: /\bnext steps?\b/i,                             hint: "describes 'next steps' — task list, not memory" },
+  { re: /\bmissing (?:test )?(?:assets|files)\b/i,      hint: "describes missing artifacts — repo state, not memory" },
+  { re: /\b(?:will be|to be) (?:fixed|implemented|added|done)\b/i, hint: "future tense — that's a task, not memory" },
+  { re: /\b(?:as of|currently)[\s:]/i,                  hint: "time-bound snapshot ('as of...', 'currently...') — will go stale" },
+  { re: /^\s*\*\*Date:\*\*/im,                          hint: "dated header — that's an activity log entry" },
+  { re: /^#+ +(?:Task|Failed) /im,                      hint: "Task-headed sections — task list shape" },
+];
+
+async function validateMemoryWrite(
+  projectWorkdir: string,
+  category: "semantic" | "conventions",
+  fname: string,
+  content: string,
+): Promise<MemoryValidationResult> {
+  // 1. Filename pattern rejection.
+  for (const { re, hint } of JUNK_FILENAME_PATTERNS) {
+    if (re.test(fname)) {
+      return {
+        ok: false,
+        reason: `Refused: filename "${fname}" looks like ${hint}. Memory is for durable knowledge that passes the durability test ("still true and useful in 30 days, AND not derivable from code/git/grep"). Re-route this content to where it belongs (task description, commit message, conventions/, or — most likely — leave it out).`,
+      };
+    }
+  }
+
+  // 2. Body content marker rejection.
+  for (const { re, hint } of JUNK_BODY_MARKERS) {
+    if (re.test(content)) {
+      return {
+        ok: false,
+        reason: `Refused: body ${hint}. This is ephemeral content masquerading as durable knowledge. Apply the durability test before saving.`,
+      };
+    }
+  }
+
+  // 3. Same-day journaling check: if 3+ existing files share a token prefix
+  // with the new filename and were written today, the agent is journaling on
+  // a single feature instead of consolidating.
+  try {
+    const dir = categoryDir(projectWorkdir, category as MemoryCategory);
+    const { readdir, stat } = await import("fs/promises");
+    const { join } = await import("path");
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return { ok: true };
+    }
+    const stem = fname.replace(/\.md$/, "");
+    const tokens = stem.split("-").filter(t => t.length > 2);
+    if (tokens.length === 0) return { ok: true };
+    const today = new Date().toISOString().slice(0, 10);
+    let sameDayMatches = 0;
+    const matchedNames: string[] = [];
+    for (const entry of entries) {
+      if (entry === fname || !entry.endsWith(".md")) continue;
+      const entryStem = entry.replace(/\.md$/, "");
+      const entryTokens = new Set(entryStem.split("-"));
+      const overlap = tokens.filter(t => entryTokens.has(t)).length;
+      if (overlap >= 2) {
+        try {
+          const st = await stat(join(dir, entry));
+          if (st.mtime.toISOString().slice(0, 10) === today) {
+            sameDayMatches++;
+            matchedNames.push(entry);
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    if (sameDayMatches >= 2) {
+      return {
+        ok: false,
+        reason: `Refused: ${sameDayMatches} memory file(s) on the same topic were already written today (${matchedNames.slice(0, 3).join(", ")}). This is journaling, not curation. Use editMemory to UPDATE one of the existing files, or skip the write entirely if the content is ephemeral.`,
+      };
+    }
+  } catch { /* validation is best-effort; never crash a write because the check failed */ }
+
+  return { ok: true };
+}
+
+/**
+ * Scan a project's memory directories for files matching the junk patterns.
+ * READ-ONLY — returns the list of candidate files for review. The caller
+ * decides whether to delete. Used by an admin endpoint so the user can
+ * audit accumulated pollution without me guessing filenames.
+ */
+export async function findJunkMemories(projectWorkdir: string): Promise<{
+  semantic: Array<{ name: string; reason: string; sizeBytes: number; mtime: string }>;
+  conventions: Array<{ name: string; reason: string; sizeBytes: number; mtime: string }>;
+}> {
+  const { readdir, stat, readFile } = await import("fs/promises");
+  const { join } = await import("path");
+
+  async function scan(category: "semantic" | "conventions") {
+    const dir = categoryDir(projectWorkdir, category as MemoryCategory);
+    const out: Array<{ name: string; reason: string; sizeBytes: number; mtime: string }> = [];
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return out;
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith(".md")) continue;
+      // Check filename patterns first (cheap)
+      let reason: string | null = null;
+      for (const { re, hint } of JUNK_FILENAME_PATTERNS) {
+        if (re.test(entry)) { reason = `filename: ${hint}`; break; }
+      }
+      // If filename is clean, sample the body for marker phrases
+      if (!reason) {
+        try {
+          const content = await readFile(join(dir, entry), "utf-8");
+          for (const { re, hint } of JUNK_BODY_MARKERS) {
+            if (re.test(content)) { reason = `body: ${hint}`; break; }
+          }
+        } catch { /* skip */ }
+      }
+      if (reason) {
+        try {
+          const st = await stat(join(dir, entry));
+          out.push({
+            name: entry,
+            reason,
+            sizeBytes: st.size,
+            mtime: st.mtime.toISOString(),
+          });
+        } catch { /* skip */ }
+      }
+    }
+    return out.sort((a, b) => b.mtime.localeCompare(a.mtime));
+  }
+
+  return {
+    semantic: await scan("semantic"),
+    conventions: await scan("conventions"),
+  };
+}
+
 /**
  * Build all Director memory tools for a project.
  */
@@ -412,43 +595,13 @@ export function makeMemoryTools(projectWorkdir: string) {
       }),
       execute: async ({ filename, content }) => {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
-        // Soft anti-pattern detection on filename — same shapes as
-        // writeConvention (per-task junk, status snapshots, fix recipes,
-        // activity logs). Returns a warning instead of refusing.
-        // Patterns use \b boundaries (or appropriate context) so e.g.
-        // `upgrade-manager-fix-tasks.md` matches the `-fix-` pattern,
-        // not just the more specific `^task-` shape we used to check.
-        const ANTI_PATTERN_FILENAMES = [
-          { re: /(?:^|-)tasks?(?:-|\.md$)/i,    hint: "task notes — use the task list, not memory" },
-          { re: /(?:^|-)fix(?:es)?(?:-|\.md$)/i, hint: "fix recipe — the fix is in the code, the rationale is in the commit message" },
-          { re: /(?:^|-)bugs?(?:-|\.md$)/i,     hint: "bug snapshot — save the prevention rule, not the bug" },
-          { re: /(?:^|-)status(?:-|\.md$)/i,    hint: "status snapshot — re-derive from git/tasks instead" },
-          { re: /(?:^|-)pending(?:-|\.md$)/i,   hint: "in-progress state — task list, not memory" },
-          { re: /(?:^|-)needed(?:-|\.md$)/i,    hint: "TODO state — task list, not memory" },
-          { re: /(?:^|-)found(?:-|\.md$)/i,     hint: "discovery snapshot — save the durable lesson, not the moment of discovery" },
-          { re: /(?:^|-)verified(?:-|\.md$)/i,  hint: "verification snapshot — re-verify when needed instead" },
-          { re: /(?:^|-)verification(?:-|\.md$)/i, hint: "verification snapshot — re-verify when needed instead" },
-          { re: /(?:^|-)batch(?:-|\.md$)/i,     hint: "activity log — episodic memory captures this automatically" },
-          { re: /(?:^|-)complete(?:d)?(?:-|\.md$)/i, hint: "completion log — what was completed is in git, not memory" },
-          { re: /(?:^|-)next-steps?(?:-|\.md$)/i, hint: "TODO list — task list, not memory" },
-          { re: /(?:^|-)plan(?:ning)?(?:-|\.md$)/i, hint: "planning notes — task list / planner output, not memory" },
-          { re: /(?:^|-)details?(?:-|\.md$)/i,  hint: "task details — task description, not memory" },
-        ];
-        const warnings: string[] = [];
-        for (const { re, hint } of ANTI_PATTERN_FILENAMES) {
-          if (re.test(fname)) {
-            warnings.push(`filename pattern ${re} suggests ${hint}`);
-            break;
-          }
-        }
+        const validation = await validateMemoryWrite(projectWorkdir, "semantic", fname, content);
+        if (!validation.ok) return validation.reason!;
         const existing = await readMemory(projectWorkdir, "semantic", fname);
         await writeMemory(projectWorkdir, "semantic", fname, content);
-        const warningSuffix = warnings.length > 0
-          ? ` ⚠ ${warnings[0]}. Apply the durability test.`
-          : "";
-        return (existing
+        return existing
           ? `Updated semantic memory: ${fname}`
-          : `Created semantic memory: ${fname}`) + warningSuffix;
+          : `Created semantic memory: ${fname}`;
       },
     }),
 
@@ -468,30 +621,8 @@ export function makeMemoryTools(projectWorkdir: string) {
         if (fname === PROJECT_BRIEF_FILENAME) {
           return `Use updateProjectBrief to maintain ${PROJECT_BRIEF_FILENAME}, not writeConvention.`;
         }
-        // Hard rejection of anti-pattern filenames in conventions. Same
-        // patterns as writeSemanticMemory's soft list, but conventions
-        // refuse outright because they cost context tokens on every
-        // Director run.
-        const ANTI_PATTERN_FILENAMES = [
-          /(?:^|-)tasks?(?:-|\.md$)/i,
-          /(?:^|-)fix(?:es)?(?:-|\.md$)/i,
-          /(?:^|-)bugs?(?:-|\.md$)/i,
-          /(?:^|-)status(?:-|\.md$)/i,
-          /(?:^|-)pending(?:-|\.md$)/i,
-          /(?:^|-)needed(?:-|\.md$)/i,
-          /(?:^|-)found(?:-|\.md$)/i,
-          /(?:^|-)verified(?:-|\.md$)/i,
-          /(?:^|-)verification(?:-|\.md$)/i,
-          /(?:^|-)batch(?:-|\.md$)/i,
-          /(?:^|-)complete(?:d)?(?:-|\.md$)/i,
-          /(?:^|-)next-steps?(?:-|\.md$)/i,
-          /(?:^|-)plan(?:ning)?(?:-|\.md$)/i,
-          /(?:^|-)details?(?:-|\.md$)/i,
-        ];
-        const matchedAntiPattern = ANTI_PATTERN_FILENAMES.find(re => re.test(fname));
-        if (matchedAntiPattern) {
-          return `Refused: "${fname}" looks like a per-task / status / fix-recipe / activity-log shape, none of which belong in conventions. See the system prompt's anti-pattern list. Use a topic-named filename (e.g. 'art-guidelines.md') for an actual rule, OR put this content in the task description / commit message / leave it out entirely.`;
-        }
+        const validation = await validateMemoryWrite(projectWorkdir, "conventions", fname, content);
+        if (!validation.ok) return validation.reason!;
         try {
           const result = await writeConvention(projectWorkdir, fname, content);
           return result.created

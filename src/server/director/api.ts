@@ -53,6 +53,67 @@ export function createDirectorRouter(db: Db): Router {
     res.json(directives);
   });
 
+  // ─── Memory junk audit ────────────────────────────────────────────────
+  // Read-only: scans .swe/memory/semantic and .swe/conventions for files
+  // matching the junk patterns and returns the candidate list. Caller
+  // decides whether to delete (via the existing deleteMemory tool or
+  // direct file removal). Doesn't modify anything.
+  router.get("/projects/:projectId/memory/junk", async (req, res) => {
+    const project = db.getProject(req.params.projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    const { findJunkMemories } = await import("./memsearch");
+    const junk = await findJunkMemories(project.workdir);
+    res.json({
+      semantic: { count: junk.semantic.length, files: junk.semantic },
+      conventions: { count: junk.conventions.length, files: junk.conventions },
+    });
+  });
+
+  // Same scan but POST so we can delete in one call. Body: { paths: string[] }
+  // Each path is "semantic/<filename>" or "conventions/<filename>". Returns
+  // counts of deleted vs not-found. The agent can't reach this endpoint;
+  // it's manual cleanup only.
+  router.post("/projects/:projectId/memory/prune", async (req, res) => {
+    const project = db.getProject(req.params.projectId);
+    if (!project) return res.status(404).json({ error: "project not found" });
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths as unknown[] : null;
+    if (!paths) return res.status(400).json({ error: "body must be { paths: string[] }" });
+
+    const { unlink, mkdir, copyFile } = await import("fs/promises");
+    const { resolve: pathResolve, join: pathJoin, basename } = await import("path");
+
+    // Snapshot deleted files into .swe/memory/_pruned/<timestamp>/ so a
+    // mistaken delete is recoverable.
+    const snapshotDir = pathResolve(project.workdir, ".swe", "memory", "_pruned", new Date().toISOString().replace(/[:.]/g, "-"));
+    await mkdir(snapshotDir, { recursive: true });
+
+    let deleted = 0;
+    let notFound = 0;
+    const errors: string[] = [];
+    for (const raw of paths) {
+      if (typeof raw !== "string") continue;
+      // Whitelist: only semantic/<file> and conventions/<file>, no path traversal.
+      const match = raw.match(/^(semantic|conventions)\/([a-zA-Z0-9._-]+\.md)$/);
+      if (!match) {
+        errors.push(`invalid path shape: ${raw}`);
+        continue;
+      }
+      const [, category, fname] = match;
+      const subdir = category === "semantic" ? "memory/semantic" : "conventions";
+      const filePath = pathResolve(project.workdir, ".swe", subdir, fname);
+      try {
+        await copyFile(filePath, pathJoin(snapshotDir, `${category}__${basename(fname)}`));
+        await unlink(filePath);
+        deleted++;
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        if (code === "ENOENT") notFound++;
+        else errors.push(`${raw}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    res.json({ deleted, notFound, errors, snapshotDir });
+  });
+
   router.get("/directives/:id", (req, res) => {
     const directive = db.getDirectorDirective(req.params.id);
     if (!directive) return res.status(404).json({ error: "Directive not found" });
