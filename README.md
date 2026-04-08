@@ -1,12 +1,16 @@
 # open-swe
 
+Inspired by the architecture of ['open-swe'](https://github.com/langchain-ai/open-swe), but not directly based on their codebase.
+
 An autonomous software engineering orchestration system. Takes high-level directives ("build a tower defense game"), decomposes them into milestones and tasks, dispatches work to LLM agents running on separate inference machines, runs code review and gated build/test checks, and generates art / music / SFX through ComfyUI — all with configurable human oversight.
 
 Single-host control plane, multi-machine execution. Built for homelabs and small GPU clusters.
 
-Co-authored with Claude & provided as-is.
+✨Co-authored with Claude✨ & provided as-is
 
 Detailed documentation & visualizations are available in [`docs/architecture/`](docs/architecture/)
+
+Agents read ['AGENTS.md'](AGENTS.md)
 
 ## What it does
 
