@@ -20,6 +20,7 @@ import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
 import { autonomyBudgets } from "./review-gates";
 import { runStage, StageWallTimeoutError, StageStepLimitError } from "../pipeline/run-stage";
+import { renewLease } from "../machine-manager";
 import { makeVerifyTools } from "../tools/filesystem";
 import { makeDirectorReadTools } from "../tools/director-read";
 import { makeDirectorOpinionTools } from "../tools/director-opinion";
@@ -164,6 +165,9 @@ export async function verifyTask(
           contextLimit: session.effectiveContextLimit ?? undefined,
           worktreePath: workdir,
           wallTimeoutMs: VERIFIER_WALL_TIMEOUT_MS,
+          // Renew the lease on every step so verification (which can run
+          // 5-15 min on the new tool surface) doesn't trip the idle timeout.
+          onStepStarted: () => renewLease(session.leaseId),
         });
 
         const parsed = parseVerdict(text);

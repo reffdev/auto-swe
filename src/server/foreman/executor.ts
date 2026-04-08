@@ -12,7 +12,7 @@ import { runStage, StageStepLimitError, StageWallTimeoutError } from "../pipelin
 import { withProjectLock } from "../pipeline/index";
 import { withLlmSession, type LlmSession } from "../llm-dispatch";
 import { getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
-import { acquireLease, releaseLease } from "../machine-manager";
+import { acquireLease, releaseLease, renewLease } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
 import { createSubmitGuard } from "./submit-guard";
 import {
@@ -382,6 +382,10 @@ async function runInferenceTaskWithSession(
         try { db.updateForemanRun(run.foremanRun.id, { output: stepsJson }); } catch { /* non-critical */ }
       },
       onToolCall: (toolName: string) => submitGuard.recordToolCall(toolName),
+      // Renew the lease on every step. Foreman tasks have a 30-min default
+      // lease, but a long task with many tool calls can blow past it. The
+      // lease should act as an idle timeout, not a wall-clock cap.
+      onStepStarted: () => renewLease(session.leaseId),
     });
 
     const durationMs = Date.now() - run.startTime;

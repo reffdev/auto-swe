@@ -357,11 +357,40 @@ export function clearAllLeases(): void {
 }
 
 const DEFAULT_LEASE_TIMEOUT_MS: Record<LeaseConsumer, number> = {
-  director: 5 * 60 * 1000,    // 5 min — conversation/planning calls
+  // Director leases used to be 5 min, which was correct when the Director
+  // only did short LLM calls. Now that the planner runs as a tool-using
+  // agent (verification, file inspection, runProjectCheck), real planning
+  // sessions routinely take 5-15 min. The lease auto-renews on every step
+  // (see `renewLease`), so this is the IDLE timeout — how long without
+  // progress before we assume the work is wedged.
+  director: 10 * 60 * 1000,
   foreman: 30 * 60 * 1000,    // 30 min — full task execution
   pipeline: 60 * 60 * 1000,   // 60 min — full pipeline run
   analysis: 10 * 60 * 1000,   // 10 min — analysis scan
 };
+
+/**
+ * Push a lease's expiry forward as if it were just acquired. Called from
+ * agent loops on every step so that long-running but actively-progressing
+ * work doesn't trip the idle timeout.
+ *
+ * The lease's IDLE timeout is the consumer default (e.g. 10 min for
+ * director). Each time the agent makes a tool call, we push expiresAt to
+ * `now + idleTimeout`. If the agent stops making progress for more than
+ * idleTimeout, the lease expires normally.
+ *
+ * No-op if the lease is already gone (expired or released).
+ */
+export function renewLease(leaseId: string): void {
+  for (const leases of activeLeases.values()) {
+    const lease = leases.find(l => l.id === leaseId);
+    if (lease) {
+      const idleTimeout = DEFAULT_LEASE_TIMEOUT_MS[lease.consumer];
+      lease.expiresAt = Date.now() + idleTimeout;
+      return;
+    }
+  }
+}
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 

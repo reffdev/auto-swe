@@ -134,6 +134,14 @@ export async function planNextTasks(
         }
         console.log(`[director:planner] calling ${session.machine.name || session.providerModelId} ...`);
         const llmStartTime = Date.now();
+        // Lease auto-renewal: import inside the session callback so we can
+        // bump expiresAt on every step. The Director default lease is 10
+        // minutes; without renewal, a 12-step planning session that takes
+        // 11 minutes total would have its lease expire mid-stream and the
+        // Foreman could dispatch competing work to the same machine. With
+        // renewal, the timeout becomes idle-since-last-step, which is the
+        // right semantic.
+        const { renewLease } = await import("../machine-manager");
         // Synthetic identifiers used for the per-step llm_requests rows so the
         // Director planner's reasoning is browsable in the existing LLM logs UI
         // alongside Foreman pipeline steps. The frontend filters by issue_id
@@ -187,6 +195,12 @@ export async function planNextTasks(
           abortSignal: abortController.signal,
           onStepFinish: (step) => {
             stepIndex++;
+            // Renew the lease on every step. The Director default lease is
+            // an IDLE timeout, not a wall-clock cap — as long as the agent
+            // is making progress, the lease should not expire and let the
+            // Foreman snipe the same machine.
+            renewLease(session.leaseId);
+
             const toolCalls = step.toolCalls as Array<{ toolName?: string; args?: unknown }> | undefined;
             const toolResults = step.toolResults as Array<{ toolName?: string; result?: unknown }> | undefined;
             const stepText = (step as { text?: string }).text;

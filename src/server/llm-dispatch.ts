@@ -75,6 +75,13 @@ export interface LlmSession {
   readonly llm: LlmModel;
   /** The structural execution shape, in case a caller needs to forward it (e.g. to runStage logging). Equivalent to `{ machine, providerModelId }`. */
   readonly execution: LlmExecution;
+  /**
+   * Lease id, exposed so callers can call `renewLease(leaseId)` from their
+   * agent loop's onStepFinish callback. Long-running tool-using sessions
+   * (Director planner, verifier) should renew on every step so the lease
+   * acts as an idle timeout, not a hard wall-clock cap.
+   */
+  readonly leaseId: string;
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -170,6 +177,7 @@ export async function withLlmSession<T>(
         effectiveContextLimit: candidate.effectiveContextLimit,
         llm: instantiateLlm(execution),
         execution,
+        leaseId: acquired.lease.id,
       };
       return await fn(session);
     } finally {
@@ -248,6 +256,7 @@ export async function withLightLlmSession<T>(
       effectiveContextLimit: resolved.effectiveContextLimit,
       llm: instantiateLlm(execution),
       execution,
+      leaseId: acquired.lease.id,
     };
     return await fn(session);
   } finally {

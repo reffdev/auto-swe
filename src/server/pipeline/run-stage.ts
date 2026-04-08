@@ -69,6 +69,14 @@ export interface RunStageOpts {
    */
   onToolCall?: (toolName: string) => void;
   /**
+   * Optional callback fired at the start of every step, BEFORE tool calls
+   * are processed. Used by callers to renew their lease — the lease is an
+   * idle timeout, and as long as the agent is making progress, the caller
+   * should refresh it. Verifier and any future tool-loop consumers should
+   * pass `() => renewLease(session.leaseId)` here.
+   */
+  onStepStarted?: () => void;
+  /**
    * Hard wall-clock timeout for the entire stage (across all compactions and
    * retries). When the timer fires, the AbortController is aborted, every
    * in-flight LLM request is cancelled, and runStage throws StageWallTimeoutError.
@@ -223,6 +231,12 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   const MAX_TEXT_ONLY_STEPS = 3;
 
   const onStep = (step: StepResult<ToolSet>) => {
+    // Renew the caller's lease if a callback is provided. Done first so a
+    // throw inside the step body doesn't skip the renewal — the agent IS
+    // making progress, the lease should reflect that.
+    try { opts.onStepStarted?.(); } catch (renewErr) {
+      console.warn(`[pipeline ${stageName}]: onStepStarted callback threw:`, renewErr instanceof Error ? renewErr.message : String(renewErr));
+    }
     stepCount++;
     const stepDuration = Date.now() - stepStartTime;
     const u = step.usage;
