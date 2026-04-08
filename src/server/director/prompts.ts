@@ -453,7 +453,13 @@ export function buildMilestoneVerificationPrompt(opts: {
   milestoneTitle: string;
   milestoneVerification: string;
   completedTaskSummaries: string;
-  projectState: string;
+  /**
+   * Best-effort project file listing. Pass null when the listing could
+   * not be obtained — the prompt then omits the section entirely instead
+   * of feeding the LLM a "(no file system)" string that it would seize on
+   * to refuse the verification. Garbage-in-garbage-out defense.
+   */
+  projectState: string | null;
 }): { system: string; user: string } {
   const system = [
     "You are evaluating whether a project milestone has been achieved.",
@@ -485,7 +491,7 @@ export function buildMilestoneVerificationPrompt(opts: {
     "Be rigorous but fair. Minor style issues are not milestone failures.",
   ].join("\n");
 
-  const user = [
+  const userParts = [
     `# Milestone: ${opts.milestoneTitle}`,
     "",
     "## Verification Criteria",
@@ -493,10 +499,27 @@ export function buildMilestoneVerificationPrompt(opts: {
     "",
     "## Completed Tasks",
     opts.completedTaskSummaries,
-    "",
-    "## Current Project State",
-    opts.projectState.slice(0, 15000),
-  ].join("\n");
+  ];
+  if (opts.projectState) {
+    userParts.push(
+      "",
+      "## Current Project State",
+      opts.projectState.slice(0, 15000),
+    );
+  } else {
+    // Be explicit: project listing wasn't available, but that's NOT a
+    // reason to fail the milestone. The LLM should base its verdict on
+    // the verification criteria + completed task summaries.
+    userParts.push(
+      "",
+      "## Note",
+      "A raw project file listing was not available for this verification. " +
+      "Base your verdict on the verification criteria and the completed task " +
+      "summaries above. Do NOT cite missing file listings as a reason to fail " +
+      "or escalate — that's a tooling issue on our side, not a milestone problem.",
+    );
+  }
+  const user = userParts.join("\n");
 
   return { system, user };
 }

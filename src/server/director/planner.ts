@@ -375,7 +375,15 @@ export async function planNextTasks(
         } finally {
           clearTimeout(wallTimer);
         }
-        const steps = await stream.steps.catch(() => []);
+        // If we self-aborted, do NOT await stream.steps — the AI SDK does
+        // not always resolve that promise after an abortController.abort(),
+        // and `.catch()` only handles rejection, not "never resolves."
+        // Awaiting it here was holding the lease for the full 10-min idle
+        // timeout window after the planner had already aborted.
+        const selfAborted =
+          loopTripped || quotaTripped || leaseExpiredAborted ||
+          wallTimedOut || advanceMilestoneAborted !== null;
+        const steps = selfAborted ? [] : await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
         const abortReason =
           loopTripped ? " (LOOP-ABORTED)" :

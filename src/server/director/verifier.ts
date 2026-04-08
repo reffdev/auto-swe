@@ -463,20 +463,49 @@ export async function verifyMilestone(
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-async function getProjectState(workdir: string): Promise<string> {
+/**
+ * Best-effort project file listing for the milestone verifier prompt.
+ *
+ * Returns a non-empty file listing string, or null if we couldn't get one.
+ * Returning null is important — when we previously returned a literal
+ * "(could not list project files)" string, the verifier LLM would seize on
+ * that and refuse to pass any milestone with reasoning like "current
+ * project state shows no file system, cannot verify test files exist."
+ * Garbage in → garbage out. Now the caller omits the section entirely
+ * when this returns null and the LLM judges based on the verification
+ * criteria + completed task summaries instead.
+ */
+async function getProjectState(workdir: string): Promise<string | null> {
+  // Use runProcess (no shell) so we don't have to worry about quoting and
+  // escapes. find with -prune is faster than -not -path because it skips
+  // descending into hidden / node_modules dirs entirely.
   try {
-    const result = await runShellCommand(
-      `find "${workdir}" -maxdepth 3 -type f -not -path '*/\\.*' -not -path '*/node_modules/*'`,
-      { cwd: workdir, timeoutMs: 5_000 },
+    const result = await runProcess(
+      "find",
+      [
+        workdir,
+        "-maxdepth", "4",
+        "(", "-name", ".*", "-o", "-name", "node_modules", "-o", "-name", "dist", "-o", "-name", ".git", ")",
+        "-prune", "-o",
+        "-type", "f", "-print",
+      ],
+      { cwd: workdir, timeoutMs: 30_000 },
     );
-    return result.stdout?.slice(0, 5000) || "(could not list project files)";
-  } catch {
-    // Windows fallback
-    try {
-      const result = await runShellCommand(`dir /s /b "${workdir}"`, { cwd: workdir, timeoutMs: 5_000 });
-      return result.stdout?.slice(0, 5000) || "(could not list project files)";
-    } catch {
-      return "(could not list project files)";
+    const out = (result.stdout ?? "").trim();
+    if (out.length > 0) return out.slice(0, 8000);
+    if (result.status !== 0) {
+      console.warn(`[director:verifier] getProjectState: find exited ${result.status}: ${(result.stderr ?? "").slice(0, 200)}`);
     }
+  } catch (err) {
+    console.warn(`[director:verifier] getProjectState: find threw: ${err instanceof Error ? err.message : String(err)}`);
   }
+  // Fallback: a recursive ls. Slower but more portable.
+  try {
+    const result = await runProcess("ls", ["-laR", workdir], { cwd: workdir, timeoutMs: 30_000 });
+    const out = (result.stdout ?? "").trim();
+    if (out.length > 0) return out.slice(0, 8000);
+  } catch (err) {
+    console.warn(`[director:verifier] getProjectState: ls fallback threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return null;
 }
