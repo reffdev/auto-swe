@@ -1,10 +1,27 @@
 import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Plus, FolderGit2, Server, AlertCircle, Terminal, Cpu, Palette, BrainCircuit, Zap, Activity, Clock } from 'lucide-react'
+import { Plus, FolderGit2, Server, AlertCircle, Terminal, Cpu, Palette, BrainCircuit, Zap, Activity, Clock, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import * as api from './api'
+
+// Map a lease's workRef to a frontend route. Returns null when there's no
+// route (workRef is unset, or its kind has no detail page yet — e.g.
+// analysis_run currently has no detail view).
+function workRefToHref(ref: api.DashboardActivityLease['workRef']): string | null {
+  if (!ref) return null
+  switch (ref.kind) {
+    case 'foreman_task':   return `/foreman/task/${ref.id}`
+    case 'issue':          return ref.projectId ? `/project/${ref.projectId}/issue/${ref.id}` : null
+    case 'directive':      return `/director/${ref.id}`
+    case 'milestone':      return ref.projectId ? `/project/${ref.projectId}/director` : null
+    case 'conversation':   return null  // conversations are reached via their parent directive
+    case 'analysis_run':   return ref.projectId ? `/project/${ref.projectId}/analysis` : null
+    default:               return null
+  }
+}
 
 // ─── Machine activity panel ──────────────────────────────────────────────
 //
@@ -87,7 +104,19 @@ function MachineActivityPanel() {
         )}
         {!loading && !error && data && data.activity.length > 0 && (
           <div className="space-y-2">
-            {data.activity.map(entry => (
+            {data.activity.map(entry => {
+              // If every active lease on this machine is running the same
+              // logical model, hoist a single "running X" badge into the row
+              // header. If they disagree (rare — a single physical machine
+              // genuinely serving two different models concurrently), the
+              // per-lease detail rows below will show each one inline.
+              const modelNames = new Set(
+                entry.leases
+                  .map(l => l.model?.name)
+                  .filter((n): n is string => !!n),
+              )
+              const sharedModel = modelNames.size === 1 ? entry.leases.find(l => l.model)?.model ?? null : null
+              return (
               <div
                 key={entry.machine.id}
                 className={cn(
@@ -95,18 +124,34 @@ function MachineActivityPanel() {
                   entry.idle && "opacity-70",
                 )}
               >
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <MachineTypeIcon type={entry.machine.type} />
-                  <span className="text-sm font-medium truncate flex-1">{entry.machine.name}</span>
-                  {(entry.tokensInPerSec || entry.tokensOutPerSec) && (
+                  <span className="text-sm font-medium truncate">{entry.machine.name}</span>
+                  {sharedModel && (
+                    <span
+                      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 truncate max-w-[40%]"
+                      title={`Logical model: ${sharedModel.name} (${sharedModel.slug})\nprovider_model_id: ${sharedModel.providerModelId}`}
+                    >
+                      {sharedModel.name}
+                    </span>
+                  )}
+                  <div className="flex-1" />
+                  {/* Always render the rate strip for non-comfyui active rows so the
+                      display doesn't disappear during the warm-up window. ComfyUI
+                      machines don't emit token rates so we suppress them entirely. */}
+                  {entry.machine.type !== 'comfyui' && (
                     <span
                       className="text-[10px] font-mono text-muted-foreground flex items-center gap-1 shrink-0"
-                      title="Tokens per second: prompt / completion"
+                      title="Tokens per second — prompt in / completion out. Em-dash means no sample yet (warming up)."
                     >
-                      <Zap className="size-2.5 text-yellow-500/70" />
-                      {entry.tokensInPerSec ? Math.round(entry.tokensInPerSec) : '—'}
-                      {' / '}
-                      {entry.tokensOutPerSec ? Math.round(entry.tokensOutPerSec) : '—'}
+                      <Zap className={cn("size-2.5", (entry.tokensInPerSec || entry.tokensOutPerSec) ? "text-yellow-500" : "text-muted-foreground/40")} />
+                      <span className={entry.tokensInPerSec ? "text-foreground" : ""}>
+                        {entry.tokensInPerSec ? Math.round(entry.tokensInPerSec) : '—'}
+                      </span>
+                      <span className="text-muted-foreground/50">/</span>
+                      <span className={entry.tokensOutPerSec ? "text-emerald-400" : ""}>
+                        {entry.tokensOutPerSec ? Math.round(entry.tokensOutPerSec) : '—'}
+                      </span>
                       <span className="text-muted-foreground/50">tok/s</span>
                     </span>
                   )}
@@ -115,13 +160,30 @@ function MachineActivityPanel() {
                   </span>
                 </div>
                 {entry.leases.length === 0 ? (
-                  <p className="text-[11px] text-muted-foreground italic ml-5">
-                    Recent traffic, no active lease — finishing up
+                  <p className="text-[11px] text-muted-foreground italic ml-5 flex items-center gap-2">
+                    {entry.directorReserved ? (
+                      <>
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border border-blue-500/50 bg-blue-500/10 text-blue-300">
+                          Director
+                        </span>
+                        <span>
+                          {entry.directorReservedMode === "planning"
+                            ? "planning — reserved between LLM calls"
+                            : "reserved — between LLM calls"}
+                        </span>
+                      </>
+                    ) : (
+                      <>Recent traffic, no active lease — finishing up</>
+                    )}
                   </p>
                 ) : (
                   <div className="space-y-1 ml-5">
                     {entry.leases.map(lease => {
                       const style = CONSUMER_STYLES[lease.consumer] ?? { label: lease.consumer, color: "border-muted bg-muted text-muted-foreground" }
+                      // Only show the per-lease model when it DIFFERS from
+                      // the row-header shared model — otherwise it's redundant.
+                      const showLeaseModel = lease.model && !sharedModel
+                      const href = workRefToHref(lease.workRef)
                       return (
                         <div key={lease.id} className="flex items-center gap-2 text-xs">
                           <span className={cn(
@@ -130,7 +192,26 @@ function MachineActivityPanel() {
                           )}>
                             {style.label}
                           </span>
-                          <span className="truncate flex-1" title={lease.label}>{lease.label}</span>
+                          {href ? (
+                            <Link
+                              to={href}
+                              className="truncate flex-1 text-foreground hover:text-primary hover:underline transition-colors flex items-center gap-1"
+                              title={`${lease.label} — click to open`}
+                            >
+                              <span className="truncate">{lease.label}</span>
+                              <ExternalLink className="size-2.5 shrink-0 opacity-50" />
+                            </Link>
+                          ) : (
+                            <span className="truncate flex-1" title={lease.label}>{lease.label}</span>
+                          )}
+                          {showLeaseModel && lease.model && (
+                            <span
+                              className="text-[10px] font-mono text-cyan-300/80 truncate max-w-[30%] shrink-0"
+                              title={`${lease.model.name} (${lease.model.slug}) — ${lease.model.providerModelId}`}
+                            >
+                              {lease.model.name}
+                            </span>
+                          )}
                           <span
                             className="text-[10px] text-muted-foreground font-mono flex items-center gap-1 shrink-0"
                             title={`Acquired ${new Date(lease.acquiredAt).toLocaleTimeString()}, expires in ${formatElapsed(lease.expiresInMs)}`}
@@ -144,7 +225,8 @@ function MachineActivityPanel() {
                   </div>
                 )}
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </CardContent>

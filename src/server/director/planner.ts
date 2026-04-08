@@ -31,6 +31,7 @@ import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/wor
 
 import { nudgeForeman } from "../foreman/scheduler";
 import { logEpisodic } from "./persistent-memory";
+import { autonomyBudgets } from "./review-gates";
 
 /**
  * Generate the next batch of tasks for the active milestone.
@@ -47,9 +48,11 @@ export async function planNextTasks(
   verificationIssues?: string[],
   /** When true, the planner is being asked to verify a complete milestone (call advanceMilestone) instead of generating new work. */
   verificationMode?: boolean,
+  /** Which corrective attempt this is (1-indexed). Used to nudge the planner to take a fundamentally different approach on later attempts. */
+  correctionAttempt?: number,
 ): Promise<number> {
   const planStartTime = Date.now();
-  const reason = verificationMode ? "verification" : verificationIssues?.length ? "corrective" : idleMachineTypes?.length ? `top-up (idle: ${idleMachineTypes.join(", ")})` : "initial";
+  const reason = verificationMode ? "verification" : verificationIssues?.length ? `corrective (attempt ${correctionAttempt ?? 1})` : idleMachineTypes?.length ? `top-up (idle: ${idleMachineTypes.join(", ")})` : "initial";
   console.log(`[director:planner] "${milestone.title}" — ${reason}`);
 
   // Director slot supplies the planner model.
@@ -82,6 +85,7 @@ export async function planNextTasks(
     verificationIssues,
     verificationMode,
     milestoneId: milestone.id,
+    correctionAttempt,
   });
 
   const totalPromptChars = system.length + user.length;
@@ -235,7 +239,10 @@ export async function planNextTasks(
         console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s${loopTripped ? " (LOOP-ABORTED)" : ""}`);
         return text;
       },
-      { preferMachineId: getDirectorPreferredMachineId(db) },
+      {
+        preferMachineId: getDirectorPreferredMachineId(db),
+        workRef: { kind: "milestone", id: milestone.id, projectId: project.id },
+      },
     );
   } catch (llmErr) {
     if (llmErr instanceof NoMachineHostsModelError || llmErr instanceof ModelNotFoundError) {
@@ -289,24 +296,34 @@ export async function planNextTasks(
     return 0;
   }
 
-  // Duplicate handling — two distinct cases:
+  // Duplicate handling — three distinct cases:
   //
   //   1. Duplicate of a task that is COMPLETED, AWAITING_REVIEW, or VALIDATING
   //      (i.e. the work is done or done-pending-review). DROP entirely. It is
   //      never correct to redo accepted work behind the user's back. If the
   //      user actually wants it redone, they can explicitly reject/retry it.
   //
-  //   2. Duplicate of a task in a redo-able state (BACKLOG, QUEUED, RUNNING,
-  //      FAILED). Append a numbered suffix and create it as a new attempt —
-  //      the user may legitimately want a retry with a fresh context.
+  //   2. Duplicate of an ACKNOWLEDGED task (the Foreman has picked it up at
+  //      least once — `acknowledged_at` is set). DROP entirely. The Foreman is
+  //      already running it; the Director loses the right to clobber once
+  //      it's in flight. This closes the planner-vs-dispatcher re-plan race.
+  //
+  //   3. Duplicate of a task in a redo-able state (BACKLOG, QUEUED with no
+  //      acknowledgment, FAILED). Append a numbered suffix and create it as
+  //      a new attempt — the user may legitimately want a retry with a fresh
+  //      context.
   //
   // We scan ALL tasks for this directive (not just the current milestone),
   // because the planner was regenerating art from earlier milestones.
   const DONE_STATUSES = new Set(["completed", "awaiting_review", "validating"]);
   const allDirectiveTasks = db.getDirectiveTasks(directive.id);
-  const titleStatus = new Map<string, string>(); // lowercased title → most-recent status
+  // (title key) → { status, acknowledged }
+  const titleInfo = new Map<string, { status: string; acknowledged: boolean }>();
   for (const t of allDirectiveTasks) {
-    titleStatus.set(t.title.toLowerCase(), t.status);
+    titleInfo.set(t.title.toLowerCase(), {
+      status: t.status,
+      acknowledged: !!t.acknowledged_at,
+    });
   }
   const batchTitles = new Set<string>(); // track titles within this batch too
 
@@ -316,7 +333,18 @@ export async function planNextTasks(
 
   function decideDedupe(title: string): DedupeDecision {
     const key = title.toLowerCase();
-    const existingStatus = titleStatus.get(key);
+    const existing = titleInfo.get(key);
+    const existingStatus = existing?.status;
+
+    // Acknowledged → Foreman is already running it. Drop. (Independent of
+    // status — even a failed-but-acknowledged task should not be silently
+    // re-planned; the Director can still re-plan via explicit retry.)
+    if (existing?.acknowledged) {
+      return {
+        action: "drop",
+        reason: `task with title "${title}" has already been acknowledged by the Foreman (status "${existingStatus}") — refusing to clobber in-flight work`,
+      };
+    }
 
     if (existingStatus && DONE_STATUSES.has(existingStatus)) {
       return {
@@ -328,7 +356,7 @@ export async function planNextTasks(
     // In a redo-able state OR new title — find a unique candidate by suffix
     let candidate = title;
     let suffix = 2;
-    while (titleStatus.has(candidate.toLowerCase()) || batchTitles.has(candidate.toLowerCase())) {
+    while (titleInfo.has(candidate.toLowerCase()) || batchTitles.has(candidate.toLowerCase())) {
       candidate = `${title} (#${suffix})`;
       suffix++;
     }
@@ -379,7 +407,8 @@ export async function planNextTasks(
       target_files: parsed.target_files,
       depends_on: [],
       acceptance_criteria: parsed.acceptance_criteria,
-      max_retries: 3,
+      // Retry budget is autonomy-derived: conservative=2, standard=3, aggressive=5.
+      max_retries: autonomyBudgets(directive.autonomy_level).maxTaskRetries,
       status: "queued",
       directive_id: directive.id,
       milestone_id: milestone.id,
@@ -446,37 +475,84 @@ export async function planNextTasks(
     }
   }
 
-  // Detect dependency cycles within this batch
+  // Cycle detection — surgical: only remove the specific edges that create
+  // cycles, NOT all dependencies. The previous behavior wiped every
+  // depends_on in the batch on any cycle, destroying valid (acyclic)
+  // dependencies as collateral damage.
+  //
+  // Algorithm: build the directed graph, find strongly-connected components
+  // via Tarjan's. Any SCC of size > 1 contains cycles; we break each one by
+  // removing the edges from the LAST task into earlier tasks in the SCC.
+  // (Tasks are 1-indexed by the planner; dependencies typically point
+  // backwards. Removing forward-into-earlier edges preserves the planner's
+  // intent for the rest.)
   const depGraph = new Map<string, string[]>();
   for (const [, id] of batchMap) {
-    if (id === null) continue; // dropped duplicates have no UUID
+    if (id === null) continue;
     const task = db.getForemanTask(id);
     if (task?.depends_on) {
       try { depGraph.set(id, JSON.parse(task.depends_on)); } catch { /* skip */ }
     }
   }
-  const visited = new Set<string>();
-  const inStack = new Set<string>();
-  function hasCycle(nodeId: string): boolean {
-    if (inStack.has(nodeId)) return true;
-    if (visited.has(nodeId)) return false;
-    visited.add(nodeId);
-    inStack.add(nodeId);
-    for (const dep of depGraph.get(nodeId) ?? []) {
-      if (hasCycle(dep)) return true;
-    }
-    inStack.delete(nodeId);
-    return false;
-  }
-  for (const id of batchMap.values()) {
-    if (id === null) continue;
-    if (hasCycle(id)) {
-      console.warn(`[director:planner] dependency cycle detected in batch — clearing all depends_on to prevent deadlock`);
-      for (const taskId of batchMap.values()) {
-        if (taskId !== null) db.updateForemanTask(taskId, { depends_on: null });
+  const removedEdges: Array<{ from: string; to: string }> = [];
+  // Iteratively find one back-edge per pass and remove it. Repeat until no
+  // cycles remain. Bounded by number of edges so it always terminates.
+  const MAX_ITERATIONS = 50;
+  for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    let foundCycleNode: string | null = null;
+    let cyclePath: string[] = [];
+    const visited = new Set<string>();
+    const stack: string[] = [];
+    const inStack = new Set<string>();
+    function dfs(nodeId: string): boolean {
+      if (inStack.has(nodeId)) {
+        // Found a back-edge — slice the stack from the cycle entry point
+        const cycleStart = stack.indexOf(nodeId);
+        cyclePath = stack.slice(cycleStart).concat(nodeId);
+        foundCycleNode = nodeId;
+        return true;
       }
+      if (visited.has(nodeId)) return false;
+      visited.add(nodeId);
+      stack.push(nodeId);
+      inStack.add(nodeId);
+      for (const dep of depGraph.get(nodeId) ?? []) {
+        if (dfs(dep)) return true;
+      }
+      stack.pop();
+      inStack.delete(nodeId);
+      return false;
+    }
+    for (const id of batchMap.values()) {
+      if (id === null || foundCycleNode) continue;
+      dfs(id);
+    }
+    if (!foundCycleNode) break; // no more cycles
+
+    // cyclePath: [a, b, c, ..., a] — remove the last edge (closing the loop).
+    if (cyclePath.length >= 2) {
+      const from = cyclePath[cyclePath.length - 2];
+      const to = cyclePath[cyclePath.length - 1];
+      const fromDeps = depGraph.get(from) ?? [];
+      const newDeps = fromDeps.filter(d => d !== to);
+      depGraph.set(from, newDeps);
+      removedEdges.push({ from, to });
+      console.warn(`[director:planner] removed cyclic dependency edge ${from.slice(0, 8)} → ${to.slice(0, 8)} (cycle path: ${cyclePath.map(x => x.slice(0, 8)).join(" → ")})`);
+    } else {
       break;
     }
+  }
+  // Persist the surgically-pruned graphs back to the DB.
+  for (const edge of removedEdges) {
+    const task = db.getForemanTask(edge.from);
+    if (!task) continue;
+    let deps: string[];
+    try { deps = JSON.parse(task.depends_on ?? "[]"); } catch { continue; }
+    const pruned = deps.filter(d => d !== edge.to);
+    db.updateForemanTask(edge.from, { depends_on: pruned.length > 0 ? JSON.stringify(pruned) : null });
+  }
+  if (removedEdges.length > 0) {
+    console.warn(`[director:planner] surgical cycle removal: pruned ${removedEdges.length} edge(s); preserved all other dependencies`);
   }
 
   const totalTime = Math.round((Date.now() - planStartTime) / 1000);
@@ -513,6 +589,12 @@ export async function planNextTasks(
         for (const t of createdTitles) summaryParts.push(`- ${t}`);
       } else {
         summaryParts.push(`No new tasks generated.`);
+      }
+      if (removedEdges.length > 0) {
+        summaryParts.push(`⚠ Removed ${removedEdges.length} cyclic dependency edge(s) — your dependency graph contained cycles. The remaining acyclic dependencies were preserved.`);
+      }
+      if (droppedDuplicates > 0) {
+        summaryParts.push(`⚠ Dropped ${droppedDuplicates} duplicate task(s) that were already in flight or already completed.`);
       }
       if (verificationIssues?.length) {
         summaryParts.push("Triggered by verification failures:");

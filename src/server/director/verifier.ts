@@ -18,15 +18,31 @@ async function pathExists(p: string): Promise<boolean> {
 }
 import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
+import { autonomyBudgets } from "./review-gates";
 import { runStage, StageWallTimeoutError, StageStepLimitError } from "../pipeline/run-stage";
 import { makeVerifyTools } from "../tools/filesystem";
+import { makeDirectorReadTools } from "../tools/director-read";
+import { makeDirectorOpinionTools } from "../tools/director-opinion";
 import type { Db, ForemanTask, Project } from "../db";
 import { buildVerificationPrompt, buildMilestoneVerificationPrompt } from "./prompts";
 import { parseVerdict } from "./parsers";
 import { readProjectBrief } from "./persistent-memory";
 
+/**
+ * Verifier verdicts. The four-state model distinguishes:
+ *   - pass: the work meets the criteria
+ *   - fail: the work is wrong; the planner should generate corrective tasks
+ *   - escalate: the work is genuinely ambiguous (e.g. design tradeoffs the
+ *     verifier can't evaluate); a human should review. NOT a "try again"
+ *     signal — the planner is NOT asked to fix something the verifier
+ *     couldn't even characterize.
+ *   - infrastructure_failure: the verifier itself failed (timeout, no
+ *     machine, step-limit, crash). Distinct from `escalate` — the verifier
+ *     learned NOTHING about the work; the verification should be retried,
+ *     not the work.
+ */
 export interface VerificationResult {
-  verdict: "pass" | "fail" | "escalate";
+  verdict: "pass" | "fail" | "escalate" | "infrastructure_failure";
   confidence: number;
   issues: string[];
   reasoning: string;
@@ -45,6 +61,17 @@ export async function verifyTask(
   task: ForemanTask,
   project: Project,
 ): Promise<VerificationResult> {
+  // Resolve the autonomy-derived confidence threshold for this verification.
+  // The previous behavior was a hardcoded 0.7 regardless of autonomy level;
+  // now conservative=0.85, standard=0.7, aggressive=0.5. The directive's
+  // autonomy_level is the source of truth.
+  let directiveAutonomy = "standard";
+  if (task.directive_id) {
+    const directive = db.getDirectorDirective(task.directive_id);
+    if (directive) directiveAutonomy = directive.autonomy_level;
+  }
+  const confidenceThreshold = autonomyBudgets(directiveAutonomy).verifierConfidenceThreshold;
+
   // Director slot supplies the verifier model.
   let directorModelId: string;
   try {
@@ -95,7 +122,14 @@ export async function verifyTask(
     readOnlyWorktree: true,
     allowNetwork: false,
   });
-  const tools = makeVerifyTools(workdir, undefined, verifySandbox);
+  // Verifier toolset: file ops + Director read tools (git history,
+  // runReadOnlyCommand) + a curated subset of opinion tools that are
+  // observation-only. We deliberately exclude state-mutating tools
+  // (advanceMilestone) and recursive ones (verifyMilestone,
+  // verifyAcceptanceCriterion, checkMilestoneReadyToAdvance) — the verifier
+  // IS the verification, it shouldn't call itself.
+  const fileTools = makeVerifyTools(workdir, undefined, verifySandbox);
+  const readTools = makeDirectorReadTools(workdir, project, verifySandbox);
 
   let result: VerificationResult | null;
   try {
@@ -105,6 +139,17 @@ export async function verifyTask(
       `verify: ${task.title.slice(0, 40)}`,
       directorModelId,
       async (session): Promise<VerificationResult> => {
+        const opinion = makeDirectorOpinionTools(db, project, {
+          model: session.llm,
+          sandbox: verifySandbox,
+        });
+        const {
+          verifyMilestone: _v1, verifyAcceptanceCriterion: _v2,
+          checkMilestoneReadyToAdvance: _v3, advanceMilestone: _v4,
+          ...safeOpinion
+        } = opinion;
+        void _v1; void _v2; void _v3; void _v4;
+        const tools = { ...fileTools, ...readTools, ...safeOpinion };
         const text = await runStage({
           db,
           runId: "",  // no pipeline run — verifier is standalone
@@ -138,13 +183,18 @@ export async function verifyTask(
           reasoning: parsed.reasoning,
         };
 
-        // Apply confidence threshold
-        if (mapped.verdict === "pass" && mapped.confidence < 0.7) {
-          return { ...mapped, verdict: "escalate", reasoning: `Pass with low confidence (${mapped.confidence}): ${mapped.reasoning}` };
+        // Apply autonomy-derived confidence threshold. Below the threshold,
+        // a "pass" gets demoted to "escalate" — the human is the right
+        // decision-maker for low-confidence work.
+        if (mapped.verdict === "pass" && mapped.confidence < confidenceThreshold) {
+          return { ...mapped, verdict: "escalate", reasoning: `Pass with low confidence (${mapped.confidence} < threshold ${confidenceThreshold} for autonomy=${directiveAutonomy}): ${mapped.reasoning}` };
         }
         return mapped;
       },
-      { preferMachineId: getDirectorPreferredMachineId(db) },
+      {
+        preferMachineId: getDirectorPreferredMachineId(db),
+        workRef: { kind: "foreman_task", id: task.id, projectId: project.id },
+      },
     );
   } catch (err) {
     return mapVerifierError(err, task.title);
@@ -158,63 +208,74 @@ export async function verifyTask(
 }
 
 /**
- * Map a verifier-side exception into an honest VerificationResult. Covers
- * StageWallTimeoutError (timed out), StageStepLimitError (looped/maxed),
- * NoMachineHostsModelError (model orphaned), ModelNotFoundError (model
- * archived/missing), and any other crash.
+ * Map a verifier-side exception into a VerificationResult. All paths here
+ * return `infrastructure_failure` (NOT `escalate`) because the verifier
+ * itself failed — it learned NOTHING about the actual work. The scheduler
+ * uses this distinction to retry the verification rather than re-planning
+ * the work or escalating to a human review gate.
  */
 function mapVerifierError(err: unknown, taskTitle: string): VerificationResult {
   if (err instanceof StageWallTimeoutError) {
     const minutes = Math.round(VERIFIER_WALL_TIMEOUT_MS / 60_000);
     console.warn(`[director:verifier] "${taskTitle}" exceeded ${minutes}-min wall-clock budget`);
     return {
-      verdict: "escalate",
+      verdict: "infrastructure_failure",
       confidence: 0,
       issues: [
         `Verifier exceeded its ${minutes}-minute wall-clock budget without producing a verdict.`,
         `The agent was still investigating when time ran out — this is NOT a real failure of the work itself.`,
-        `Possible causes: project setup is unusual (e.g. test runner CLI not where the verifier expected), upstream LLM is slow, or the verifier got stuck on a research dead-end.`,
       ],
-      reasoning: "Verifier ran out of time while investigating. Manual review required to evaluate the actual work.",
+      reasoning: "Verifier ran out of time while investigating. The verification will be retried — the actual work has not been judged.",
     };
   }
   if (err instanceof StageStepLimitError) {
     console.warn(`[director:verifier] "${taskTitle}" hit step limit — ${err.message}`);
     return {
-      verdict: "escalate",
+      verdict: "infrastructure_failure",
       confidence: 0,
       issues: [
         `Verifier hit its step/output limit (${err.finishReason}) before reaching a verdict.`,
-        `The agent ran out of room before it could finish evaluating the work.`,
       ],
-      reasoning: "Verifier did not complete its evaluation. Manual review required.",
+      reasoning: "Verifier did not complete its evaluation. The verification will be retried.",
     };
   }
   if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
     return {
-      verdict: "escalate",
+      verdict: "infrastructure_failure",
       confidence: 0,
       issues: [err.message],
-      reasoning: "Director model is not available for verification. Manual review required.",
+      reasoning: "Director model is not available for verification. Will retry when capacity returns.",
     };
   }
   return {
-    verdict: "escalate",
-    confidence: 0.3,
-    issues: [`Verifier error: ${err instanceof Error ? err.message : String(err)}`],
-    reasoning: "Verifier crashed before reaching a verdict. Manual review required.",
+    verdict: "infrastructure_failure",
+    confidence: 0,
+    issues: [`Verifier crash: ${err instanceof Error ? err.message : String(err)}`],
+    reasoning: "Verifier crashed before reaching a verdict. The verification will be retried.",
   };
 }
 
 /**
  * Verify that a milestone's verification criteria are met.
  */
+export interface MilestoneVerificationResult {
+  passed: boolean;
+  issues: string[];
+  /**
+   * True when the verification couldn't be completed due to infrastructure
+   * problems (no machine, timeout, crash) — NOT a real failure of the
+   * milestone work. Scheduler must retry the verification rather than
+   * burning a corrective attempt.
+   */
+  infrastructureFailure?: boolean;
+}
+
 export async function verifyMilestone(
   db: Db,
-  milestone: { title: string; verification: string | null },
+  milestone: { id?: string; title: string; verification: string | null },
   directiveId: string,
   project: Project,
-): Promise<{ passed: boolean; issues: string[] }> {
+): Promise<MilestoneVerificationResult> {
   // Run project-level checks first. Mechanical milestone checks run AGAINST
   // the project workdir directly (not a worktree) — they need network for
   // package fetches but should be RW so godot can write its import cache.
@@ -327,17 +388,26 @@ export async function verifyMilestone(
         }
         return { passed: parsed.result === "pass", issues: parsed.issues };
       },
-      { preferMachineId: getDirectorPreferredMachineId(db) },
+      {
+        preferMachineId: getDirectorPreferredMachineId(db),
+        workRef: milestone.id
+          ? { kind: "milestone", id: milestone.id, projectId: project.id }
+          : undefined,
+      },
     );
   } catch (err) {
     if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
-      return { passed: false, issues: [err.message] };
+      return { passed: false, issues: [err.message], infrastructureFailure: true };
     }
     console.warn(`[director:verifier] milestone LLM call failed for "${milestone.title}":`, err instanceof Error ? err.message : String(err));
-    return { passed: false, issues: [`LLM milestone verification failed: ${err instanceof Error ? err.message : "unknown error"}`] };
+    return {
+      passed: false,
+      issues: [`LLM milestone verification failed: ${err instanceof Error ? err.message : "unknown error"}`],
+      infrastructureFailure: true,
+    };
   }
   if (result === null) {
-    return { passed: false, issues: ["deferred:no-machine"] };
+    return { passed: false, issues: ["deferred:no-machine"], infrastructureFailure: true };
   }
   return result;
 }

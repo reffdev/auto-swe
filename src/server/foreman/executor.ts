@@ -24,6 +24,7 @@ import {
   pushBranch,
 } from "../git";
 import { makeFilesystemTools, makeBuildCheckTools, makeGatedSubmitTool, fetchUrlTool, lookupDocs } from "../tools";
+import { makeForemanMemoryTools } from "../director/memsearch";
 import { buildForemanSystemPrompt, buildForemanUserPrompt } from "./prompts";
 import { buildSandboxProfile } from "../util/sandbox";
 
@@ -151,6 +152,7 @@ async function runInferenceTask(
       task.title,
       modelIdToUse,
       async (session) => runInferenceTaskWithSession(ctx, task, project, session),
+      { workRef: { kind: "foreman_task", id: task.id, projectId: task.project_id ?? undefined } },
     );
     result = sessionResult ?? "deferred";
   } catch (err) {
@@ -242,7 +244,12 @@ async function runInferenceTaskWithSession(
       lintCommand: project.lint_command,
       guard: submitGuard,
     }, sandbox);
-    const tools = { ...fsTools, ...buildTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
+    // Foreman memory tools — narrow write surface so the agent can record
+    // discovered conventions or learnings instead of letting them die with
+    // the task. Closes the one-way (Director writes / Foreman reads) memory
+    // gap from the audit.
+    const memoryTools = makeForemanMemoryTools(project.workdir);
+    const tools = { ...fsTools, ...buildTools, ...memoryTools, submitResult, fetchUrl: fetchUrlTool, lookupDocs };
 
     // Build prompts — include directive/milestone context so the implementer
     // understands the broader project architecture and conventions.

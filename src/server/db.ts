@@ -156,6 +156,8 @@ export class Db {
         started_at TEXT, completed_at TEXT, duration_ms INTEGER,
         prompt_tokens INTEGER, completion_tokens INTEGER,
         executor_notes TEXT,
+        knowledge_extraction_attempts INTEGER NOT NULL DEFAULT 0,
+        acknowledged_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         yaml_synced_at TEXT
       );
@@ -206,6 +208,7 @@ export class Db {
         verification TEXT,
         status TEXT NOT NULL DEFAULT 'pending',
         started_at TEXT, completed_at TEXT,
+        verification_attempts INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS director_reviews (
@@ -281,9 +284,12 @@ export class Db {
       "ALTER TABLE foreman_config ADD COLUMN sandbox_enabled INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE foreman_config ADD COLUMN director_initiated_verification INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extracted INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE foreman_tasks ADD COLUMN knowledge_extraction_attempts INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE foreman_tasks ADD COLUMN acknowledged_at TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN comfyui_config TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN verification_result TEXT",
       "ALTER TABLE foreman_tasks ADD COLUMN executor_notes TEXT",
+      "ALTER TABLE director_milestones ADD COLUMN verification_attempts INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE machines ADD COLUMN release_url TEXT",
       // Legacy machine_models shape (text model_id, no provider_id, no enabled).
       // The logical-models refactor migration below upgrades this to its final shape.

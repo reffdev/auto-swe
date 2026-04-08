@@ -233,11 +233,15 @@ export interface DashboardActivityLease {
   acquiredAt: number;
   elapsedMs: number;
   expiresInMs: number;
+  model: { id: string; name: string; slug: string; providerModelId: string } | null;
+  workRef: { kind: "foreman_task" | "issue" | "directive" | "milestone" | "analysis_run" | "conversation"; id: string; projectId?: string } | null;
 }
 
 export interface DashboardActivityEntry {
   machine: { id: string; name: string; type: string; baseUrl: string; enabled: boolean };
   idle: boolean;
+  directorReserved: boolean;
+  directorReservedMode: "planning" | "busy" | null;
   tokensInPerSec: number | null;
   tokensOutPerSec: number | null;
   leases: DashboardActivityLease[];

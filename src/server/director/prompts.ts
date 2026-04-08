@@ -168,6 +168,8 @@ export function buildPlanningPrompt(opts: {
   verificationMode?: boolean;
   /** Required when verificationMode is true. */
   milestoneId?: string;
+  /** Which corrective attempt this is. Used to nudge the planner to escalate or change approach on later attempts. */
+  correctionAttempt?: number;
 }): { system: string; user: string } {
   const systemParts = [
     "You are a project director generating tasks for autonomous execution.",
@@ -328,17 +330,36 @@ export function buildPlanningPrompt(opts: {
       ];
 
   if (opts.verificationIssues?.length) {
+    const attempt = opts.correctionAttempt ?? 1;
+    const isLateAttempt = attempt >= 2;
     userParts.push(
       "",
-      "## CORRECTIVE PLANNING — Milestone Verification Failed",
+      `## CORRECTIVE PLANNING — Verification Failed (attempt ${attempt} of 3)`,
       "",
       "The milestone was verified and the following issues were found. You MUST generate tasks to fix these specific errors.",
       "Do NOT regenerate tasks that already exist — create NEW fix tasks with DIFFERENT titles.",
-      "Use the read-only tools to investigate the root cause before generating tasks.",
+      "Use the read-only tools (readFile, gitDiff, inspectTaskOutcome, runProjectCheck) to investigate the root cause before generating tasks.",
       "",
       "**Verification errors:**",
       ...opts.verificationIssues.map(issue => `- ${issue}`),
     );
+    if (isLateAttempt) {
+      userParts.push(
+        "",
+        `**This is attempt ${attempt}. Previous corrective attempts have failed.**`,
+        "Do NOT just retry the same fix with minor variations — that's the loop you are in.",
+        "Required:",
+        "1. Use `inspectTaskDiff` on the failed corrective tasks from previous attempts to see EXACTLY what was tried and why it didn't work.",
+        "2. Diagnose the ROOT CAUSE — is the verification criterion wrong? Is there a missing dependency? Is the test environment broken?",
+        "3. Either generate a fundamentally different approach, OR if you genuinely cannot fix this, output a `next_tasks` block containing a single task of type `claude` with description `[needs_human_review] <explanation of why this milestone is stuck>` so a human can intervene.",
+      );
+      if (attempt >= 3) {
+        userParts.push(
+          "",
+          "**Attempt 3 is the final automated attempt.** If this fails, the milestone will be escalated to human review automatically. Make this attempt count — change strategy, not tactics.",
+        );
+      }
+    }
   }
 
   if (opts.idleMachineTypes?.length) {

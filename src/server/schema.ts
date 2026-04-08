@@ -209,6 +209,11 @@ export const directorMilestones = sqliteTable("director_milestones", {
   status: text("status").notNull().default("pending"),             // pending|active|verifying|completed|failed
   started_at: text("started_at"),
   completed_at: text("completed_at"),
+  // Number of consecutive corrective-planning attempts triggered by failed
+  // verification. Reset to 0 on success, on milestone activation, and when the
+  // user manually resolves an escalation. Used to budget how many auto-fix
+  // attempts the Director can make before escalating to a human review gate.
+  verification_attempts: integer("verification_attempts").notNull().default(0),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });
 
@@ -281,8 +286,13 @@ export const foremanTasks = sqliteTable("foreman_tasks", {
   milestone_id: text("milestone_id"),                               // links to director_milestones
   verification_result: text("verification_result"),                         // JSON { verdict, confidence, issues, reasoning }
   executor_notes: text("executor_notes"),                                   // executor-side observations surfaced to the verifier (gate failures, escalation context, deferrals)
-  knowledge_extracted: integer("knowledge_extracted").notNull().default(0), // 0=pending, 1=done
+  knowledge_extracted: integer("knowledge_extracted").notNull().default(0), // 0=pending, 1=done, -1=permanently failed
+  knowledge_extraction_attempts: integer("knowledge_extraction_attempts").notNull().default(0), // tracks transient failures so we don't lose knowledge silently
   comfyui_config: text("comfyui_config"),                                  // JSON ComfyUITaskConfig
+  // Set by the Foreman scheduler the first time it picks up the task for
+  // dispatch. The Director's planner refuses to overwrite acknowledged tasks,
+  // so the Director can't accidentally re-plan a task that's already in flight.
+  acknowledged_at: text("acknowledged_at"),
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
   yaml_synced_at: text("yaml_synced_at"),
 });

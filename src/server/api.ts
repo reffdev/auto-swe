@@ -102,10 +102,14 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
   router.get("/dashboard/activity", async (_req, res) => {
     const { getActiveLeases } = await import("./machine-manager");
     const { getAllMachineSpeeds } = await import("./stats");
+    const { getDirectorReservedMachine, isDirectorPlanning, isDirectorBusy } = await import("./director/director-state");
     const speeds = getAllMachineSpeeds();
     const allMachines = db.getMachines();
     const machineById = new Map(allMachines.map(m => [m.id, m]));
     const activeLeases = getActiveLeases();
+    const directorReservedMachineId = getDirectorReservedMachine();
+    const directorPlanning = isDirectorPlanning();
+    const directorBusy = isDirectorBusy();
 
     // Group leases by machine
     const leasesByMachine = new Map<string, typeof activeLeases>();
@@ -118,6 +122,14 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     interface ActivityEntry {
       machine: { id: string; name: string; type: string; baseUrl: string; enabled: boolean };
       idle: boolean;
+      /**
+       * The machine has no live lease but the Director is reserving it. This
+       * happens between Director ticks (the reservation is held longer than
+       * any individual lease) or while a lease is briefly absent (e.g. just
+       * after one stage finished and before the next one acquires).
+       */
+      directorReserved: boolean;
+      directorReservedMode: "planning" | "busy" | null;
       tokensInPerSec: number | null;
       tokensOutPerSec: number | null;
       leases: Array<{
@@ -127,6 +139,8 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
         acquiredAt: number;
         elapsedMs: number;
         expiresInMs: number;
+        model: { id: string; name: string; slug: string; providerModelId: string } | null;
+        workRef: { kind: string; id: string; projectId?: string } | null;
       }>;
     }
 
@@ -137,10 +151,16 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
       if (!machine.enabled) continue;
       const leases = leasesByMachine.get(machine.id) ?? [];
       const speed = speeds[machine.id];
+      const isDirectorReserved = directorReservedMachineId === machine.id;
 
-      // A machine is "active" if it has leases OR if it's currently emitting tokens
+      // A machine is "active" if it has leases, is reserved by the Director,
+      // or is currently emitting tokens. The Director reservation is included
+      // because it persists across the gap between individual lease
+      // acquisitions during a Director tick — without this, the panel
+      // misleadingly shows "no active lease, finishing up" while the Director
+      // is in fact mid-tick.
       const hasRecentTraffic = !!(speed && (speed.completion_tokens_per_sec || speed.prompt_tokens_per_sec));
-      if (leases.length === 0 && !hasRecentTraffic) continue;
+      if (leases.length === 0 && !hasRecentTraffic && !isDirectorReserved) continue;
 
       activity.push({
         machine: {
@@ -151,6 +171,10 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
           enabled: !!machine.enabled,
         },
         idle: leases.length === 0,
+        directorReserved: isDirectorReserved,
+        directorReservedMode: isDirectorReserved
+          ? (directorPlanning ? "planning" : (directorBusy ? "busy" : null))
+          : null,
         tokensInPerSec: speed?.prompt_tokens_per_sec ?? null,
         tokensOutPerSec: speed?.completion_tokens_per_sec ?? null,
         leases: leases.map(l => ({
@@ -160,6 +184,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
           acquiredAt: l.acquiredAt,
           elapsedMs: now - l.acquiredAt,
           expiresInMs: l.expiresAt - now,
+          model: l.modelInfo ? {
+            id: l.modelInfo.modelId,
+            name: l.modelInfo.modelName,
+            slug: l.modelInfo.modelSlug,
+            providerModelId: l.modelInfo.providerModelId,
+          } : null,
+          workRef: l.workRef ? {
+            kind: l.workRef.kind,
+            id: l.workRef.id,
+            projectId: l.workRef.projectId,
+          } : null,
         })),
       });
     }

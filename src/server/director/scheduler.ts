@@ -17,7 +17,7 @@ import { removeWorktree, mergePullRequest, createPullRequest, rebaseAndPush } fr
 import { verifyTask, verifyMilestone } from "./verifier";
 import { planNextTasks } from "./planner";
 import { saveProgress, addKeyDecision } from "./memory";
-import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse } from "./review-gates";
+import { createReviewGate, shouldEscalate, shouldPauseDirective, processReviewResponse, autonomyBudgets } from "./review-gates";
 import { nudgeForeman } from "../foreman/scheduler";
 import { processArtFeedback, processConfigFeedback } from "../foreman/art-feedback";
 import { isComfyUITaskType, MACHINE_TYPE_TASK_TYPES, extractTag } from "../foreman/task-types";
@@ -95,6 +95,15 @@ const zeroTaskCounts = new Map<string, number>();
  */
 const verificationBackstopCounts = new Map<string, number>();
 const VERIFICATION_BACKSTOP_THRESHOLD = 3;
+
+/**
+ * Default fallback for the corrective-attempts budget when the directive's
+ * autonomy level isn't available. The actual budget per directive is read
+ * from `autonomyBudgets(directive.autonomy_level).maxCorrectiveAttempts`,
+ * which is what call sites use. This constant exists only as a defensive
+ * default and as a doc anchor.
+ */
+const MAX_CORRECTIVE_ATTEMPTS = 3;
 
 /**
  * Clear the backstop counter for a milestone. Called by the `advanceMilestone`
@@ -288,14 +297,24 @@ export async function ensureStyleExploration(db: Db, project: Project): Promise<
   });
 }
 
+/** Per-project debounce for continuous exploration. Without this the loop can
+ * re-dispatch on every tick when the previous run sits in awaiting_review,
+ * generating duplicate art the user never asked for. */
+const lastContinuousExplorationDispatch = new Map<string, number>();
+const CONTINUOUS_EXPLORATION_DEBOUNCE_MS = 5 * 60 * 1000; // 5 min between dispatches per project
+
 /**
  * Continuous exploration: if enabled and no style task is queued/running,
- * archive the current batch and re-queue with fresh prompts.
+ * archive the current batch and re-queue with fresh prompts. Debounced per
+ * project so awaiting_review tasks don't trigger a re-dispatch on every tick.
  */
 async function ensureContinuousExploration(db: Db, directive: DirectorDirective, project: Project): Promise<void> {
   const config = db.getForemanConfig();
   if (!config?.continuous_exploration) return;
   if (await isStyleLocked(project.workdir)) return;
+
+  const lastDispatched = lastContinuousExplorationDispatch.get(project.id) ?? 0;
+  if (Date.now() - lastDispatched < CONTINUOUS_EXPLORATION_DEBOUNCE_MS) return;
 
   const styleTasks = db.getForemanTasks(project.id).filter(
     (t: ForemanTask) => t.type === "style_exploration" && !getConfig(t)?.enhance
@@ -319,6 +338,7 @@ async function ensureContinuousExploration(db: Db, directive: DirectorDirective,
   console.log(`[director] continuous exploration — archived run ${attempt}, generating fresh prompts`);
   try {
     await queueContinuousExploration(db, idle);
+    lastContinuousExplorationDispatch.set(project.id, Date.now());
   } catch (err) {
     console.error("[director] continuous exploration failed:", err instanceof Error ? err.message : err);
   }
@@ -531,12 +551,44 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
     console.log(`[director:knowledge] no machine available, will retry next tick (${pending.length} task(s) pending)`);
     return;
   }
-  // Mark as extracted regardless of ok/error to prevent infinite retry on permanent failures
-  db.updateForemanTask(task.id, { knowledge_extracted: 1 });
   if (status === "ok") {
+    db.updateForemanTask(task.id, { knowledge_extracted: 1 });
     console.log(`[director:knowledge] completed "${task.title}"`);
+    return;
   }
+
+  // Failure path. Distinguish transient (retry) from permanent (give up but
+  // mark as failed, not "extracted"). After MAX_KNOWLEDGE_EXTRACTION_ATTEMPTS,
+  // mark knowledge_extracted = -1 (permanently failed) so observability can
+  // surface it instead of silently losing the knowledge.
+  const refreshed = db.getForemanTask(task.id);
+  const previousAttempts = refreshed?.knowledge_extraction_attempts ?? 0;
+  const nextAttempts = previousAttempts + 1;
+  if (nextAttempts >= MAX_KNOWLEDGE_EXTRACTION_ATTEMPTS) {
+    db.updateForemanTask(task.id, {
+      knowledge_extracted: -1,
+      knowledge_extraction_attempts: nextAttempts,
+    });
+    console.warn(`[director:knowledge] PERMANENT FAILURE for "${task.title}" after ${nextAttempts} attempts — knowledge will not be captured. Investigate via llm_requests for issue_id starting with director-knowledge:`);
+    return;
+  }
+  // Transient failure — leave knowledge_extracted=0 so the next tick retries.
+  // Bump the attempt counter so we don't loop forever.
+  db.updateForemanTask(task.id, {
+    knowledge_extraction_attempts: nextAttempts,
+  });
+  console.warn(`[director:knowledge] transient failure for "${task.title}" (attempt ${nextAttempts}/${MAX_KNOWLEDGE_EXTRACTION_ATTEMPTS}) — will retry`);
 }
+
+/**
+ * Maximum knowledge extraction attempts before declaring permanent failure.
+ * The previous behavior was to mark `knowledge_extracted=1` on the FIRST
+ * failure, which silently destroyed the data — a network blip during the
+ * LLM call lost the knowledge forever. With a real retry counter, transient
+ * failures recover automatically and only persistent failures get the
+ * "permanently failed" marker (knowledge_extracted=-1).
+ */
+const MAX_KNOWLEDGE_EXTRACTION_ATTEMPTS = 3;
 
 /** Complete a verified task: mark completed, clean up worktree. */
 async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project, confidence: number): Promise<void> {
@@ -642,20 +694,25 @@ async function verifyAwaitingTasks(db: Db, directive: DirectorDirective, project
       db.updateForemanTask(task.id, { status: "failed", error_message: `Verifier: ${result.issues.join("; ")}` });
       console.log(`[director] task "${task.title}" failed verification: ${result.issues.join("; ")}`);
       await logEpisodic(project.workdir, `Task failed verification: "${task.title}"`, result.issues.join("; "));
+    } else if (result.verdict === "infrastructure_failure") {
+      // The verifier ITSELF failed (timeout, step limit, no machine, crash).
+      // The work has not been judged. Leave the task in `awaiting_review` so
+      // verifyAwaitingTasks picks it up again on the next tick — DON'T mark
+      // it failed and DON'T escalate to a human review gate. Persistent
+      // infrastructure failures will eventually surface via the verification
+      // result column for observability.
+      console.warn(`[director] task "${task.title}" verification had INFRASTRUCTURE failure (${result.reasoning}) — will retry next tick`);
+      // No state change beyond persisting the result above; the task stays
+      // in `validating` / `awaiting_review` and gets re-verified.
     } else {
-      // confidence === 0 is a hard signal that the verifier did NOT actually
-      // evaluate the work (wall-clock timeout, step limit, parser failure with
-      // no usable output). Never auto-merge in that case, regardless of
-      // autonomy level — there's nothing to be confident about.
-      if (result.confidence === 0 || shouldEscalate(directive.autonomy_level, "low_confidence")) {
-        const reason = result.confidence === 0
-          ? `Please review task "${task.title}". The verifier did not complete its evaluation — see issues for details.`
-          : `Please review task "${task.title}". The verifier was uncertain (confidence: ${result.confidence}).`;
-        await escalateForHumanReview(db, directive, task, project, reason, result);
-      } else {
-        await createAndMergePR(db, task, project, `Auto-accepted (low confidence: ${result.confidence}, high autonomy)`);
-        await completeVerifiedTask(db, task, project, result.confidence);
-      }
+      // verdict === "escalate": the verifier reached a verdict but is
+      // genuinely uncertain about the work. Always escalate to a human
+      // review gate — never auto-merge an escalated task, regardless of
+      // autonomy level. The planner is NOT asked to "fix" this because the
+      // verifier couldn't characterize what to fix.
+      await escalateForHumanReview(db, directive, task, project,
+        `Task "${task.title}" needs human judgment — the verifier returned ESCALATE (confidence: ${result.confidence}). Reason: ${result.reasoning}`,
+        result);
     }
   } catch (err) {
     console.error(`[director] verification error for task ${task.id}:`, err);
@@ -775,7 +832,7 @@ async function completeMilestone(
   console.log(`[director] verifying milestone "${milestone.title}" (${taskCount} tasks) ...`);
   const msVerifyStart = Date.now();
 
-  let verification: { passed: boolean; issues: string[] };
+  let verification: import("./verifier").MilestoneVerificationResult;
   try {
     verification = await verifyMilestone(db, milestone, directive.id, project);
 
@@ -797,7 +854,8 @@ async function completeMilestone(
   if (verification.passed) {
     zeroTaskCounts.delete(milestone.id);
     verificationBackstopCounts.delete(milestone.id);
-    db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString() });
+    // Reset the persistent corrective attempt counter — milestone is done.
+    db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString(), verification_attempts: 0 });
     console.log(`[director] milestone "${milestone.title}" completed`);
     await logEpisodic(project.workdir, `Milestone completed: "${milestone.title}"`, `Tasks: ${taskCount}`);
 
@@ -816,7 +874,7 @@ async function completeMilestone(
     const milestones = db.getDirectorMilestones(directive.id);
     const next = milestones.find(m => m.status === "pending");
     if (next) {
-      db.updateDirectorMilestone(next.id, { status: "active", started_at: new Date().toISOString() });
+      db.updateDirectorMilestone(next.id, { status: "active", started_at: new Date().toISOString(), verification_attempts: 0 });
       if (!shouldPauseDirective(db, directive)) {
         await planTasks(db, directive, project, next, "next milestone");
       }
@@ -826,14 +884,60 @@ async function completeMilestone(
       await logEpisodic(project.workdir, `Directive completed: "${directive.directive}"`);
     }
   } else {
-    db.updateDirectorMilestone(milestone.id, { status: "active" });
-    // Reset the backstop counter on a verification FAILURE — without this,
-    // the next time tasks complete the counter starts at the previous value
-    // and the backstop fires too early, robbing the Director of fresh attempts.
+    // Distinguish "verifier infrastructure failed" from "the work is wrong".
+    // Infrastructure failures don't burn a corrective attempt — they get
+    // retried on the next tick.
+    if (verification.infrastructureFailure) {
+      console.warn(`[director] milestone "${milestone.title}" verification had infrastructure failure (${verification.issues.join("; ")}) — will retry, no attempt counter bump`);
+      db.updateDirectorMilestone(milestone.id, { status: "active" });
+      verificationBackstopCounts.delete(milestone.id);
+      return;
+    }
+
+    // Real verification failure. Bump the persistent attempt counter so the
+    // Director can budget how many auto-fix attempts to make. This survives
+    // restart (unlike the in-memory backstop counter, which solves a
+    // different problem — Director-tool unresponsiveness).
+    const refreshed = db.getDirectorMilestone(milestone.id);
+    const previousAttempts = refreshed?.verification_attempts ?? 0;
+    const nextAttempts = previousAttempts + 1;
+    const budgets = autonomyBudgets(directive.autonomy_level);
+    const maxAttempts = budgets.maxCorrectiveAttempts;
+    db.updateDirectorMilestone(milestone.id, {
+      status: "active",
+      verification_attempts: nextAttempts,
+    });
+    // Reset the in-memory tick backstop on failure (different concept).
     verificationBackstopCounts.delete(milestone.id);
-    console.log(`[director] milestone "${milestone.title}" verification failed: ${verification.issues.join("; ")}`);
+    console.log(`[director] milestone "${milestone.title}" verification failed (attempt ${nextAttempts}/${maxAttempts}): ${verification.issues.join("; ")}`);
     await logEpisodic(project.workdir, `Milestone verification failed: "${milestone.title}"`, verification.issues.join("; "));
-    await planTasks(db, directive, project, milestone, "corrective", verification.issues);
+
+    // Hard escalation: too many auto-fix attempts. Create a review gate
+    // instead of looping forever, and leave the milestone in a clearly-stuck
+    // state that the gate response can resolve.
+    if (nextAttempts >= maxAttempts) {
+      console.warn(`[director] milestone "${milestone.title}" exhausted ${maxAttempts} corrective attempts — escalating to human review`);
+      const existing = db.getDirectorReviews(directive.id).filter(r =>
+        r.milestone_id === milestone.id && r.status === "pending" && r.review_type === "milestone_gate"
+      );
+      if (existing.length === 0) {
+        createReviewGate(db, {
+          directive_id: directive.id,
+          milestone_id: milestone.id,
+          review_type: "milestone_gate",
+          question: `Milestone "${milestone.title}" failed verification ${nextAttempts} times in a row. The Director has exhausted its auto-fix budget. Please review the failures, manually correct the work, or reset the attempt counter to retry.`,
+          context: {
+            milestone: milestone.title,
+            attempts: nextAttempts,
+            latest_issues: verification.issues,
+          },
+        });
+      }
+      // Don't re-plan corrective tasks — wait for human resolution.
+      return;
+    }
+
+    await planTasks(db, directive, project, milestone, "corrective", verification.issues, nextAttempts);
   }
 }
 
@@ -842,9 +946,10 @@ async function planTasks(
   milestone: import("../db").DirectorMilestone,
   reason: string,
   verificationIssues?: string[],
+  correctionAttempt?: number,
 ): Promise<void> {
   try {
-    await planNextTasks(db, directive, project, milestone, undefined, verificationIssues);
+    await planNextTasks(db, directive, project, milestone, undefined, verificationIssues, undefined, correctionAttempt);
   } catch (err) {
     console.error(`[director] ${reason} planning failed:`, err instanceof Error ? err.message : err);
   }

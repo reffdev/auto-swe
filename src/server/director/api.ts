@@ -152,7 +152,10 @@ export function createDirectorRouter(db: Db): Router {
             projectName: project.name,
             messages: allMessages.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
           }),
-          { preferMachineId: getDirectorPreferredMachineId(db) },
+          {
+            preferMachineId: getDirectorPreferredMachineId(db),
+            workRef: { kind: "directive", id: directive.id, projectId: directive.project_id },
+          },
         ).catch(err => recordConversationError(db, conversation.id, "initial-response", err));
       }
     }

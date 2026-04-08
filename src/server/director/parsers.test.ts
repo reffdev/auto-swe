@@ -34,6 +34,50 @@ description: |
     expect(tasks[0].description).toContain("CurrencyManager");
   });
 
+  it("preserves description body containing markdown headers and code-with-colons", () => {
+    // Regression: the old terminator regex `\n\w+:` would match any line
+    // beginning with a word and colon, including markdown headers and inline
+    // code references inside the description body. The fix uses an explicit
+    // list of top-level field names instead. This test pins that behavior.
+    const input = `
+\`\`\`next_tasks
+task: 1
+title: Fix CurrencyManager bugs
+type: code
+priority: 1
+target_files:
+  - engine/autoloads/currency_manager.gd
+depends_on: []
+acceptance_criteria:
+  - "All tests pass"
+needs_human_review: false
+description: |
+  Fix 3 bugs in \`engine/autoloads/currency_manager.gd\` that cause 13 test failures:
+
+  ## Bug 1: Wrong Big method name in \`can_afford()\`
+  Line 99 uses \`_currencies[currency_id].isGreaterThanOrEqual(amount)\` but Big.gd's method is \`isGreaterThanOrEqualTo()\`. Fix:
+  Replace the call site to use the correct method name.
+
+  ## Bug 2: Off-by-one in earn loop
+  Line 142 should iterate \`for i in range(count):\` not \`for i in range(count + 1):\`.
+
+  ## Bug 3: Missing emit_signal
+  Line 178 mutates _currencies but never calls \`emit_signal("currency_changed")\`.
+\`\`\`
+    `;
+    const tasks = parseNextTasks(input);
+    expect(tasks).toHaveLength(1);
+    // Description must include all three bug headers AND the trailing
+    // content under each — not be cut off at the first markdown header or
+    // colon-bearing code reference.
+    expect(tasks[0].description).toContain("## Bug 1");
+    expect(tasks[0].description).toContain("isGreaterThanOrEqualTo()");
+    expect(tasks[0].description).toContain("## Bug 2");
+    expect(tasks[0].description).toContain("Off-by-one");
+    expect(tasks[0].description).toContain("## Bug 3");
+    expect(tasks[0].description).toContain("emit_signal");
+  });
+
   it("parses multiple tasks", () => {
     const input = `
 \`\`\`next_tasks

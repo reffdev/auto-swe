@@ -36,7 +36,7 @@
 
 import type { Db, Machine, MachineModel } from "./db";
 import type { LeaseConsumer, MachineLease } from "./machine-manager";
-import { acquireLease, releaseLease } from "./machine-manager";
+import { acquireLease, releaseLease, setLeaseModel, setLeaseWorkRef } from "./machine-manager";
 import type { Model } from "./models";
 import {
   resolveInferenceCandidates,
@@ -88,6 +88,12 @@ export interface WithLlmSessionOpts {
   preferMachineId?: string | null;
   /** Override the default lease timeout for this consumer. */
   timeoutMs?: number;
+  /**
+   * What this session is working on. Used by the dashboard activity panel
+   * to render the lease label as a clickable link to the work item. Optional —
+   * leases without a workRef show as plain text.
+   */
+  workRef?: NonNullable<MachineLease["workRef"]>;
 }
 
 /**
@@ -132,6 +138,19 @@ export async function withLlmSession<T>(
     });
     if (!acquired) continue; // this candidate is busy/blocked, try the next
 
+    // Annotate the lease with the chosen logical model so the dashboard
+    // activity panel can show "machine X is running model Y" without having
+    // to look up the latest llm_requests row.
+    setLeaseModel(acquired.lease.id, {
+      modelId: model.id,
+      modelName: model.name,
+      modelSlug: model.slug,
+      providerModelId: candidate.providerModelId,
+    });
+    if (opts?.workRef) {
+      setLeaseWorkRef(acquired.lease.id, opts.workRef);
+    }
+
     // We have a lease. Build the session and run the callback inside try/finally
     // so the lease is always released.
     const execution: LlmExecution = {
@@ -165,6 +184,8 @@ export async function withLlmSession<T>(
 export interface WithLightLlmSessionOpts {
   /** Override the default lease timeout for this consumer. */
   timeoutMs?: number;
+  /** Same as `WithLlmSessionOpts.workRef` — see there. */
+  workRef?: NonNullable<MachineLease["workRef"]>;
 }
 
 /**
@@ -198,6 +219,19 @@ export async function withLightLlmSession<T>(
     timeoutMs: opts?.timeoutMs,
   });
   if (!acquired) return null;
+
+  // Annotate the lease with the resolved NPU model so the dashboard activity
+  // panel can show "machine X is running model Y" the same way it does for
+  // logical-model dispatch.
+  setLeaseModel(acquired.lease.id, {
+    modelId: resolved.model.id,
+    modelName: resolved.model.name,
+    modelSlug: resolved.model.slug,
+    providerModelId: resolved.providerModelId,
+  });
+  if (opts?.workRef) {
+    setLeaseWorkRef(acquired.lease.id, opts.workRef);
+  }
 
   const execution: LlmExecution = {
     machine: acquired.machine,
@@ -237,7 +271,10 @@ export async function withLightOrFallbackLlmSession<T>(
   opts?: WithLlmSessionOpts,
 ): Promise<T | null> {
   // Try NPU first
-  const npuResult = await withLightLlmSession(db, consumer, label, fn, { timeoutMs: opts?.timeoutMs });
+  const npuResult = await withLightLlmSession(db, consumer, label, fn, {
+    timeoutMs: opts?.timeoutMs,
+    workRef: opts?.workRef,
+  });
   if (npuResult !== null) return npuResult;
 
   // NPU returned null — could mean no NPU exists at all, or it was at capacity.

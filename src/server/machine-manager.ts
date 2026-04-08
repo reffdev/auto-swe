@@ -271,6 +271,64 @@ export interface MachineLease {
   expiresAt: number;
   /** Called when the lease expires — use to abort hung tasks. */
   onExpiry?: () => void;
+  /**
+   * Logical model the lease is running, set by `withLlmSession` after
+   * acquireLease returns. Lets observability surfaces (dashboard activity
+   * panel, sidebar) show "machine X is running model Y on consumer Z" without
+   * having to chase llm_requests rows. Undefined for leases that have no
+   * logical model — currently just ComfyUI dispatch.
+   */
+  modelInfo?: {
+    modelId: string;
+    modelName: string;
+    modelSlug: string;
+    providerModelId: string;
+  };
+  /**
+   * What the lease holder is working on. Set by callers right after they
+   * acquire a lease so the dashboard activity panel can render clickable
+   * links instead of just freeform labels. Optional — leases without a
+   * workRef just show the label as plain text.
+   *
+   * The frontend resolves `kind` + `id` (+ optional `projectId`) to a route
+   * client-side, so adding new kinds doesn't require backend changes.
+   */
+  workRef?: {
+    kind: "foreman_task" | "issue" | "directive" | "milestone" | "analysis_run" | "conversation";
+    id: string;
+    projectId?: string;
+  };
+}
+
+/**
+ * Annotate an existing lease with the logical model the consumer chose to
+ * run on it. Called by `withLlmSession` after `acquireLease` returns and the
+ * candidate model has been picked. The lease registry uses this to feed the
+ * dashboard activity panel; it never affects scheduling.
+ */
+export function setLeaseModel(leaseId: string, modelInfo: NonNullable<MachineLease["modelInfo"]>): void {
+  for (const leases of activeLeases.values()) {
+    const lease = leases.find(l => l.id === leaseId);
+    if (lease) {
+      lease.modelInfo = modelInfo;
+      return;
+    }
+  }
+}
+
+/**
+ * Annotate an existing lease with what the holder is working on. Called by
+ * feature code right after acquireLease (or right after withLlmSession yields
+ * the session). Lets the dashboard turn freeform labels into clickable links.
+ */
+export function setLeaseWorkRef(leaseId: string, workRef: NonNullable<MachineLease["workRef"]>): void {
+  for (const leases of activeLeases.values()) {
+    const lease = leases.find(l => l.id === leaseId);
+    if (lease) {
+      lease.workRef = workRef;
+      return;
+    }
+  }
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────

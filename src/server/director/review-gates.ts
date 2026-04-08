@@ -74,6 +74,35 @@ export function shouldEscalate(
 }
 
 /**
+ * Risk-tolerance budgets derived from autonomy level. The audit found that
+ * `autonomy_level` was only consulted in `shouldEscalate()` for review-gate
+ * decisions, even though "conservative vs aggressive" should plausibly tune
+ * the broader risk-tolerance knobs (retries, verification thresholds,
+ * corrective attempts). This helper centralizes the mapping so any feature
+ * code that wants risk-aware behavior reads from one place.
+ */
+export interface AutonomyBudgets {
+  /** Max retries on a failed Foreman task before giving up. */
+  maxTaskRetries: number;
+  /** Max corrective planning attempts on a failed milestone before escalating. */
+  maxCorrectiveAttempts: number;
+  /** Verifier confidence required for an auto-merge "pass" verdict. */
+  verifierConfidenceThreshold: number;
+}
+
+export function autonomyBudgets(autonomyLevel: string): AutonomyBudgets {
+  switch (autonomyLevel) {
+    case "conservative":
+      return { maxTaskRetries: 2, maxCorrectiveAttempts: 2, verifierConfidenceThreshold: 0.85 };
+    case "aggressive":
+      return { maxTaskRetries: 5, maxCorrectiveAttempts: 5, verifierConfidenceThreshold: 0.5 };
+    case "standard":
+    default:
+      return { maxTaskRetries: 3, maxCorrectiveAttempts: 3, verifierConfidenceThreshold: 0.7 };
+  }
+}
+
+/**
  * Check if a directive should be paused due to open review gates.
  * A directive is paused only if ALL remaining work is blocked by reviews.
  */

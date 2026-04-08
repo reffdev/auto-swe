@@ -256,7 +256,17 @@ async function schedulerTick(db: Db): Promise<void> {
     // same tick. The executor will reset to "queued" if its session can't
     // open (no machine available). machine_id is set inside the session
     // callback when we know which machine the executor is actually using.
-    db.updateForemanTask(dispatchedTask.id, { status: "running" });
+    //
+    // Also stamp acknowledged_at on first pickup so the Director's planner
+    // refuses to overwrite this task in a subsequent re-plan. The Director
+    // is allowed to plan freely while a task is in `queued` state, but once
+    // the Foreman has seen and started running it, the Director loses the
+    // right to clobber it. This closes the re-plan race the audit identified.
+    const updates: Record<string, unknown> = { status: "running" };
+    if (!dispatchedTask.acknowledged_at) {
+      updates.acknowledged_at = new Date().toISOString();
+    }
+    db.updateForemanTask(dispatchedTask.id, updates);
     console.log(`[foreman] dispatched "${dispatchedTask.title}" (${dispatchedTask.type})`);
 
     void executeForemanTask({ db }, dispatchedTask, project)

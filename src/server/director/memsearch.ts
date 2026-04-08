@@ -185,18 +185,69 @@ export async function searchMemories(
 ): Promise<SearchResult[]> {
   if (!isMemsearchAvailable()) return [];
 
+  let raw: SearchResult[] = [];
   for (let attempt = 0; attempt <= SEARCH_MAX_RETRIES; attempt++) {
-    const result = await withMemsearchLock(() => doSearch(projectWorkdir, query, topK));
+    const result = await withMemsearchLock(() => doSearch(projectWorkdir, query, topK * 2));
     if (!result) return [];
-    if (!result.locked) return result.results;
+    if (!result.locked) {
+      raw = result.results;
+      break;
+    }
     if (attempt < SEARCH_MAX_RETRIES) {
       const delay = SEARCH_RETRY_BASE_MS * Math.pow(2, attempt);
       console.warn(`[memsearch] DB locked, retrying in ${delay}ms (attempt ${attempt + 1}/${SEARCH_MAX_RETRIES})`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
-  console.warn(`[memsearch] gave up after ${SEARCH_MAX_RETRIES} retries — DB stayed locked`);
-  return [];
+  if (raw.length === 0) return [];
+
+  // Re-rank with a recency bonus. Pure relevance ranking can let stale
+  // conventions outrank newer ones that contradict them — older convention
+  // files describing how the project USED to work get matched on the same
+  // keywords as the recent ones, and the embedding score doesn't care about
+  // age. We over-fetch (topK*2) and then blend score + recency to pick the
+  // final topK.
+  //
+  // Recency bonus: linear decay from 1.0 at "modified now" to 0.0 at "30+
+  // days ago". Combined as: combinedScore = relevance * 0.85 + recency * 0.15.
+  // The 85/15 split keeps relevance dominant (a stale-but-perfect match
+  // still wins over a fresh-but-irrelevant one) while breaking ties in favor
+  // of recent updates.
+  const enriched = await enrichWithMtime(projectWorkdir, raw);
+  const now = Date.now();
+  const RECENCY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+  for (const r of enriched) {
+    const ageMs = r.mtimeMs ? Math.max(0, now - r.mtimeMs) : RECENCY_WINDOW_MS;
+    const recency = Math.max(0, 1 - ageMs / RECENCY_WINDOW_MS);
+    r.combinedScore = r.score * 0.85 + recency * 0.15;
+  }
+  enriched.sort((a, b) => (b.combinedScore ?? 0) - (a.combinedScore ?? 0));
+  return enriched.slice(0, topK);
+}
+
+interface EnrichedResult extends SearchResult {
+  mtimeMs?: number;
+  combinedScore?: number;
+}
+
+async function enrichWithMtime(projectWorkdir: string, results: SearchResult[]): Promise<EnrichedResult[]> {
+  const { stat: fsStat } = await import("fs/promises");
+  const { resolve: resolvePath } = await import("path");
+  const out: EnrichedResult[] = [];
+  for (const r of results) {
+    const enriched: EnrichedResult = { ...r };
+    if (r.source) {
+      try {
+        const stat = await fsStat(resolvePath(projectWorkdir, ".swe", r.source));
+        enriched.mtimeMs = stat.mtimeMs;
+      } catch {
+        // Memsearch returns sources relative to .swe/; if mtime fails the
+        // recency bonus is just 0 and the result still ranks by relevance.
+      }
+    }
+    out.push(enriched);
+  }
+  return out;
 }
 
 async function doSearch(
@@ -565,5 +616,39 @@ export function makeMemoryTools(projectWorkdir: string) {
         return `Deleted ${category}/${fname} (snapshot created)`;
       },
     }),
+  };
+}
+
+/**
+ * Foreman agent memory tools — a curated SUBSET of `makeMemoryTools` that
+ * lets task-executor agents contribute to the project's persistent memory.
+ *
+ * Without this, knowledge flowed one-way: Director writes, Foreman reads.
+ * Foreman agents who discovered project quirks (build-system gotchas,
+ * working API patterns, undocumented module behaviors) had no way to record
+ * the discovery — the next task hit the same quirk and re-learned it from
+ * scratch.
+ *
+ * The exposed tools are:
+ *   - searchMemory (read)
+ *   - readMemoryFile (read a specific file)
+ *   - listMemories (browse what exists)
+ *   - writeSemanticMemory (record findings, decisions, learnings)
+ *   - writeConvention (document a discovered system spec or pattern)
+ *
+ * NOT exposed (Director-only):
+ *   - updateProjectBrief — the always-injected identity is the Director's
+ *     responsibility; Foreman agents can write narrower conventions instead
+ *   - editMemory / deleteMemory — destructive ops stay with the Director
+ *   - writeProcedure — procedures are workflows the Director documents
+ */
+export function makeForemanMemoryTools(projectWorkdir: string) {
+  const all = makeMemoryTools(projectWorkdir);
+  return {
+    searchMemory: all.searchMemory,
+    readMemoryFile: all.readMemoryFile,
+    listMemories: all.listMemories,
+    writeSemanticMemory: all.writeSemanticMemory,
+    writeConvention: all.writeConvention,
   };
 }

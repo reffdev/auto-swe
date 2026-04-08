@@ -37,16 +37,49 @@ export function parseNextTasks(content: string): ParsedTask[] {
   return tasks;
 }
 
+// Top-level YAML field names that can appear AFTER `description: |` in a
+// task block. The description body terminator must look ONLY for one of
+// these at the start of an unindented line — using a generic `\n\w+:` was
+// a bug, because markdown headers (`## Bug 1: ...`) and code references
+// (`Line 99 uses some.method(arg):`) inside a description body trip the
+// regex and silently truncate the description. Keep this list in sync with
+// the planning prompt's task spec.
+const TASK_FIELD_NAMES = [
+  "task",            // next task in the batch
+  "title",
+  "type",
+  "priority",
+  "target_files",
+  "depends_on",
+  "acceptance_criteria",
+  "needs_human_review",
+  "description",
+] as const;
+
+const TASK_FIELD_TERMINATOR = new RegExp(
+  `\\n(?:${TASK_FIELD_NAMES.join("|")}):`,
+);
+
 function parseTaskBlock(block: string): ParsedTask | null {
   const title = extractField(block, "title");
   if (!title) return null;
 
-  const descMatch = block.match(/description:\s*\|\s*\n([\s\S]*?)(?=\n\w+:|$)/);
-  // Strip leading indentation: detect the indent of the first line, then remove that many spaces from all lines
+  // Match `description: |` then capture everything up to the next top-level
+  // field name on an unindented line. Field-name-only terminator (instead of
+  // any `\w+:`) is what stops markdown headers and inline code references
+  // inside the description body from cutting it short.
+  const descStart = block.match(/description:\s*\|\s*\n/);
   let description = "";
-  if (descMatch) {
-    const raw = descMatch[1];
-    const indentMatch = raw.match(/^( +)/);
+  if (descStart && typeof descStart.index === "number") {
+    const bodyStart = descStart.index + descStart[0].length;
+    const remainder = block.slice(bodyStart);
+    const terminatorMatch = remainder.match(TASK_FIELD_TERMINATOR);
+    const raw = terminatorMatch && typeof terminatorMatch.index === "number"
+      ? remainder.slice(0, terminatorMatch.index)
+      : remainder;
+    // Strip leading indentation: detect the indent of the first non-empty line,
+    // then remove that many spaces from all lines.
+    const indentMatch = raw.match(/^( +)/m);
     const indent = indentMatch ? indentMatch[1].length : 0;
     description = indent > 0 ? raw.replace(new RegExp(`^ {1,${indent}}`, "gm"), "").trim() : raw.trim();
   }
