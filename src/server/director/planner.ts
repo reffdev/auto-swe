@@ -150,6 +150,28 @@ export async function planNextTasks(
         const tools = { ...baseTools, ...opinionTools };
         const loopGuard = new ToolLoopGuard(5);
         let loopTripped = false;
+        // Per-invocation per-tool quota. Defends against the failure mode
+        // the loop guard misses: agent makes the same kind of call N times
+        // with VARYING args (so the exact-match loop guard never trips) and
+        // grinds the entire step budget. The classic example is memory-write
+        // spirals: writeSemanticMemory called 15+ times in a row with
+        // different filenames, each generating dozens of seconds of LLM time.
+        // The agent has gone categorically degenerate even if no two calls
+        // are identical, and we should kill the stream the same way.
+        //
+        // The cap is per category, not per individual tool, so the agent
+        // can't sidestep it by alternating writeSemanticMemory <-> editMemory.
+        const TOOL_CATEGORY_QUOTAS: Record<string, number> = {
+          memory_write: 6,    // writeSemanticMemory + writeConvention + writeProcedure + editMemory + updateProjectBrief
+        };
+        const toolCategoryCounts: Record<string, number> = {};
+        function categorizeToolCall(toolName: string | undefined): string | null {
+          if (!toolName) return null;
+          if (toolName === "writeSemanticMemory" || toolName === "writeConvention" || toolName === "writeProcedure" || toolName === "editMemory" || toolName === "updateProjectBrief" || toolName === "deleteMemory") return "memory_write";
+          return null;
+        }
+        let quotaTripped = false;
+        let quotaTrippedCategory: string | null = null;
         // Abort controller wired into streamText so that when the loop guard
         // trips we actually KILL the stream instead of letting it grind for
         // the rest of its 50-step budget. Without this the planner just logs
@@ -215,6 +237,26 @@ export async function planNextTasks(
                 console.error(`[director:planner] tool-call loop detected: ${obs.signature?.slice(0, 200)} repeated ${obs.count} times — aborting Director planner stream`);
                 abortController.abort();
               }
+
+              // Per-category quota check. Bumps a counter for each tool call
+              // and aborts the stream if any category exceeds its budget.
+              // Catches the "varying-args spiral" failure mode where the agent
+              // calls the same tool repeatedly with different filenames.
+              if (!quotaTripped) {
+                for (const tc of toolCalls) {
+                  const category = categorizeToolCall(tc.toolName);
+                  if (!category) continue;
+                  toolCategoryCounts[category] = (toolCategoryCounts[category] ?? 0) + 1;
+                  const quota = TOOL_CATEGORY_QUOTAS[category];
+                  if (quota && toolCategoryCounts[category] > quota) {
+                    quotaTripped = true;
+                    quotaTrippedCategory = category;
+                    console.error(`[director:planner] tool-category quota exceeded: ${category} called ${toolCategoryCounts[category]} times (cap ${quota}) — aborting Director planner stream. Categorically degenerate behavior — the agent is using the tool as a place to dump thinking instead of doing the actual job.`);
+                    abortController.abort();
+                    break;
+                  }
+                }
+              }
             }
           },
         });
@@ -224,19 +266,22 @@ export async function planNextTasks(
             text += chunk;
           }
         } catch (streamErr) {
-          // If we aborted ourselves due to a loop, treat it as a planner
-          // failure (return whatever partial text we got so far) instead of
-          // re-throwing. The Director's next tick will retry with fresh
-          // context.
+          // If we aborted ourselves due to a loop or quota trip, treat it
+          // as a planner failure (return whatever partial text we got so
+          // far) instead of re-throwing. The Director's next tick will retry
+          // with fresh context.
           if (loopTripped) {
             console.warn(`[director:planner] stream aborted by loop guard after ${text.length} chars of output`);
+          } else if (quotaTripped) {
+            console.warn(`[director:planner] stream aborted by tool-category quota (${quotaTrippedCategory}) after ${text.length} chars of output`);
           } else {
             throw streamErr;
           }
         }
         const steps = await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-        console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s${loopTripped ? " (LOOP-ABORTED)" : ""}`);
+        const abortReason = loopTripped ? " (LOOP-ABORTED)" : quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` : "";
+        console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s${abortReason}`);
         return text;
       },
       {

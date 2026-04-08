@@ -414,22 +414,25 @@ export function makeMemoryTools(projectWorkdir: string) {
         const fname = filename.endsWith(".md") ? filename : `${filename}.md`;
         // Soft anti-pattern detection on filename — same shapes as
         // writeConvention (per-task junk, status snapshots, fix recipes,
-        // activity logs). Returns a refusal message instead of writing,
-        // so the agent gets immediate feedback. Conventions reject
-        // outright; semantic memory is one notch more permissive (some
-        // 'fix-' shaped names are legitimate when documenting a known-bug
-        // workaround), so we WARN instead of REFUSE.
+        // activity logs). Returns a warning instead of refusing.
+        // Patterns use \b boundaries (or appropriate context) so e.g.
+        // `upgrade-manager-fix-tasks.md` matches the `-fix-` pattern,
+        // not just the more specific `^task-` shape we used to check.
         const ANTI_PATTERN_FILENAMES = [
-          { re: /^task-/i,           hint: "per-task notes — use the task list, not memory" },
-          { re: /-task\.md$/i,       hint: "per-task notes — use the task list, not memory" },
-          { re: /-task-/i,           hint: "per-task notes — use the task list, not memory" },
-          { re: /-status\.md$/i,     hint: "status snapshot — re-derive from git/tasks instead" },
-          { re: /-status-/i,         hint: "status snapshot — re-derive from git/tasks instead" },
-          { re: /-pending/i,         hint: "in-progress state — task list, not memory" },
-          { re: /-needed\.md$/i,     hint: "TODO state — task list, not memory" },
-          { re: /-bugs?-found/i,     hint: "bug-finding snapshot — once fixed it's stale, save the prevention rule instead" },
-          { re: /-verified\.md$/i,   hint: "verification snapshot — re-verify when needed instead" },
-          { re: /-batch[-.]/i,       hint: "activity log — episodic memory captures this automatically" },
+          { re: /(?:^|-)tasks?(?:-|\.md$)/i,    hint: "task notes — use the task list, not memory" },
+          { re: /(?:^|-)fix(?:es)?(?:-|\.md$)/i, hint: "fix recipe — the fix is in the code, the rationale is in the commit message" },
+          { re: /(?:^|-)bugs?(?:-|\.md$)/i,     hint: "bug snapshot — save the prevention rule, not the bug" },
+          { re: /(?:^|-)status(?:-|\.md$)/i,    hint: "status snapshot — re-derive from git/tasks instead" },
+          { re: /(?:^|-)pending(?:-|\.md$)/i,   hint: "in-progress state — task list, not memory" },
+          { re: /(?:^|-)needed(?:-|\.md$)/i,    hint: "TODO state — task list, not memory" },
+          { re: /(?:^|-)found(?:-|\.md$)/i,     hint: "discovery snapshot — save the durable lesson, not the moment of discovery" },
+          { re: /(?:^|-)verified(?:-|\.md$)/i,  hint: "verification snapshot — re-verify when needed instead" },
+          { re: /(?:^|-)verification(?:-|\.md$)/i, hint: "verification snapshot — re-verify when needed instead" },
+          { re: /(?:^|-)batch(?:-|\.md$)/i,     hint: "activity log — episodic memory captures this automatically" },
+          { re: /(?:^|-)complete(?:d)?(?:-|\.md$)/i, hint: "completion log — what was completed is in git, not memory" },
+          { re: /(?:^|-)next-steps?(?:-|\.md$)/i, hint: "TODO list — task list, not memory" },
+          { re: /(?:^|-)plan(?:ning)?(?:-|\.md$)/i, hint: "planning notes — task list / planner output, not memory" },
+          { re: /(?:^|-)details?(?:-|\.md$)/i,  hint: "task details — task description, not memory" },
         ];
         const warnings: string[] = [];
         for (const { re, hint } of ANTI_PATTERN_FILENAMES) {
@@ -465,17 +468,25 @@ export function makeMemoryTools(projectWorkdir: string) {
         if (fname === PROJECT_BRIEF_FILENAME) {
           return `Use updateProjectBrief to maintain ${PROJECT_BRIEF_FILENAME}, not writeConvention.`;
         }
-        // Soft anti-pattern detection on the filename. Reject obvious junk
-        // shapes at the tool boundary so the agent gets immediate feedback
-        // instead of a latent context-bloat problem.
+        // Hard rejection of anti-pattern filenames in conventions. Same
+        // patterns as writeSemanticMemory's soft list, but conventions
+        // refuse outright because they cost context tokens on every
+        // Director run.
         const ANTI_PATTERN_FILENAMES = [
-          /^task-/i, /-task\.md$/i, /-task-/i,
-          /^fix-/i, /-fix\.md$/i, /-fix-/i,
-          /-status\.md$/i, /-status-/i,
-          /-pending/i, /-needed\.md$/i, /-bugs?-found/i,
-          /-verification\.md$/i, /-verified\.md$/i,
-          /-batch[-.]/i,
-          /-complete\.md$/i, /-completed\.md$/i,
+          /(?:^|-)tasks?(?:-|\.md$)/i,
+          /(?:^|-)fix(?:es)?(?:-|\.md$)/i,
+          /(?:^|-)bugs?(?:-|\.md$)/i,
+          /(?:^|-)status(?:-|\.md$)/i,
+          /(?:^|-)pending(?:-|\.md$)/i,
+          /(?:^|-)needed(?:-|\.md$)/i,
+          /(?:^|-)found(?:-|\.md$)/i,
+          /(?:^|-)verified(?:-|\.md$)/i,
+          /(?:^|-)verification(?:-|\.md$)/i,
+          /(?:^|-)batch(?:-|\.md$)/i,
+          /(?:^|-)complete(?:d)?(?:-|\.md$)/i,
+          /(?:^|-)next-steps?(?:-|\.md$)/i,
+          /(?:^|-)plan(?:ning)?(?:-|\.md$)/i,
+          /(?:^|-)details?(?:-|\.md$)/i,
         ];
         const matchedAntiPattern = ANTI_PATTERN_FILENAMES.find(re => re.test(fname));
         if (matchedAntiPattern) {

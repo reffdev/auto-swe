@@ -234,6 +234,12 @@ const SYSTEM_RO_BINDS: string[] = [
   "/etc/group",
   "/nix",
   "/opt",
+  // /snap exists on Ubuntu hosts where any tool is installed via snap.
+  // Including it lets snap-installed binaries (godot, code, etc.) be reached
+  // from inside the sandbox. /var/lib/snapd is needed for snap-side mount
+  // metadata; /snap alone isn't always enough at runtime.
+  "/snap",
+  "/var/lib/snapd",
 ];
 
 async function pathExists(p: string): Promise<boolean> {
@@ -337,7 +343,11 @@ export async function buildBwrapInvocation(
     "--setenv", "HOME", SANDBOX_HOME,
     "--setenv", "XDG_CACHE_HOME", `${SANDBOX_HOME}/.cache`,
     "--setenv", "USER", "swe",
-    "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    // PATH includes /snap/bin so snap-installed tools (e.g. godot via snap)
+    // resolve correctly inside the sandbox. The bind list above also brings
+    // /snap into the namespace; together they make snap-installed binaries
+    // first-class.
+    "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin",
     "--chdir", profile.worktree,
     "--",
   );

@@ -334,11 +334,17 @@ export async function verifyMilestone(
           // the non-zero exit is almost certainly a transient/spurious
           // failure (e.g. import-cache rebuild) — ignore it instead of
           // looping the planner against an unactionable error.
+          //
+          // Spawn-level errors (e.g. ENOENT — godot binary missing) ARE
+          // real failures even though they have no stdout/stderr. Use the
+          // error message as the issue text so missing tooling surfaces.
           const stderr = (validResult.stderr ?? "").trim();
           const stdout = (validResult.stdout ?? "").trim();
           const combined = [stderr, stdout].filter(Boolean).join("\n").slice(-500);
           if (combined) {
             projectIssues.push(`Godot check failed: ${combined}`);
+          } else if (validResult.error) {
+            projectIssues.push(`Godot check failed: ${validResult.error.message}`);
           } else {
             console.warn(
               `[director:verifier] godot exited ${validResult.status} with empty stdout/stderr — treating as pass`,

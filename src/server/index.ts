@@ -82,6 +82,24 @@ if (Number.isFinite(retentionDays) && retentionDays > 0) {
 // crashes can leave these stranded; recoverFromCrash() resets the DB row but
 // the directory persists. Run per project so cross-project worktrees aren't
 // touched. Uses dynamic import so the startup path doesn't pull git.ts
+// Diagnostic: log the godot binary location and the orchestrator PATH so
+// "verifier can't find godot" failures are obvious from the startup output.
+// Logged once. Cheap.
+void (async () => {
+  try {
+    const { runProcess } = await import("./util/async-process");
+    const which = await runProcess("which", ["godot"], { timeoutMs: 2000 });
+    const godotPath = which.status === 0 ? (which.stdout ?? "").trim() : "(not found)";
+    console.log(`[startup:tooling] godot: ${godotPath}`);
+    console.log(`[startup:tooling] PATH: ${process.env.PATH ?? "(unset)"}`);
+    if (godotPath.startsWith("/snap/")) {
+      console.warn(`[startup:tooling] godot is installed via snap (${godotPath}). The bwrap sandbox does NOT bind /snap by default, so verifier godot calls will fail when sandbox_enabled=1. Either install godot to /usr/bin or /usr/local/bin, OR add /snap to the sandbox bind list.`);
+    }
+  } catch (err) {
+    console.warn("[startup:tooling] godot probe failed:", err instanceof Error ? err.message : err);
+  }
+})();
+
 // before the rest of the app is wired.
 void (async () => {
   try {
