@@ -83,6 +83,46 @@ import { isDirectorBusy, setDirectorReservedMachine, getDirectorReservedMachine,
 const zeroTaskCounts = new Map<string, number>();
 
 /**
+ * Pending delayed retry timers per milestone. When a planning attempt
+ * returns 0 tasks (quota abort, parse failure, etc.) we schedule a
+ * setTimeout-based nudge so the director will try again later. Without
+ * this, a freshly-activated milestone with zero tasks would sit idle
+ * forever — no foreman events arrive (no tasks → no lifecycle), and
+ * the scheduler is otherwise event-driven with no polling timer.
+ */
+const pendingPlanRetries = new Map<string, NodeJS.Timeout>();
+const PLAN_RETRY_BASE_MS = 30_000;       // 30s, 60s, 120s, 240s, 480s (cap)
+const PLAN_RETRY_MAX_MS = 8 * 60 * 1000; // 8 min cap
+const PLAN_RETRY_MAX_ATTEMPTS = 5;
+
+function schedulePlanRetry(db: Db, milestoneId: string): void {
+  const existing = pendingPlanRetries.get(milestoneId);
+  if (existing) clearTimeout(existing);
+  const attempt = zeroTaskCounts.get(milestoneId) ?? 0;
+  if (attempt >= PLAN_RETRY_MAX_ATTEMPTS) {
+    console.warn(`[director] plan retry budget exhausted for milestone ${milestoneId.slice(0, 8)} (${attempt} attempts) — giving up. The director will retry on the next external event (foreman activity, manual nudge).`);
+    return;
+  }
+  const delayMs = Math.min(PLAN_RETRY_BASE_MS * Math.pow(2, attempt), PLAN_RETRY_MAX_MS);
+  console.log(`[director] scheduling plan retry for milestone ${milestoneId.slice(0, 8)} in ${Math.round(delayMs / 1000)}s (attempt ${attempt + 1}/${PLAN_RETRY_MAX_ATTEMPTS})`);
+  const timer = setTimeout(() => {
+    pendingPlanRetries.delete(milestoneId);
+    nudgeDirector(db);
+  }, delayMs);
+  // Don't keep the process alive solely on retry timers.
+  if (typeof timer.unref === "function") timer.unref();
+  pendingPlanRetries.set(milestoneId, timer);
+}
+
+function clearPlanRetry(milestoneId: string): void {
+  const existing = pendingPlanRetries.get(milestoneId);
+  if (existing) {
+    clearTimeout(existing);
+    pendingPlanRetries.delete(milestoneId);
+  }
+}
+
+/**
  * Per-milestone backstop counter for Director-initiated verification.
  *
  * When `director_initiated_verification = 1`, the scheduler does NOT call
@@ -600,7 +640,10 @@ async function completeVerifiedTask(db: Db, task: ForemanTask, project: Project,
   }
   console.log(`[director] completed task "${task.title}" (confidence: ${confidence})`);
   await logEpisodic(project.workdir, `Task completed: "${task.title}"`, `Type: ${task.type}, Confidence: ${confidence}`);
-  if (task.milestone_id) zeroTaskCounts.delete(task.milestone_id);
+  if (task.milestone_id) {
+    zeroTaskCounts.delete(task.milestone_id);
+    clearPlanRetry(task.milestone_id);
+  }
   nudgeForeman(db);
 }
 
@@ -796,6 +839,7 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
     // Without this, the planner logs "initial" mode and burns 10+ minutes of
     // exploration trying to figure out what failed before reaching any decision.
     zeroTaskCounts.delete(activeMilestone.id);
+    clearPlanRetry(activeMilestone.id);
     const failedTasks = tasks.filter(t => t.status === "failed");
     const failureIssues = failedTasks.map(t =>
       `Task "${t.title}" (id ${t.id.slice(0, 8)}) failed: ${(t.error_message ?? "no error message").slice(0, 300)}`,
@@ -863,6 +907,7 @@ async function completeMilestone(
 
   if (verification.passed) {
     zeroTaskCounts.delete(milestone.id);
+    clearPlanRetry(milestone.id);
     verificationBackstopCounts.delete(milestone.id);
     // Reset the persistent corrective attempt counter — milestone is done.
     db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString(), verification_attempts: 0 });
@@ -959,9 +1004,29 @@ async function planTasks(
   correctionAttempt?: number,
 ): Promise<void> {
   try {
-    await planNextTasks(db, directive, project, milestone, undefined, verificationIssues, undefined, correctionAttempt);
+    const created = await planNextTasks(db, directive, project, milestone, undefined, verificationIssues, undefined, correctionAttempt);
+    if (created === 0) {
+      // The planner ran but produced no tasks (quota abort, parse failure,
+      // or the LLM just didn't emit a next_tasks block). Bump the retry
+      // counter and schedule a delayed re-tick. Without this the director
+      // sits idle on a freshly-activated milestone with no work — no
+      // foreman events will arrive to nudge it back.
+      const prev = zeroTaskCounts.get(milestone.id) ?? 0;
+      zeroTaskCounts.set(milestone.id, prev + 1);
+      console.log(`[director] ${reason} planning produced 0 tasks (${prev + 1}/${PLAN_RETRY_MAX_ATTEMPTS} before giving up)`);
+      schedulePlanRetry(db, milestone.id);
+    } else {
+      // Success — clear retry state for this milestone.
+      zeroTaskCounts.set(milestone.id, 0);
+      clearPlanRetry(milestone.id);
+    }
   } catch (err) {
     console.error(`[director] ${reason} planning failed:`, err instanceof Error ? err.message : err);
+    // Errors count toward the retry budget so we don't tight-loop a
+    // broken planner.
+    const prev = zeroTaskCounts.get(milestone.id) ?? 0;
+    zeroTaskCounts.set(milestone.id, prev + 1);
+    schedulePlanRetry(db, milestone.id);
   }
 }
 
@@ -987,8 +1052,10 @@ async function topUpIfIdle(
     if (created === 0) {
       zeroTaskCounts.set(milestone.id, zeroCount + 1);
       console.log(`[director] planner generated 0 tasks (${zeroCount + 1}/${ZERO_TASK_BACKOFF_LIMIT} before backing off)`);
+      schedulePlanRetry(db, milestone.id);
     } else if (created > 0) {
       zeroTaskCounts.set(milestone.id, 0);
+      clearPlanRetry(milestone.id);
     }
     lastPlanError = null;
   } catch (err) {
@@ -1000,6 +1067,7 @@ async function topUpIfIdle(
     }
     // Count errors toward backoff to prevent tight error loops
     zeroTaskCounts.set(milestone.id, zeroCount + 1);
+    schedulePlanRetry(db, milestone.id);
   } finally {
     setDirectorPlanning(false);
   }

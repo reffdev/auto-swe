@@ -102,14 +102,36 @@ export async function planNextTasks(
   // The non-LLM-backed tools can be constructed up front. The opinion tools
   // need the model instance which is only available inside the withLlmSession
   // callback, so we construct those lazily there.
+  // Memory-write and milestone-verification tools are only useful in
+  // verification mode. In initial / top-up / corrective planning, the
+  // agent's job is to emit a `next_tasks` block — not to dump conventions
+  // into semantic memory or call verifyMilestone on a milestone with no
+  // tasks. Strip those tools from non-verification modes so the agent
+  // physically cannot derail itself onto them.
+  const allowMemoryWrites = verificationMode === true;
+  const allowMilestoneVerification = verificationMode === true;
+
   const baseTools = (() => {
     try {
+      const memoryTools = makeMemoryTools(project.workdir);
+      const memoryToolsForMode = allowMemoryWrites
+        ? memoryTools
+        : (() => {
+            // Read-only memory access only — drop the writers and editors.
+            const {
+              writeSemanticMemory: _w1, writeConvention: _w2, writeProcedure: _w3,
+              editMemory: _w4, deleteMemory: _w5, updateProjectBrief: _w6,
+              ...readOnly
+            } = memoryTools as Record<string, unknown>;
+            void _w1; void _w2; void _w3; void _w4; void _w5; void _w6;
+            return readOnly;
+          })();
       return {
         webSearch: webSearchTool,
         fetchUrl: fetchUrlTool,
         lookupDocs,
         ...makeReadOnlyTools(project.workdir, undefined, directorSandbox),
-        ...makeMemoryTools(project.workdir),
+        ...memoryToolsForMode,
         ...makeTaskQueryTools(db, project.id, project.workdir),
         ...makeDirectorReadTools(project.workdir, project, directorSandbox),
       };
@@ -162,7 +184,7 @@ export async function planNextTasks(
         const plannerIssueId = `director-planner:${milestone.id}`;
         const plannerRunId = `director-planner-run:${randomUUID()}`;
         let stepIndex = 0;
-        const opinionTools = makeDirectorOpinionTools(db, project, {
+        const opinionToolsAll = makeDirectorOpinionTools(db, project, {
           model: session.llm,
           sandbox: directorSandbox,
           directiveId: directive.id,
@@ -172,6 +194,20 @@ export async function planNextTasks(
           // the same logical operation.
           callerSession: session,
         });
+        // Strip milestone-verification tools from non-verification planning
+        // modes. There is nothing to verify when there are no tasks yet —
+        // the agent calling these here is pure misuse and burns LLM time.
+        const opinionTools = allowMilestoneVerification
+          ? opinionToolsAll
+          : (() => {
+              const {
+                verifyMilestone: _v1, checkMilestoneReadyToAdvance: _v2,
+                advanceMilestone: _v3,
+                ...rest
+              } = opinionToolsAll as Record<string, unknown>;
+              void _v1; void _v2; void _v3;
+              return rest;
+            })();
         const tools = { ...baseTools, ...opinionTools };
         const loopGuard = new ToolLoopGuard(5);
         let loopTripped = false;
