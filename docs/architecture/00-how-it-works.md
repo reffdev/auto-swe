@@ -256,6 +256,54 @@ graph TD
 - **Episodic logs** auto-prune at 30 days (patterns extracted first via LLM)
 - **Unattributed commit tracking** detects manual/external commits not linked to foreman tasks
 
+### Memory write validators
+
+The Director (and Foreman, via a curated subset) has tools to write memory —
+but those writes are filtered through `validateMemoryWrite` in `memsearch.ts`
+to keep persistent memory from rotting into a junk drawer of ephemeral notes:
+
+- **Junk filename patterns** — names like `tasks.md`, `current-status.md`,
+  `pending-fixes.md`, `bugs-2026-04-08.md`, `todo.md` are rejected. Persistent
+  memory is for *stable* knowledge, not state that belongs in the task DB.
+- **Junk body markers** — content with phrases like `TODO`, "current
+  implementation", "failed tasks", or dated section headers is rejected. If
+  the content is only true today, it doesn't belong in semantic memory.
+- **Same-day journaling check** — if the agent already wrote to semantic
+  memory once this session for the same topic, repeated writes are blocked
+  to prevent thrashing.
+- **Per-category quota in the planner** — at most ~6 memory writes per
+  planner invocation, so a single planning loop can't spam memory with
+  duplicates.
+
+A separate `findJunkMemories` admin scan walks existing `.swe/memory/` files
+against the same patterns so users can audit and prune accumulated junk
+through the frontend.
+
+### Sandbox (Linux + bubblewrap)
+
+Optional per-subprocess isolation gated by `foreman_config.sandbox_enabled`.
+When enabled on Linux with [`bubblewrap`](https://github.com/containers/bubblewrap)
+installed, every agent-spawned subprocess (the agent's `runCommand`,
+`searchFiles`, gated build/test/lint checks, the verifier's mechanical
+godot/build calls) runs in an isolated namespace with:
+
+- A read-write bind of the worktree (read-only for scout / review / verify stages)
+- A read-only bind of the project's `.git` directory so git worktrees resolve
+- A read-only system bind of `/usr`, `/bin`, `/lib`, `/etc/ssl`, `/snap`, etc.
+- A tmpfs `/tmp` and a per-task tmpfs `$HOME`
+- Per-project persistent caches under `~/.swe-cache/<project_id>/` so
+  `npm install` etc. don't go cold between tasks
+- Per-stage network policy: implement / test-write / foreman-task get the
+  network; scout / review / verify don't (a malicious `npm install`
+  postinstall script literally cannot reach the host)
+- Fresh PID / IPC / UTS namespaces
+
+The orchestrator itself is **not** sandboxed — only subprocesses spawned
+from inside agent execution paths. The bwrap wrapper falls through to
+direct spawn on non-Linux hosts or when bwrap is missing, with a one-time
+warning logged at startup. See `src/server/util/sandbox.ts` and
+`docs/sandbox-smoke.md` for the manual smoke test procedure.
+
 ## Epics & Stories (Pipeline System)
 
 Large features can be broken into independent stories that run in parallel:

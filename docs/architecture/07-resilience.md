@@ -89,13 +89,45 @@ Configuration: `failureThreshold = 3`, `resetTimeoutMs = 5 minutes`.
 
 ## Machine Manager & Lease Expiry
 
-All machine access goes through the lease system (`machine-manager.ts`):
+All machine access goes through the lease system (`machine-manager.ts`),
+fronted by the public dispatch helpers in `llm-dispatch.ts` (`withLlmSession`,
+`withLightLlmSession`, `withLightOrFallbackLlmSession`):
 
-- **Director leases**: 5-minute expiry, auto-renewed during active work
-- **Foreman leases**: 30-minute expiry for longer task execution
-- **Priority queuing**: Director gets priority over Foreman for machine acquisition
-- **Startup cleanup**: `clearAllLeases()` on orchestrator start — prevents stale leases from crashed sessions
-- **Director reservation**: Orchestrator prevents Foreman from dispatching to the Director's reserved machine
+- **Idle timeouts**: 10 min Director, 30 min Foreman, 60 min Pipeline, 10 min Analysis
+- **Auto-renewal**: agent loops call `renewLease(leaseId)` on every step,
+  so a healthy in-progress task never expires. The timeout is an *idle*
+  timeout, not a wall-clock cap.
+- **Abort on expiry**: callers register `setLeaseOnExpiry(leaseId, () => abortController.abort())`
+  so a hung LLM call (e.g. server returns 200 then never sends a token)
+  is forcibly aborted when the lease expires, instead of dangling forever.
+- **Priority queuing**: Director gets priority over Foreman for machine acquisition.
+- **Startup cleanup**: `clearAllLeases()` on orchestrator start — prevents stale leases from crashed sessions.
+- **Director reservation**: Orchestrator prevents Foreman from dispatching to the Director's reserved machine.
+
+## Agent Loop Stall Detection
+
+The agent loop runner in `pipeline/run-stage.ts` watches for several
+categorical stall patterns and aborts the in-flight stream when they fire,
+so a runaway agent can't burn an entire lease window:
+
+- **Wall-clock timeout** — hard cap on a single stage / task, regardless of activity.
+- **Repeated tool-call loop guard** (`tool-loop-guard.ts`) — exact-match
+  detection on `(tool_name, args_hash)`. If the agent calls the same tool
+  with the same arguments N times in a row, abort.
+- **Categorical-stall detector** — two streak counters:
+  - **No-write streak**: consecutive non-`writeFile` / non-`replaceInFile`
+    steps. If the agent reads / searches / runs commands for ~30 steps
+    without ever writing code, it's investigating forever and gets aborted.
+  - **runCommand burn streak**: consecutive `runCommand` calls running
+    inspection-only utilities (`sed`, `head`, `tail`, `cat`, `wc`, `ls`,
+    `find`, `grep`, `file`, `xxd`, `od`, `md5sum`, `stat`, `godot --check-only`).
+    If the agent burns ~25 calls just poking at files via the shell, abort.
+- **Compaction / context expansion abort propagation** — when context
+  compaction or file-expansion logic decides the loop must stop, the abort
+  is propagated unconditionally to the underlying stream.
+
+All abort paths flow through a single `AbortController` so the LLM stream,
+the tool runner, and the lease auto-renewal loop all tear down together.
 
 ## Build & Test Gates
 

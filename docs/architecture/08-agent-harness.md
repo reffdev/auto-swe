@@ -133,7 +133,34 @@ The foreman executor provides:
 - **Full filesystem access** — read, write, search, run commands in the worktree
 - **Web tools** — web search (DuckDuckGo), URL fetch, library docs lookup (Context7)
 - **Task context** — task description, acceptance criteria, related task outputs, memory from `.swe/`
+- **Curated memory tools** — a foreman-only subset (`makeForemanMemoryTools`) so
+  task agents can read memory and write semantic notes, but cannot edit
+  conventions or delete memory files
+- **Acknowledgment seam** — `foreman_tasks.acknowledged_at` is stamped on the
+  first dispatch so the scheduler knows the task has been picked up exactly once
+- **Lease lifecycle** — acquires the machine lease via `withLlmSession`,
+  auto-renews on every step, and registers an expiry abort that tears down
+  the in-flight stream if the lease times out
+- **Sandbox profile** — when `sandbox_enabled` is on, every subprocess the
+  agent spawns (`runCommand`, `searchFiles`, gated build/test/lint) runs
+  inside bubblewrap with the worktree mounted RW and host paths invisible
 - **Post-processing** — git commit, branch management, optional YAML sync
+
+### Hard scope rule
+
+The foreman system prompt enforces a **stay-in-scope rule**: if the agent
+discovers a problem in code outside its assigned `target_files`, it must
+NOT try to fix it. It either:
+
+1. Completes its assigned work and notes the discovery in `submitResult`, or
+2. Calls `submitResult` with `BLOCKED: <reason>` if the out-of-scope problem
+   prevents progress.
+
+This prevents the common failure mode where an agent gets a small task,
+spirals into debugging an unrelated subsystem, and burns the entire lease
+window without writing a line of code. The categorical-stall detector in
+`run-stage.ts` (see [Resilience](07-resilience.md)) is the mechanical
+backstop for when the agent ignores the prompt.
 
 ## Prompt Strategy
 
