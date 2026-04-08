@@ -162,6 +162,11 @@ export async function planNextTasks(
           model: session.llm,
           sandbox: directorSandbox,
           directiveId: directive.id,
+          // Reuse THIS session for nested verifyMilestone calls. Without
+          // this, calling advanceMilestone from inside the planner stream
+          // would acquire a SECOND Director lease on a SECOND machine for
+          // the same logical operation.
+          callerSession: session,
         });
         const tools = { ...baseTools, ...opinionTools };
         const loopGuard = new ToolLoopGuard(5);

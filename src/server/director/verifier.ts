@@ -7,7 +7,7 @@
  */
 
 import { generate } from "../llm";
-import { withLlmSession } from "../llm-dispatch";
+import { withLlmSession, type LlmSession } from "../llm-dispatch";
 import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
 import { readFile as fsReadFile, stat as fsStat } from "fs/promises";
 import { runShellCommand, runProcess } from "../util/async-process";
@@ -287,6 +287,15 @@ export async function verifyMilestone(
   milestone: { id?: string; title: string; verification: string | null },
   directiveId: string,
   project: Project,
+  /**
+   * Optional existing LLM session. When provided, the LLM-based milestone
+   * verification step REUSES this session instead of acquiring its own
+   * Director lease. This is the path Director tools take when calling
+   * verifyMilestone from inside a planner stream — without it, the planner
+   * would hold a Director lease on machine A and recursively spawn a
+   * second Director lease on machine B for the same logical operation.
+   */
+  existingSession?: LlmSession,
 ): Promise<MilestoneVerificationResult> {
   // Run project-level checks first. Mechanical milestone checks run AGAINST
   // the project workdir directly (not a worktree) — they need network for
@@ -402,48 +411,59 @@ export async function verifyMilestone(
     projectState,
   });
 
+  // Inner runner: perform the LLM call against an already-acquired session.
+  // Used in two modes:
+  //   - When called with an existing session (e.g. from inside the planner
+  //     loop via the advanceMilestone / checkMilestoneReadyToAdvance tools),
+  //     we reuse that session — no new lease, no second machine.
+  //   - When called standalone (from the scheduler backstop), we acquire
+  //     our own session via withLlmSession.
+  const runVerifyOnSession = async (session: LlmSession): Promise<{ passed: boolean; issues: string[] }> => {
+    const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
+    const startedAt = Date.now();
+    const text = await generate(session.llm, { system, prompt: user, abortSignal: milestoneTimeout });
+    if (milestone.id) {
+      try {
+        db.createLlmRequest({
+          issue_id: `verify-milestone:${milestone.id}`,
+          run_id: `verify-milestone-run:${milestone.id}:${startedAt}`,
+          model_id: session.providerModelId,
+          input_text: `[verify-milestone: ${milestone.title}]\n\n${user.slice(0, 4000)}`,
+          output_text: text.slice(0, 8000),
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          duration_ms: Date.now() - startedAt,
+        });
+      } catch { /* non-critical */ }
+    }
+    const parsed = parseVerdict(text);
+    if (!parsed) {
+      console.warn(`[director:verifier] milestone could not parse verdict for "${milestone.title}" — failing to be safe`);
+      return { passed: false, issues: ["Could not parse milestone verdict from LLM response"] };
+    }
+    return { passed: parsed.result === "pass", issues: parsed.issues };
+  };
+
   let result: { passed: boolean; issues: string[] } | null;
   try {
-    result = await withLlmSession(
-      db,
-      "director",
-      `verify-milestone: ${milestone.title.slice(0, 40)}`,
-      directorModelId,
-      async (session): Promise<{ passed: boolean; issues: string[] }> => {
-        const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
-        const startedAt = Date.now();
-        const text = await generate(session.llm, { system, prompt: user, abortSignal: milestoneTimeout });
-        // Log to llm_requests so the Director Activity panel can show this
-        // verification step. Failures here are non-critical — never let
-        // logging break the verification.
-        if (milestone.id) {
-          try {
-            db.createLlmRequest({
-              issue_id: `verify-milestone:${milestone.id}`,
-              run_id: `verify-milestone-run:${milestone.id}:${startedAt}`,
-              model_id: session.providerModelId,
-              input_text: `[verify-milestone: ${milestone.title}]\n\n${user.slice(0, 4000)}`,
-              output_text: text.slice(0, 8000),
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              duration_ms: Date.now() - startedAt,
-            });
-          } catch { /* non-critical */ }
-        }
-        const parsed = parseVerdict(text);
-        if (!parsed) {
-          console.warn(`[director:verifier] milestone could not parse verdict for "${milestone.title}" — failing to be safe`);
-          return { passed: false, issues: ["Could not parse milestone verdict from LLM response"] };
-        }
-        return { passed: parsed.result === "pass", issues: parsed.issues };
-      },
-      {
-        preferMachineId: getDirectorPreferredMachineId(db),
-        // Route to the parent directive — there is no per-milestone detail
-        // page. The lease label already identifies the milestone.
-        workRef: { kind: "directive", id: directiveId, projectId: project.id },
-      },
-    );
+    if (existingSession) {
+      // Reuse the caller's session — no new lease, no second machine.
+      result = await runVerifyOnSession(existingSession);
+    } else {
+      result = await withLlmSession(
+        db,
+        "director",
+        `verify-milestone: ${milestone.title.slice(0, 40)}`,
+        directorModelId,
+        runVerifyOnSession,
+        {
+          preferMachineId: getDirectorPreferredMachineId(db),
+          // Route to the parent directive — there is no per-milestone detail
+          // page. The lease label already identifies the milestone.
+          workRef: { kind: "directive", id: directiveId, projectId: project.id },
+        },
+      );
+    }
   } catch (err) {
     if (err instanceof NoMachineHostsModelError || err instanceof ModelNotFoundError) {
       return { passed: false, issues: [err.message], infrastructureFailure: true };

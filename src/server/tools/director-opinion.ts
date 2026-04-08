@@ -30,6 +30,7 @@ import { runShellCommand, runProcess } from "../util/async-process";
 import type { SandboxProfile } from "../util/sandbox";
 import { verifyMilestone as runVerifyMilestone } from "../director/verifier";
 import { clearVerificationBackstop } from "../director/scheduler";
+import type { LlmSession } from "../llm-dispatch";
 
 interface DirectorOpinionOpts {
   /** LLM model used by the LLM-backed tools (compareCodeToClaim, summarizeRecentFailures, verifyAcceptanceCriterion). */
@@ -38,6 +39,15 @@ interface DirectorOpinionOpts {
   sandbox?: SandboxProfile;
   /** Optional directive id — when set, listMilestoneTasks etc. resolve milestones against this directive. */
   directiveId?: string;
+  /**
+   * Optional caller LLM session. When set, milestone-verification tools
+   * (verifyMilestone, checkMilestoneReadyToAdvance, advanceMilestone) reuse
+   * this session for their LLM call instead of acquiring a NEW Director
+   * lease. Without this, calling advanceMilestone from inside a planner
+   * stream causes the planner (machine A) to recursively spawn a second
+   * Director session on machine B for the same logical operation.
+   */
+  callerSession?: LlmSession;
 }
 
 export function makeDirectorOpinionTools(
@@ -45,7 +55,7 @@ export function makeDirectorOpinionTools(
   project: Project,
   opts: DirectorOpinionOpts,
 ) {
-  const { model, sandbox } = opts;
+  const { model, sandbox, callerSession } = opts;
   const workdir = resolve(project.workdir);
 
   // ─── verifyMilestone ──────────────────────────────────────────────────────
@@ -63,7 +73,7 @@ export function makeDirectorOpinionTools(
       const milestone = db.getDirectorMilestone(milestoneId);
       if (!milestone) return `Milestone not found: ${milestoneId}`;
       try {
-        const result = await runVerifyMilestone(db, milestone, milestone.directive_id, project);
+        const result = await runVerifyMilestone(db, milestone, milestone.directive_id, project, callerSession);
         return JSON.stringify({
           milestoneId,
           milestoneTitle: milestone.title,
@@ -161,7 +171,7 @@ export function makeDirectorOpinionTools(
 
       // All tasks complete — run verification
       try {
-        const result = await runVerifyMilestone(db, milestone, milestone.directive_id, project);
+        const result = await runVerifyMilestone(db, milestone, milestone.directive_id, project, callerSession);
         if (!result.passed) {
           return JSON.stringify({
             ready: false,
@@ -217,7 +227,7 @@ export function makeDirectorOpinionTools(
       // Run verification
       let verification: { passed: boolean; issues: string[] };
       try {
-        verification = await runVerifyMilestone(db, milestone, milestone.directive_id, project);
+        verification = await runVerifyMilestone(db, milestone, milestone.directive_id, project, callerSession);
       } catch (err) {
         return JSON.stringify({ advanced: false, error: `verification threw: ${err instanceof Error ? err.message : String(err)}` });
       }
