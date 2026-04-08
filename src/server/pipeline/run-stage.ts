@@ -14,6 +14,7 @@ import { generate, stream as llmStream } from "../llm";
 import { getStatus, getDiff } from "../git-helpers";
 import type { Db } from "../db";
 import { EXPAND_FILES_MARKER } from "./nodes";
+import { ToolLoopGuard } from "../util/tool-loop-guard";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,15 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   let textOnlySteps = 0;
   let reasoningLoopDetected = false;
 
+  // Detect repeated-identical-tool-call loops via the shared ToolLoopGuard
+  // helper. The guard tracks consecutive identical tool-call signatures and
+  // trips at the configured threshold; we then reuse the existing nudge
+  // restart machinery to break the loop.
+  const toolLoopGuard = new ToolLoopGuard(5);
+  const MAX_REPEATED_TOOL_CALLS = 5;
+  let repeatedToolCallLoopDetected = false;
+  let repeatedToolCallSignatureForNudge: string | null = null;
+
   // Stream termination retry — transient connection drops
   let streamRetryCount = 0;
   const MAX_STREAM_RETRIES = 2;
@@ -296,6 +306,19 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     } else {
       textOnlySteps = 0;
     }
+
+    // Detect repeated-identical-tool-call loops via the shared guard.
+    if (toolCalls?.length && stepData.toolCalls) {
+      const obs = toolLoopGuard.observe(stepData.toolCalls);
+      if (obs.looping && !repeatedToolCallLoopDetected) {
+        console.error(`[pipeline ${stageName}]: detected repeated-tool-call loop — ${obs.count} consecutive identical tool calls (${(obs.signature ?? "").slice(0, 200)}), aborting`);
+        repeatedToolCallLoopDetected = true;
+        repeatedToolCallSignatureForNudge = obs.signature;
+        compactionAbort?.abort();
+      }
+    }
+
+
 
     // Check if readRelevantFiles needs expansion into individual readFile results (once per stage)
     if (!expandFilesNeeded && !expandFilesUsed && toolResults?.length) {
@@ -439,7 +462,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         // (those legitimately abort the stream and restart).
         if (
           (finishReason === "tool-calls" || finishReason === "length") &&
-          !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected
+          !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected && !repeatedToolCallLoopDetected
         ) {
           throw new StageStepLimitError(stageName, steps.length, finishReason);
         }
@@ -455,8 +478,32 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         if (wallTimedOut) {
           throw err instanceof StageWallTimeoutError ? err : new StageWallTimeoutError(stageName, Date.now() - startTime);
         }
-        // Reasoning loop detected — inject a nudge message to break the loop
+        // Repeated-identical-tool-call loop — inject a targeted nudge that
+        // names the offending call so the agent stops re-issuing it.
         let loopTriggeredCompaction = false;
+        if (repeatedToolCallLoopDetected && !abortSignal?.aborted) {
+          const offending = repeatedToolCallSignatureForNudge ?? "(unknown)";
+          repeatedToolCallLoopDetected = false;
+          repeatedToolCallSignatureForNudge = null;
+          toolLoopGuard.reset();
+          if (compactionCount < MAX_COMPACTIONS) {
+            compactionNeeded = true;
+            loopTriggeredCompaction = true;
+            currentUserPrompt = `${currentUserPrompt}\n\n` +
+              `STOP — You are stuck in a tool-call loop. You have called the SAME tool with the SAME arguments ${MAX_REPEATED_TOOL_CALLS}+ times in a row:\n\n` +
+              `    ${offending.slice(0, 500)}\n\n` +
+              `The result is not changing. Repeating this call will not help.\n\n` +
+              `REQUIRED on your next response:\n` +
+              `1. Do NOT repeat this exact call.\n` +
+              `2. Either change the arguments meaningfully, call a DIFFERENT tool, or finish the task.\n` +
+              `3. If a command is hanging or producing empty output, the command is wrong — try a different invocation. For example, \`godot --headless --check-only -\` reads from stdin and will hang; use \`godot --headless --check-only --path .\` or run a script file instead.\n` +
+              `4. If you cannot make progress, call submitResult / submitVerdict with an explanation of what blocked you.`;
+            console.log(`[pipeline ${stageName}]: repeated-tool-call loop — injecting targeted nudge`);
+          } else {
+            throw new Error(`Agent stuck in repeated-tool-call loop after all compactions exhausted — ${MAX_REPEATED_TOOL_CALLS}+ identical calls of ${offending.slice(0, 200)}`);
+          }
+        }
+        // Reasoning loop detected — inject a nudge message to break the loop
         if (reasoningLoopDetected && !abortSignal?.aborted) {
           reasoningLoopDetected = false;
           if (compactionCount < MAX_COMPACTIONS) {

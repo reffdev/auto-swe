@@ -538,6 +538,8 @@ export interface ForemanConfig {
   exploration_preset: string;
   /** 0|1 — wrap agent subprocesses in bwrap (Linux only). */
   sandbox_enabled: number;
+  /** 0|1 — Director calls verifier as a tool instead of scheduler firing it at milestone boundaries. */
+  director_initiated_verification: number;
   created_at: string;
 }
 

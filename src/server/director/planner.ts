@@ -22,6 +22,10 @@ import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 import { postProcessArtTasks } from "./art-task-processor";
 import { makeTaskQueryTools } from "../tools/task-query";
+import { makeDirectorReadTools } from "../tools/director-read";
+import { makeDirectorOpinionTools } from "../tools/director-opinion";
+import { buildSandboxProfile } from "../util/sandbox";
+import { ToolLoopGuard } from "../util/tool-loop-guard";
 import { loadWorkflowManifest, summarizeManifestForPrompt } from "../foreman/workflow-manifest";
 
 import { nudgeForeman } from "../foreman/scheduler";
@@ -40,9 +44,11 @@ export async function planNextTasks(
   idleMachineTypes?: string[],
   /** Verification issues that triggered corrective planning. The planner must generate fix tasks for these. */
   verificationIssues?: string[],
+  /** When true, the planner is being asked to verify a complete milestone (call advanceMilestone) instead of generating new work. */
+  verificationMode?: boolean,
 ): Promise<number> {
   const planStartTime = Date.now();
-  const reason = verificationIssues?.length ? "corrective" : idleMachineTypes?.length ? `top-up (idle: ${idleMachineTypes.join(", ")})` : "initial";
+  const reason = verificationMode ? "verification" : verificationIssues?.length ? "corrective" : idleMachineTypes?.length ? `top-up (idle: ${idleMachineTypes.join(", ")})` : "initial";
   console.log(`[director:planner] "${milestone.title}" — ${reason}`);
 
   // Director slot supplies the planner model.
@@ -73,30 +79,40 @@ export async function planNextTasks(
     workflowSummary,
     idleMachineTypes,
     verificationIssues,
+    verificationMode,
+    milestoneId: milestone.id,
   });
 
   const totalPromptChars = system.length + user.length;
   const estimatedTokens = Math.round(totalPromptChars / 4);
   console.log(`[director:planner] context ready — ~${estimatedTokens} tokens, ${Math.round((Date.now() - contextStartTime) / 1000)}s`);
 
-  // Build tools
-  let tools;
-  try {
-    const readOnlyTools = makeReadOnlyTools(project.workdir);
-    const memTools = makeMemoryTools(project.workdir);
-    const taskTools = makeTaskQueryTools(db, project.id, project.workdir);
-    tools = {
-      webSearch: webSearchTool,
-      fetchUrl: fetchUrlTool,
-      lookupDocs,
-      ...readOnlyTools,
-      ...memTools,
-      ...taskTools,
-    };
-  } catch (toolErr) {
-    console.error("[director:planner] tool construction failed:", toolErr);
-    throw toolErr;
-  }
+  // Build the Director observation sandbox (RO worktree, no network) once
+  // for this planning call. Composes with the existing analysis sandbox.
+  const directorSandbox = await buildSandboxProfile(db, project, project.workdir, {
+    readOnlyWorktree: true,
+    allowNetwork: false,
+  });
+
+  // The non-LLM-backed tools can be constructed up front. The opinion tools
+  // need the model instance which is only available inside the withLlmSession
+  // callback, so we construct those lazily there.
+  const baseTools = (() => {
+    try {
+      return {
+        webSearch: webSearchTool,
+        fetchUrl: fetchUrlTool,
+        lookupDocs,
+        ...makeReadOnlyTools(project.workdir, undefined, directorSandbox),
+        ...makeMemoryTools(project.workdir),
+        ...makeTaskQueryTools(db, project.id, project.workdir),
+        ...makeDirectorReadTools(project.workdir, project, directorSandbox),
+      };
+    } catch (toolErr) {
+      console.error("[director:planner] tool construction failed:", toolErr);
+      throw toolErr;
+    }
+  })();
 
   // Open a session for the LLM call. Hold the lease only for the duration of
   // the LLM streaming — task creation/parsing happens after the session closes.
@@ -113,6 +129,14 @@ export async function planNextTasks(
         }
         console.log(`[director:planner] calling ${session.machine.name || session.providerModelId} ...`);
         const llmStartTime = Date.now();
+        const opinionTools = makeDirectorOpinionTools(db, project, {
+          model: session.llm,
+          sandbox: directorSandbox,
+          directiveId: directive.id,
+        });
+        const tools = { ...baseTools, ...opinionTools };
+        const loopGuard = new ToolLoopGuard(5);
+        let loopTripped = false;
         const stream = llmStream({
           model: session.llm,
           system,
@@ -124,6 +148,15 @@ export async function planNextTasks(
               const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
               const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
               console.log(`[director:planner] step — ${toolNames} (${elapsed}s)`);
+              const summary = toolCalls.map(tc => ({
+                tool: tc.toolName ?? "unknown",
+                args: JSON.stringify((tc as { args?: unknown }).args ?? {}),
+              }));
+              const obs = loopGuard.observe(summary);
+              if (obs.looping && !loopTripped) {
+                loopTripped = true;
+                console.error(`[director:planner] tool-call loop detected: ${obs.signature?.slice(0, 200)} repeated ${obs.count} times — Director is stuck`);
+              }
             }
           },
         });

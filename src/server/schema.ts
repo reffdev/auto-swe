@@ -323,5 +323,6 @@ export const foremanConfig = sqliteTable("foreman_config", {
   continuous_exploration: integer("continuous_exploration").notNull().default(0), // 0|1 — keep generating art overnight
   exploration_preset: text("exploration_preset").notNull().default("concept"), // preset for continuous exploration (default: FLUX.2)
   sandbox_enabled: integer("sandbox_enabled").notNull().default(0), // 0|1 — wrap agent subprocesses in bwrap (Linux only)
+  director_initiated_verification: integer("director_initiated_verification").notNull().default(1), // 0|1 — Director calls verifier as a tool instead of scheduler firing it at milestone boundaries
   created_at: text("created_at").notNull().default(sql`(datetime('now'))`),
 });

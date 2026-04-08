@@ -18,6 +18,9 @@ import { lookupDocs } from "../tools/context7";
 import { makeReadOnlyTools } from "../tools";
 import { makeMemoryTools } from "./memsearch";
 import { makeTaskQueryTools } from "../tools/task-query";
+import { makeDirectorReadTools } from "../tools/director-read";
+import { makeDirectorOpinionTools } from "../tools/director-opinion";
+import { buildSandboxProfile } from "../util/sandbox";
 
 // ─── In-memory streaming state ──────────────────────────────────────────────
 
@@ -87,9 +90,23 @@ export async function generateDirectorResponse(opts: {
     designDocsContent,
   });
 
+  // Build the Director observation sandbox (RO worktree, no network).
+  // Constructed once per response — read-only project bind, no subprocess
+  // network. Composes with the existing analysis sandbox profile.
+  const directorSandbox = project
+    ? await buildSandboxProfile(db, project, project.workdir, { readOnlyWorktree: true, allowNetwork: false })
+    : undefined;
+
+  const directorReadTools = project ? makeDirectorReadTools(project.workdir, project, directorSandbox) : {};
+  const directorOpinionTools = project
+    ? makeDirectorOpinionTools(db, project, { model, sandbox: directorSandbox, directiveId: opts.directiveId })
+    : {};
+
   const toolCount = project
     ? Object.keys(makeReadOnlyTools(project.workdir)).length +
-      Object.keys(makeMemoryTools(project.workdir)).length + 3
+      Object.keys(makeMemoryTools(project.workdir)).length +
+      Object.keys(directorReadTools).length +
+      Object.keys(directorOpinionTools).length + 3
     : 3;
   console.log(`[director] system prompt ${systemPrompt.length} chars, ${opts.messages.length} message(s), ${toolCount} tools`);
 
@@ -106,9 +123,11 @@ export async function generateDirectorResponse(opts: {
         fetchUrl: fetchUrlTool,
         lookupDocs,
         ...(project ? {
-          ...makeReadOnlyTools(project.workdir),
+          ...makeReadOnlyTools(project.workdir, undefined, directorSandbox),
           ...makeMemoryTools(project.workdir),
           ...makeTaskQueryTools(db, project.id, project.workdir),
+          ...directorReadTools,
+          ...directorOpinionTools,
         } : {}),
       },
       maxSteps: 50,

@@ -24,6 +24,7 @@ export function ForemanConfig() {
   const [continuousExploration, setContinuousExploration] = useState(false)
   const [explorationPreset, setExplorationPreset] = useState('concept')
   const [sandboxEnabled, setSandboxEnabled] = useState(false)
+  const [directorInitiatedVerification, setDirectorInitiatedVerification] = useState(true)
   const [directorModelId, setDirectorModelId] = useState('')
   const [directorMachineId, setDirectorMachineId] = useState('')
   const [foremanCodeModelId, setForemanCodeModelId] = useState('')
@@ -50,6 +51,7 @@ export function ForemanConfig() {
         setContinuousExploration(!!c.continuous_exploration)
         setExplorationPreset(c.exploration_preset ?? 'concept')
         setSandboxEnabled(!!c.sandbox_enabled)
+        setDirectorInitiatedVerification(c.director_initiated_verification == null ? true : !!c.director_initiated_verification)
         setDirectorModelId(c.director_model_id ?? '')
         setDirectorMachineId(c.director_machine_id ?? '')
         setForemanCodeModelId(c.foreman_code_model_id ?? '')
@@ -93,6 +95,7 @@ export function ForemanConfig() {
         continuous_exploration: continuousExploration ? 1 : 0,
         exploration_preset: explorationPreset,
         sandbox_enabled: sandboxEnabled ? 1 : 0,
+        director_initiated_verification: directorInitiatedVerification ? 1 : 0,
         director_model_id: directorModelId || null,
         director_machine_id: directorMachineId || null,
         foreman_code_model_id: foremanCodeModelId || null,
@@ -368,6 +371,38 @@ export function ForemanConfig() {
             </p>
           </div>
 
+          {/* Director-initiated verification */}
+          <div className="space-y-2">
+            <span className="text-sm font-medium block">Director-Initiated Verification</span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setDirectorInitiatedVerification(!directorInitiatedVerification)}
+                className={cn(
+                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                  directorInitiatedVerification ? 'bg-emerald-500' : 'bg-muted',
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block size-4 rounded-full bg-white transition-transform',
+                    directorInitiatedVerification ? 'translate-x-6' : 'translate-x-1',
+                  )}
+                />
+              </button>
+              <span className="text-sm text-muted-foreground">
+                {directorInitiatedVerification ? 'On — Director calls verifier as a tool' : 'Off — scheduler fires verifier at milestone boundaries'}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              When on, the Director itself decides when to verify a milestone (via the
+              <code className="text-[10px] bg-muted px-1 rounded">checkMilestoneReadyToAdvance</code> /
+              <code className="text-[10px] bg-muted px-1 rounded">advanceMilestone</code> tools) instead of the
+              scheduler firing the verifier automatically when all tasks complete. A backstop kicks in if the
+              Director hasn't advanced after 3 ticks — falls back to scheduler-driven verification with a loud
+              warning. Default: on.
+            </p>
+          </div>
+
           {/* Save */}
           <div className="flex items-center gap-3 pt-2">
             <Button onClick={handleSave} disabled={saving}>
@@ -399,6 +434,10 @@ export function ForemanConfig() {
                 <span className="text-muted-foreground">Sandbox:</span>
                 <span className={config.sandbox_enabled ? 'text-emerald-500' : 'text-muted-foreground'}>
                   {config.sandbox_enabled ? 'Enabled (bwrap, Linux)' : 'Disabled'}
+                </span>
+                <span className="text-muted-foreground">Verification:</span>
+                <span className={config.director_initiated_verification ? 'text-emerald-500' : 'text-muted-foreground'}>
+                  {config.director_initiated_verification ? 'Director-initiated (tool)' : 'Scheduler-driven (legacy)'}
                 </span>
               </div>
             </div>

@@ -82,6 +82,20 @@ import { isDirectorBusy, setDirectorReservedMachine, getDirectorReservedMachine,
 /** Consecutive zero-task plan attempts per milestone — backs off after 2. */
 const zeroTaskCounts = new Map<string, number>();
 
+/**
+ * Per-milestone backstop counter for Director-initiated verification.
+ *
+ * When `director_initiated_verification = 1`, the scheduler does NOT call
+ * `verifyMilestone` directly when all tasks complete — instead it asks the
+ * Director (via the planner in verification mode) to call the verification
+ * tools itself. If the Director somehow doesn't advance the milestone after
+ * N consecutive ticks, the scheduler falls back to scheduler-driven
+ * verification with a loud warning. Fires per milestone, cleared when
+ * the milestone advances.
+ */
+const verificationBackstopCounts = new Map<string, number>();
+const VERIFICATION_BACKSTOP_THRESHOLD = 3;
+
 /** Expose DB for episodic extractor (avoids circular import of full scheduler) */
 export function getGlobalDb(): Db | null { return schedulerDb; }
 
@@ -720,6 +734,33 @@ async function completeMilestone(
   milestone: import("../db").DirectorMilestone,
   taskCount: number,
 ): Promise<void> {
+  // Director-initiated verification mode: do NOT call verifyMilestone here.
+  // Hand the milestone to the Director's planner in "verification mode" — it
+  // will call checkMilestoneReadyToAdvance / advanceMilestone via tools and
+  // commit the state transition itself. Backstop counter prevents the
+  // Director from getting stuck: after N ticks of allComplete with no
+  // advance, the scheduler falls back to direct verification.
+  const config = db.getForemanConfig();
+  if (config?.director_initiated_verification) {
+    const count = (verificationBackstopCounts.get(milestone.id) ?? 0) + 1;
+    verificationBackstopCounts.set(milestone.id, count);
+    if (count <= VERIFICATION_BACKSTOP_THRESHOLD) {
+      console.log(`[director] milestone "${milestone.title}" all tasks complete — handing to Director for verification (attempt ${count}/${VERIFICATION_BACKSTOP_THRESHOLD})`);
+      // Don't change status to "verifying" — keep it active so the Director
+      // tools can read tasks normally. The advanceMilestone tool will set
+      // status=completed when verification passes.
+      try {
+        await planNextTasks(db, directive, project, milestone, undefined, undefined, /* verificationMode */ true);
+      } catch (err) {
+        console.error(`[director] verification-mode planner threw for "${milestone.title}":`, err instanceof Error ? err.message : err);
+      }
+      return;
+    }
+    console.warn(`[director] BACKSTOP FIRING for milestone "${milestone.title}": Director did not advance after ${count} ticks — running verifyMilestone directly. This indicates the Director's prompt or verification tools are not steering it correctly. Investigate.`);
+    verificationBackstopCounts.delete(milestone.id);
+    // Fall through to legacy direct verification path below.
+  }
+
   db.updateDirectorMilestone(milestone.id, { status: "verifying" });
   console.log(`[director] verifying milestone "${milestone.title}" (${taskCount} tasks) ...`);
   const msVerifyStart = Date.now();
@@ -745,6 +786,7 @@ async function completeMilestone(
 
   if (verification.passed) {
     zeroTaskCounts.delete(milestone.id);
+    verificationBackstopCounts.delete(milestone.id);
     db.updateDirectorMilestone(milestone.id, { status: "completed", completed_at: new Date().toISOString() });
     console.log(`[director] milestone "${milestone.title}" completed`);
     await logEpisodic(project.workdir, `Milestone completed: "${milestone.title}"`, `Tasks: ${taskCount}`);
