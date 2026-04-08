@@ -382,37 +382,45 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
     // exact-match check misses this because each call has slightly different
     // args. Hits 1-3 days of debugging that the user already saw twice.
     if (toolCalls?.length && stepData.toolCalls && !categoryStallDetected) {
+      // Classification rule: a step "makes progress" only if it calls one of
+      // the file-writing tools. Anything else — readFile, searchFiles,
+      // listDirectory, runCommand (regardless of what shell command),
+      // gitStatus, gitDiff, etc. — counts toward the no-write streak.
+      //
+      // The earlier version tried to distinguish "inspection runCommand"
+      // (sed/head/grep/...) from "other runCommand" and put non-inspection
+      // commands into a dead zone where they neither incremented nor reset
+      // the streak. That let agents burn dozens of git/cp/chmod/rm/touch
+      // calls without ever tripping the limit. Simplification: if it isn't
+      // a write tool call, the agent isn't writing, period.
       let stepHasWrite = false;
+      let stepHasRunCommand = false;
       let stepHasInspectionRunCommand = false;
-      let stepIsAllReadOnly = true;
       for (const tc of stepData.toolCalls) {
-        if (READ_ONLY_TOOLS.has(tc.tool)) continue;
         if (tc.tool === "writeFile" || tc.tool === "replaceInFile" || tc.tool === "appendToFile" || tc.tool === "deleteFile" || tc.tool === "moveFile") {
           stepHasWrite = true;
-          stepIsAllReadOnly = false;
         } else if (tc.tool === "runCommand") {
-          // Inspection runCommand (sed/head/cat/grep/godot --check) is read-only-ish.
-          // A runCommand that builds, tests, or modifies state is not.
+          stepHasRunCommand = true;
           let cmd = "";
           try { cmd = (JSON.parse(tc.args) as { command?: string }).command ?? ""; } catch { /* ignore */ }
-          const isInspection = INSPECTION_RUNCOMMAND_PATTERNS.some(re => re.test(cmd));
-          if (isInspection) {
+          if (INSPECTION_RUNCOMMAND_PATTERNS.some(re => re.test(cmd))) {
             stepHasInspectionRunCommand = true;
-          } else {
-            stepIsAllReadOnly = false;
           }
-        } else {
-          // Unknown tool — don't count as write or read
-          stepIsAllReadOnly = false;
         }
       }
       if (stepHasWrite) {
         noWriteStreak = 0;
         runCommandStreak = 0;
-      } else if (stepIsAllReadOnly || stepHasInspectionRunCommand) {
+      } else {
         noWriteStreak++;
+        // runCommandStreak is the narrower "agent is grinding shell
+        // inspection commands" detector. It only counts inspection-style
+        // runCommands so a normal build/test sequence doesn't trip it.
         if (stepHasInspectionRunCommand) runCommandStreak++;
-        else runCommandStreak = 0;
+        else if (!stepHasRunCommand) runCommandStreak = 0;
+        // (a non-inspection runCommand neither resets nor increments
+        // runCommandStreak — it's noise from this detector's perspective,
+        // but it still counts toward noWriteStreak above.)
       }
 
       if (noWriteStreak >= NO_WRITE_STREAK_LIMIT) {

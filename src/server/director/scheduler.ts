@@ -522,11 +522,12 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
   const dispatch = async (): Promise<"ok" | "no-machine" | "error"> => {
     const runner = async (session: LlmSession): Promise<"ok" | "error"> => {
       try {
-        const extractionTimeout = AbortSignal.timeout(2 * 60 * 1000);
+        const KNOWLEDGE_EXTRACTION_TIMEOUT_MS = 6 * 60 * 1000;
+        const extractionTimeout = AbortSignal.timeout(KNOWLEDGE_EXTRACTION_TIMEOUT_MS);
         await Promise.race([
           extractTaskKnowledge(db, task, project, session),
           new Promise<never>((_, reject) => {
-            extractionTimeout.addEventListener("abort", () => reject(new Error("Knowledge extraction timed out (2min)")));
+            extractionTimeout.addEventListener("abort", () => reject(new Error("Knowledge extraction timed out (6min)")));
           }),
         ]);
         return "ok";

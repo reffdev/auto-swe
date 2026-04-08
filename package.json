@@ -19,7 +19,7 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [],
-  "license": "MIT",
+  "license": "Mozilla Public License Version 2.0",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

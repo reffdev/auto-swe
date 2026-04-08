@@ -1,4 +1,4 @@
-# open-swe
+# auto-swe
 
 Inspired by the architecture of [`langchain-ai/open-swe`](https://github.com/langchain-ai/open-swe), but not directly based on their codebase.
 
