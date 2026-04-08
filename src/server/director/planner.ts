@@ -137,12 +137,19 @@ export async function planNextTasks(
         const tools = { ...baseTools, ...opinionTools };
         const loopGuard = new ToolLoopGuard(5);
         let loopTripped = false;
+        // Abort controller wired into streamText so that when the loop guard
+        // trips we actually KILL the stream instead of letting it grind for
+        // the rest of its 50-step budget. Without this the planner just logs
+        // the detection and keeps going — which is what happened in the
+        // earlier "readFile Big.gd repeated 5 times" incident.
+        const abortController = new AbortController();
         const stream = llmStream({
           model: session.llm,
           system,
           prompt: user,
           tools,
           maxSteps: 50,
+          abortSignal: abortController.signal,
           onStepFinish: ({ toolCalls }) => {
             if (toolCalls?.length) {
               const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
@@ -155,18 +162,31 @@ export async function planNextTasks(
               const obs = loopGuard.observe(summary);
               if (obs.looping && !loopTripped) {
                 loopTripped = true;
-                console.error(`[director:planner] tool-call loop detected: ${obs.signature?.slice(0, 200)} repeated ${obs.count} times — Director is stuck`);
+                console.error(`[director:planner] tool-call loop detected: ${obs.signature?.slice(0, 200)} repeated ${obs.count} times — aborting Director planner stream`);
+                abortController.abort();
               }
             }
           },
         });
         let text = "";
-        for await (const chunk of stream.textStream) {
-          text += chunk;
+        try {
+          for await (const chunk of stream.textStream) {
+            text += chunk;
+          }
+        } catch (streamErr) {
+          // If we aborted ourselves due to a loop, treat it as a planner
+          // failure (return whatever partial text we got so far) instead of
+          // re-throwing. The Director's next tick will retry with fresh
+          // context.
+          if (loopTripped) {
+            console.warn(`[director:planner] stream aborted by loop guard after ${text.length} chars of output`);
+          } else {
+            throw streamErr;
+          }
         }
-        const steps = await stream.steps;
+        const steps = await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-        console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s`);
+        console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s${loopTripped ? " (LOOP-ABORTED)" : ""}`);
         return text;
       },
       { preferMachineId: getDirectorPreferredMachineId(db) },
