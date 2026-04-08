@@ -1,4 +1,4 @@
-import { parseNextTasks, parseMilestones, parseVerdict, parseDesignDoc } from "./parsers";
+import { parseNextTasks, parseMilestones, parseVerdict, parseDesignDoc, parseWaitBlock } from "./parsers";
 
 describe("parseNextTasks", () => {
   it("parses a single task", () => {
@@ -408,6 +408,23 @@ confidence: 0.5
 \`\`\`
     `;
     expect(parseVerdict(input)).toBeNull();
+  });
+});
+
+describe("parseWaitBlock", () => {
+  it("extracts the reason when a wait block is present", () => {
+    const input = "I've reviewed the in-flight tasks and there's nothing parallel to do right now.\n\n```wait\nreason: CurrencyManager implementation is in flight; tests cannot be written until the API surface is committed\n```";
+    expect(parseWaitBlock(input)).toBe("CurrencyManager implementation is in flight; tests cannot be written until the API surface is committed");
+  });
+
+  it("returns null when there's no wait block", () => {
+    const input = "Here are the next tasks: ```next_tasks\ntask: 1\ntitle: Foo\n```";
+    expect(parseWaitBlock(input)).toBeNull();
+  });
+
+  it("returns a placeholder when the wait block has no reason field", () => {
+    const input = "```wait\n\n```";
+    expect(parseWaitBlock(input)).toBe("(no reason given)");
   });
 });
 

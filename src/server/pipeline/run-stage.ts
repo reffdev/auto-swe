@@ -225,6 +225,40 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
   let repeatedToolCallLoopDetected = false;
   let repeatedToolCallSignatureForNudge: string | null = null;
 
+  // Per-tool-name quota and no-write-streak detector. The exact-match loop
+  // guard misses two real failure modes:
+  //
+  //   (a) "Varying-arg spiral": the agent calls the same TOOL with slightly
+  //       different args 30+ times in a row (e.g., `sed -n '117,119p' file`,
+  //       then `sed -n '150,152p' file`, then `sed -n '173,175p' file`...).
+  //       Each call is byte-different but the agent is categorically stuck
+  //       investigating instead of making progress.
+  //
+  //   (b) "No-write stalling": the agent makes 30+ read-only calls in a
+  //       row (runCommand for inspection, readFile, searchFiles) without a
+  //       single writeFile/replaceInFile. The task is supposed to produce
+  //       file changes, but the agent is investigating instead of writing.
+  //
+  // Both patterns indicate the agent has lost the thread of its task. We
+  // count consecutive read-only steps and consecutive runCommand calls; if
+  // either crosses a threshold, we trigger the loop-nudge restart path with
+  // a different message.
+  const READ_ONLY_TOOLS = new Set([
+    "readFile", "listDirectory", "searchFiles", "getFileInfo",
+    "gitStatus", "gitDiff", "gitLog", "gitShow", "gitBlame",
+  ]);
+  const INSPECTION_RUNCOMMAND_PATTERNS = [
+    /^\s*sed\s/, /^\s*head\s/, /^\s*tail\s/, /^\s*cat\s/, /^\s*wc\s/,
+    /^\s*ls\s/, /^\s*find\s/, /^\s*grep\s/, /^\s*file\s/,
+    /godot\s+--headless\s+--check/,
+  ];
+  const NO_WRITE_STREAK_LIMIT = 30;
+  const RUNCOMMAND_BURN_LIMIT = 25;
+  let noWriteStreak = 0;
+  let runCommandStreak = 0;
+  let categoryStallDetected = false;
+  let categoryStallReason: string | null = null;
+
   // Stream termination retry — transient connection drops
   let streamRetryCount = 0;
   const MAX_STREAM_RETRIES = 2;
@@ -328,6 +362,58 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         console.error(`[pipeline ${stageName}]: detected repeated-tool-call loop — ${obs.count} consecutive identical tool calls (${(obs.signature ?? "").slice(0, 200)}), aborting`);
         repeatedToolCallLoopDetected = true;
         repeatedToolCallSignatureForNudge = obs.signature;
+        compactionAbort?.abort();
+      }
+    }
+
+    // Categorical-stall detection: per-tool counters and no-write streak.
+    // Catches the failure mode where the agent makes 30+ different sed/head/
+    // grep/godot calls in a row without ever writing code — the loop guard's
+    // exact-match check misses this because each call has slightly different
+    // args. Hits 1-3 days of debugging that the user already saw twice.
+    if (toolCalls?.length && stepData.toolCalls && !categoryStallDetected) {
+      let stepHasWrite = false;
+      let stepHasInspectionRunCommand = false;
+      let stepIsAllReadOnly = true;
+      for (const tc of stepData.toolCalls) {
+        if (READ_ONLY_TOOLS.has(tc.tool)) continue;
+        if (tc.tool === "writeFile" || tc.tool === "replaceInFile" || tc.tool === "appendToFile" || tc.tool === "deleteFile" || tc.tool === "moveFile") {
+          stepHasWrite = true;
+          stepIsAllReadOnly = false;
+        } else if (tc.tool === "runCommand") {
+          // Inspection runCommand (sed/head/cat/grep/godot --check) is read-only-ish.
+          // A runCommand that builds, tests, or modifies state is not.
+          let cmd = "";
+          try { cmd = (JSON.parse(tc.args) as { command?: string }).command ?? ""; } catch { /* ignore */ }
+          const isInspection = INSPECTION_RUNCOMMAND_PATTERNS.some(re => re.test(cmd));
+          if (isInspection) {
+            stepHasInspectionRunCommand = true;
+          } else {
+            stepIsAllReadOnly = false;
+          }
+        } else {
+          // Unknown tool — don't count as write or read
+          stepIsAllReadOnly = false;
+        }
+      }
+      if (stepHasWrite) {
+        noWriteStreak = 0;
+        runCommandStreak = 0;
+      } else if (stepIsAllReadOnly || stepHasInspectionRunCommand) {
+        noWriteStreak++;
+        if (stepHasInspectionRunCommand) runCommandStreak++;
+        else runCommandStreak = 0;
+      }
+
+      if (noWriteStreak >= NO_WRITE_STREAK_LIMIT) {
+        console.error(`[pipeline ${stageName}]: no-write stall — ${noWriteStreak} consecutive read-only / inspection steps with no file writes. The agent is investigating instead of making progress on its task. Aborting.`);
+        categoryStallDetected = true;
+        categoryStallReason = `no-write stall: ${noWriteStreak} consecutive read-only steps without writing any file. The task is supposed to produce code changes; the agent is stuck inspecting without making progress.`;
+        compactionAbort?.abort();
+      } else if (runCommandStreak >= RUNCOMMAND_BURN_LIMIT) {
+        console.error(`[pipeline ${stageName}]: runCommand-burn stall — ${runCommandStreak} consecutive inspection runCommand calls (sed/head/grep/find/godot --check). The agent is grinding investigative shell commands without making progress. Aborting.`);
+        categoryStallDetected = true;
+        categoryStallReason = `runCommand-burn stall: ${runCommandStreak} consecutive sed/head/grep/find/godot-check invocations. The agent is debugging instead of producing the assigned work.`;
         compactionAbort?.abort();
       }
     }
@@ -476,7 +562,7 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         // (those legitimately abort the stream and restart).
         if (
           (finishReason === "tool-calls" || finishReason === "length") &&
-          !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected && !repeatedToolCallLoopDetected
+          !compactionNeeded && !expandFilesNeeded && !reasoningLoopDetected && !repeatedToolCallLoopDetected && !categoryStallDetected
         ) {
           throw new StageStepLimitError(stageName, steps.length, finishReason);
         }
@@ -492,9 +578,37 @@ export async function runStage(opts: RunStageOpts): Promise<string> {
         if (wallTimedOut) {
           throw err instanceof StageWallTimeoutError ? err : new StageWallTimeoutError(stageName, Date.now() - startTime);
         }
+        // Categorical stall (no-write streak or runCommand burn). Different
+        // nudge from the loop guard because the agent isn't byte-repeating
+        // — it's categorically stuck investigating. The right next action
+        // is almost always submitResult with a "blocked because X" note.
+        let loopTriggeredCompaction = false;
+        if (categoryStallDetected && !abortSignal?.aborted) {
+          const reason = categoryStallReason ?? "(unknown)";
+          categoryStallDetected = false;
+          categoryStallReason = null;
+          noWriteStreak = 0;
+          runCommandStreak = 0;
+          if (compactionCount < MAX_COMPACTIONS) {
+            compactionNeeded = true;
+            loopTriggeredCompaction = true;
+            currentUserPrompt = `${currentUserPrompt}\n\n` +
+              `STOP — Categorical stall detected.\n\n` +
+              `${reason}\n\n` +
+              `You have lost the thread of your task. The fix is NOT another inspection call.\n\n` +
+              `REQUIRED on your next response — pick exactly one:\n` +
+              `1. **If you have enough information to write the assigned files:** call writeFile or replaceInFile NOW. Stop investigating. Make the change.\n` +
+              `2. **If you discovered a problem outside your task scope** (e.g. a bug in code you weren't assigned): do NOT try to fix it. Call submitResult with the description: \"BLOCKED: discovered <description> outside task scope. Recommend a separate task to address it.\"\n` +
+              `3. **If the assigned work genuinely cannot be done as specified:** call submitResult with the description: \"BLOCKED: <specific reason>. <what would unblock it>.\"\n` +
+              `Do NOT make another inspection call. Do NOT read another file. The next tool call MUST be one of writeFile, replaceInFile, or submitResult.`;
+            console.log(`[pipeline ${stageName}]: categorical stall — injecting strong nudge to force write-or-submit`);
+          } else {
+            throw new Error(`Agent in categorical stall after all compactions exhausted — ${reason}`);
+          }
+        }
+
         // Repeated-identical-tool-call loop — inject a targeted nudge that
         // names the offending call so the agent stops re-issuing it.
-        let loopTriggeredCompaction = false;
         if (repeatedToolCallLoopDetected && !abortSignal?.aborted) {
           const offending = repeatedToolCallSignatureForNudge ?? "(unknown)";
           repeatedToolCallLoopDetected = false;

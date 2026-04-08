@@ -12,7 +12,7 @@ import { runStage, StageStepLimitError, StageWallTimeoutError } from "../pipelin
 import { withProjectLock } from "../pipeline/index";
 import { withLlmSession, type LlmSession } from "../llm-dispatch";
 import { getForemanCodeModelId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
-import { acquireLease, releaseLease, renewLease } from "../machine-manager";
+import { acquireLease, releaseLease, renewLease, setLeaseOnExpiry } from "../machine-manager";
 import { isComfyUITaskType } from "./task-types";
 import { createSubmitGuard } from "./submit-guard";
 import {
@@ -363,6 +363,15 @@ async function runInferenceTaskWithSession(
     });
 
     console.log(`[foreman:executor] ${task.title}: prompts built (system=${systemPrompt.length}, user=${userPrompt.length} chars) — directive=${directiveText?.length ?? 0}, designDoc=${designDoc?.length ?? 0}, milestone=${milestoneContext?.length ?? 0}, brief=${memoryContext.brief?.length ?? 0}, retrievedConventions=${memoryContext.retrievedConventions.length}, searchUsed=${memoryContext.searchUsed} — entering runStage`);
+    // Wire lease idle-timeout → abort the existing run controller. The
+    // controller is already created in initTaskRun() for cancellation; this
+    // just adds "lease idle-timeout" as another reason it can fire. Without
+    // this, a hung LLM call between steps would let the lease expire while
+    // the runStage call appears to keep running indefinitely.
+    setLeaseOnExpiry(session.leaseId, () => {
+      console.error(`[foreman:executor] lease idle-timeout fired — aborting "${task.title}"`);
+      run.controller.abort();
+    });
     // Run the LLM agent — pass runId="" to skip runs table updates, use onStepsUpdate for foreman_runs
     const result = await runStage({
       db,

@@ -331,6 +331,27 @@ export function setLeaseWorkRef(leaseId: string, workRef: NonNullable<MachineLea
   }
 }
 
+/**
+ * Install an `onExpiry` callback on an existing lease. Called by long-running
+ * agent loops (planner, verifier, foreman executor) so that when the lease
+ * idle-timeout fires, the callback can abort the in-flight LLM stream
+ * instead of letting it continue as a phantom hold on the machine.
+ *
+ * Without this, lease expiry only removes the entry from the registry —
+ * the actual LLM stream keeps running, and the work appears to "stall"
+ * indefinitely from the user's perspective. With it, expiry → abort →
+ * caller's catch handler reports "stream aborted by lease idle timeout."
+ */
+export function setLeaseOnExpiry(leaseId: string, onExpiry: () => void): void {
+  for (const leases of activeLeases.values()) {
+    const lease = leases.find(l => l.id === leaseId);
+    if (lease) {
+      lease.onExpiry = onExpiry;
+      return;
+    }
+  }
+}
+
 // ─── State ──────────────────────────────────────────────────────────────────
 
 /** Active leases per machine. Key = machineId, value = array of active leases */

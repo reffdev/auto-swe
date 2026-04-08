@@ -20,7 +20,7 @@ import { resolve } from "path";
 import { resolveTaskWorkdir, getTaskBranchDiff, getSupplementalFileContents } from "../foreman/task-files";
 import { autonomyBudgets } from "./review-gates";
 import { runStage, StageWallTimeoutError, StageStepLimitError } from "../pipeline/run-stage";
-import { renewLease } from "../machine-manager";
+import { renewLease, setLeaseOnExpiry } from "../machine-manager";
 import { makeVerifyTools } from "../tools/filesystem";
 import { makeDirectorReadTools } from "../tools/director-read";
 import { makeDirectorOpinionTools } from "../tools/director-opinion";
@@ -151,7 +151,15 @@ export async function verifyTask(
         } = opinion;
         void _v1; void _v2; void _v3; void _v4;
         const tools = { ...fileTools, ...readTools, ...safeOpinion };
+        // Wire lease-expiry → abort so a hung LLM call between steps gets
+        // killed instead of running as a phantom hold on the machine.
+        const verifierAbort = new AbortController();
+        setLeaseOnExpiry(session.leaseId, () => {
+          console.error(`[director:verifier] lease idle-timeout fired — aborting verification of "${task.title}"`);
+          verifierAbort.abort();
+        });
         const text = await runStage({
+          abortSignal: verifierAbort.signal,
           db,
           runId: "",  // no pipeline run — verifier is standalone
           issueId: `verifier:${task.id}`,

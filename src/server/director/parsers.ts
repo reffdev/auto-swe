@@ -19,6 +19,21 @@ export interface ParsedTask {
 }
 
 /**
+ * Parse a ```wait block from the Director's planner output. Returns the
+ * stated reason if present, or null if there's no wait block. The wait block
+ * is the planner's way of saying "no new work right now, the right move is
+ * to let in-flight tasks finish first." It's a first-class decision and
+ * should NOT be treated as a planning failure.
+ */
+export function parseWaitBlock(content: string): string | null {
+  const match = content.match(/```wait\s*\n([\s\S]*?)\n```(?=\s|$)/);
+  if (!match) return null;
+  const body = match[1];
+  const reasonMatch = body.match(/reason:\s*(.+?)(?:\n|$)/);
+  return reasonMatch ? reasonMatch[1].trim() : "(no reason given)";
+}
+
+/**
  * Parse a ```next_tasks block from the Director's planner output.
  *
  * The closing-fence match REQUIRES the trailing ``` to be on its own line

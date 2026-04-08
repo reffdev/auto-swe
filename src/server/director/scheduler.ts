@@ -788,9 +788,18 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
   } else if (!hasActiveWork && tasks.length === 0) {
     await planTasks(db, directive, project, activeMilestone, "initial");
   } else if (!hasActiveWork && tasks.some(t => t.status === "failed")) {
-    // Reset backoff counter — failure recovery should get a fresh planning attempt
+    // Reset backoff counter — failure recovery should get a fresh planning attempt.
+    // Build a verificationIssues-style list from the actual failed tasks so the
+    // planner is told EXACTLY what to fix instead of being asked to plan from
+    // scratch and having to reverse-engineer what went wrong via tool calls.
+    // Without this, the planner logs "initial" mode and burns 10+ minutes of
+    // exploration trying to figure out what failed before reaching any decision.
     zeroTaskCounts.delete(activeMilestone.id);
-    await planTasks(db, directive, project, activeMilestone, "failure recovery");
+    const failedTasks = tasks.filter(t => t.status === "failed");
+    const failureIssues = failedTasks.map(t =>
+      `Task "${t.title}" (id ${t.id.slice(0, 8)}) failed: ${(t.error_message ?? "no error message").slice(0, 300)}`,
+    );
+    await planTasks(db, directive, project, activeMilestone, "failure recovery", failureIssues);
   } else if (tasks.some(t => t.status === "queued" || t.status === "running") && !isDirectorPlanning()) {
     await topUpIfIdle(db, directive, project, activeMilestone);
   }

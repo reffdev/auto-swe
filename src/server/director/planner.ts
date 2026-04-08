@@ -15,7 +15,7 @@ import { MACHINE_TYPE_TASK_TYPES } from "../foreman/task-types";
 import type { Db, DirectorDirective, DirectorMilestone, Project } from "../db";
 import { assembleDirectorContext } from "./memory";
 import { buildPlanningPrompt } from "./prompts";
-import { parseNextTasks } from "./parsers";
+import { parseNextTasks, parseWaitBlock } from "./parsers";
 import { webSearchTool } from "../tools/web-search";
 import { fetchUrlTool } from "../tools/fetch";
 import { lookupDocs } from "../tools/context7";
@@ -134,14 +134,19 @@ export async function planNextTasks(
         }
         console.log(`[director:planner] calling ${session.machine.name || session.providerModelId} ...`);
         const llmStartTime = Date.now();
-        // Lease auto-renewal: import inside the session callback so we can
-        // bump expiresAt on every step. The Director default lease is 10
-        // minutes; without renewal, a 12-step planning session that takes
-        // 11 minutes total would have its lease expire mid-stream and the
-        // Foreman could dispatch competing work to the same machine. With
-        // renewal, the timeout becomes idle-since-last-step, which is the
-        // right semantic.
-        const { renewLease } = await import("../machine-manager");
+        // Lease auto-renewal + expiry-driven abort: import inside the session
+        // callback so we can bump expiresAt on every step AND wire an
+        // onExpiry callback that aborts the stream if the LLM hangs mid-call
+        // (LLM "thinking" phase that doesn't emit step boundaries — the
+        // renewal can't fire because no step finishes, so the lease expires
+        // correctly at the idle-timeout boundary, and we use that signal to
+        // kill the stream instead of letting it run as a phantom).
+        const { renewLease, setLeaseOnExpiry } = await import("../machine-manager");
+        setLeaseOnExpiry(session.leaseId, () => {
+          leaseExpiredAborted = true;
+          console.error(`[director:planner] lease idle-timeout fired — aborting stream for "${milestone.title}"`);
+          abortController.abort();
+        });
         // Synthetic identifiers used for the per-step llm_requests rows so the
         // Director planner's reasoning is browsable in the existing LLM logs UI
         // alongside Foreman pipeline steps. The frontend filters by issue_id
@@ -158,6 +163,7 @@ export async function planNextTasks(
         const tools = { ...baseTools, ...opinionTools };
         const loopGuard = new ToolLoopGuard(5);
         let loopTripped = false;
+        let leaseExpiredAborted = false;
         // Per-invocation per-tool quota. Defends against the failure mode
         // the loop guard misses: agent makes the same kind of call N times
         // with VARYING args (so the exact-match loop guard never trips) and
@@ -288,13 +294,15 @@ export async function planNextTasks(
             console.warn(`[director:planner] stream aborted by loop guard after ${text.length} chars of output`);
           } else if (quotaTripped) {
             console.warn(`[director:planner] stream aborted by tool-category quota (${quotaTrippedCategory}) after ${text.length} chars of output`);
+          } else if (leaseExpiredAborted) {
+            console.warn(`[director:planner] stream aborted by lease idle-timeout after ${text.length} chars of output — LLM was likely hung mid-call between steps`);
           } else {
             throw streamErr;
           }
         }
         const steps = await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
-        const abortReason = loopTripped ? " (LOOP-ABORTED)" : quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` : "";
+        const abortReason = loopTripped ? " (LOOP-ABORTED)" : quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` : leaseExpiredAborted ? " (LEASE-EXPIRED)" : "";
         console.log(`[director:planner] LLM done — ${text.length} chars, ${steps.length} steps, ${elapsed}s${abortReason}`);
         return text;
       },
@@ -338,6 +346,28 @@ export async function planNextTasks(
   const parsedTasks = await postProcessArtTasks(rawTasks, project.workdir);
 
   if (parsedTasks.length === 0) {
+    // Check for an explicit wait decision FIRST. This is a first-class output:
+    // the planner is saying "no new work right now, the right move is to let
+    // in-flight tasks finish." It's NOT a parse failure, NOT "milestone may
+    // be complete," and we should treat it as success and let the next tick
+    // re-evaluate when something changes.
+    const waitReason = parseWaitBlock(resultText);
+    if (waitReason) {
+      console.log(`[director:planner] explicit wait decision for "${milestone.title}" — ${waitReason}`);
+      // Persist the decision into the directive's conversation so the user
+      // can see why no tasks were generated this round.
+      try {
+        if (directive.conversation_id) {
+          db.createDirectorMessage({
+            conversation_id: directive.conversation_id,
+            role: "assistant",
+            content: `**Director planning** [${reason}] for milestone "${milestone.title}" — decided to WAIT for in-flight work.\n\nReason: ${waitReason}`,
+          });
+        }
+      } catch { /* non-critical */ }
+      return 0;
+    }
+
     const rawCount = parseNextTasks(resultText).length;
     if (rawCount > 0) {
       // Tasks were parsed but all got filtered (e.g., top-up requested comfyui but LLM only generated code tasks)
