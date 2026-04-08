@@ -2,7 +2,7 @@
 
 Documentation for the Open-SWE autonomous software engineering system.
 
-> **Start with [CLAUDE.md](../../CLAUDE.md)** for the current system overview. These docs cover the architecture in detail.
+> **Start with [AGENTS.md](../../AGENTS.md)** for the current system overview. These docs cover the architecture in detail.
 
 ## Contents
 

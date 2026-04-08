@@ -4,6 +4,10 @@ An autonomous software engineering orchestration system. Takes high-level direct
 
 Single-host control plane, multi-machine execution. Built for homelabs and small GPU clusters.
 
+Co-authored with Claude & provided as-is.
+
+Detailed documentation & visualizations are available in [`docs/architecture/`](docs/architecture/)
+
 ## What it does
 
 - **Director** — chats with you, drafts a design doc, decomposes it into milestones, plans task batches, and verifies completed work.
@@ -84,4 +88,4 @@ All runtime config lives in `.env` (see [`.env.example`](.env.example)) plus the
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Mozilla Public License Version 2.0 — see [LICENSE](LICENSE).
