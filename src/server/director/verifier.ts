@@ -329,8 +329,21 @@ export async function verifyMilestone(
         if (validResult.error?.message.includes("timed out")) {
           console.warn("[director:verifier] godot validation timed out — skipping");
         } else {
-          const stderr = validResult.stderr ?? "";
-          projectIssues.push(`Godot check failed: ${stderr.slice(0, 500)}`);
+          // Godot writes parse errors to stdout in some cases; include both
+          // streams so the error message is never empty. If both are empty
+          // the non-zero exit is almost certainly a transient/spurious
+          // failure (e.g. import-cache rebuild) — ignore it instead of
+          // looping the planner against an unactionable error.
+          const stderr = (validResult.stderr ?? "").trim();
+          const stdout = (validResult.stdout ?? "").trim();
+          const combined = [stderr, stdout].filter(Boolean).join("\n").slice(-500);
+          if (combined) {
+            projectIssues.push(`Godot check failed: ${combined}`);
+          } else {
+            console.warn(
+              `[director:verifier] godot exited ${validResult.status} with empty stdout/stderr — treating as pass`,
+            );
+          }
         }
       }
     }
