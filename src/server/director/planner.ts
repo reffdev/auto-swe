@@ -194,18 +194,32 @@ export async function planNextTasks(
           // the same logical operation.
           callerSession: session,
         });
-        // Strip milestone-verification tools from non-verification planning
-        // modes. There is nothing to verify when there are no tasks yet —
-        // the agent calling these here is pure misuse and burns LLM time.
+        // Strip verification-flavored tools from non-verification planning.
+        // The planner's job here is to emit a `next_tasks` block — running
+        // builds/tests, micro-verifying claims, or comparing code to claims
+        // is expensive verification work that doesn't help produce a plan.
+        // The previous run looped on `runProjectCheck:{"checkName":"test"}`
+        // for 5 calls because the agent was treating planning as a chance
+        // to validate the existing codebase.
+        //
+        // Stripped in non-verification modes:
+        //   - verifyMilestone, checkMilestoneReadyToAdvance, advanceMilestone
+        //     (state-mutating verification — pure misuse outside verify mode)
+        //   - verifyAcceptanceCriterion, compareCodeToClaim
+        //     (LLM micro-checks — slow and verification-flavored)
+        //   - runProjectCheck
+        //     (runs build/test/lint — should only happen during verification,
+        //      and was the source of the 11-minute loop)
         const opinionTools = allowMilestoneVerification
           ? opinionToolsAll
           : (() => {
               const {
                 verifyMilestone: _v1, checkMilestoneReadyToAdvance: _v2,
-                advanceMilestone: _v3,
+                advanceMilestone: _v3, verifyAcceptanceCriterion: _v4,
+                compareCodeToClaim: _v5, runProjectCheck: _v6,
                 ...rest
               } = opinionToolsAll as Record<string, unknown>;
-              void _v1; void _v2; void _v3;
+              void _v1; void _v2; void _v3; void _v4; void _v5; void _v6;
               return rest;
             })();
         const tools = { ...baseTools, ...opinionTools };
@@ -234,6 +248,23 @@ export async function planNextTasks(
         }
         let quotaTripped = false;
         let quotaTrippedCategory: string | null = null;
+
+        // Investigation budget. The planner's job is to read enough context
+        // to emit a `next_tasks` block (or `wait`/`advanceMilestone`). After
+        // ~15 read-only tool calls without any structured output, the agent
+        // is investigating instead of planning. Catches the failure mode
+        // where the agent reads files / lists dirs / searches forever
+        // without ever committing to a plan. Foreman's run-stage has the
+        // same idea (no-write streak). The planner equivalent is "no
+        // structured-output text" — but the agent emits the block at the
+        // end, so we count read-only calls instead.
+        //
+        // 15 is generous: a milestone with totally unfamiliar code might
+        // legitimately need 8-10 reads, leaving headroom. Anything past
+        // that is the agent dithering.
+        const INVESTIGATION_BUDGET = 15;
+        let investigationStreak = 0;
+        let investigationBudgetTripped = false;
         // Abort controller wired into streamText so that when the loop guard
         // trips we actually KILL the stream instead of letting it grind for
         // the rest of its 50-step budget. Without this the planner just logs
@@ -295,6 +326,19 @@ export async function planNextTasks(
               for (const tc of toolCalls) {
                 if (tc.toolName === "advanceMilestone") {
                   advanceMilestoneCalled = true;
+                }
+              }
+
+              // Investigation budget — only enforced in non-verification
+              // modes. Verification mode legitimately needs to inspect
+              // task outcomes / run checks before deciding to advance.
+              // Initial / top-up / corrective planning should commit faster.
+              if (!allowMilestoneVerification && !investigationBudgetTripped) {
+                investigationStreak++;
+                if (investigationStreak >= INVESTIGATION_BUDGET) {
+                  investigationBudgetTripped = true;
+                  console.error(`[director:planner] investigation budget exhausted: ${investigationStreak} read-only steps without emitting a next_tasks block. The agent is investigating instead of planning. Aborting.`);
+                  abortController.abort();
                 }
               }
             }
@@ -414,6 +458,8 @@ export async function planNextTasks(
               console.warn(`[director:planner] stream aborted by wall-clock timeout (${PLANNER_WALL_TIMEOUT_MS / 1000}s) after ${text.length} chars of output`);
             } else if (advanceMilestoneAborted) {
               console.warn(`[director:planner] stream aborted by advanceMilestone-${advanceMilestoneAborted} after ${text.length} chars of output`);
+            } else if (investigationBudgetTripped) {
+              console.warn(`[director:planner] stream aborted by investigation-budget (${INVESTIGATION_BUDGET} read-only steps) after ${text.length} chars of output`);
             } else {
               throw streamErr;
             }
@@ -428,7 +474,8 @@ export async function planNextTasks(
         // timeout window after the planner had already aborted.
         const selfAborted =
           loopTripped || quotaTripped || leaseExpiredAborted ||
-          wallTimedOut || advanceMilestoneAborted !== null;
+          wallTimedOut || advanceMilestoneAborted !== null ||
+          investigationBudgetTripped;
         const steps = selfAborted ? [] : await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
         const abortReason =
@@ -436,6 +483,7 @@ export async function planNextTasks(
           quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` :
           leaseExpiredAborted ? " (LEASE-EXPIRED)" :
           wallTimedOut ? " (WALL-CLOCK-TIMEOUT)" :
+          investigationBudgetTripped ? " (INVESTIGATION-BUDGET-EXHAUSTED)" :
           advanceMilestoneAborted === "success" ? " (ADVANCED)" :
           advanceMilestoneAborted === "repeated-failure" ? " (ADVANCE-REPEATEDLY-FAILED)" :
           "";
