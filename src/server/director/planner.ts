@@ -8,6 +8,8 @@
  */
 
 import { randomUUID } from "crypto";
+import { z } from "zod";
+import { tool } from "ai";
 import { stream as llmStream } from "../llm";
 import { withLlmSession } from "../llm-dispatch";
 import { getDirectorModelId, getDirectorPreferredMachineId, ModelSlotUnconfiguredError, NoMachineHostsModelError, ModelNotFoundError } from "../models";
@@ -151,6 +153,11 @@ export async function planNextTasks(
   // Used post-stream to short-circuit parsing — there's nothing to parse,
   // the milestone was committed by the tool itself.
   let advanceMilestoneSucceededOuter = false;
+  // Inline task batch from the createTasks tool. When set, the post-stream
+  // code uses this directly instead of parsing a `next_tasks` markdown block
+  // out of the LLM text. The tool is the canonical path; the markdown block
+  // is the fallback for any LLM that still emits text.
+  let inlineParsedTasks: import("./parsers").ParsedTask[] | null = null;
   try {
     resultText = await withLlmSession(
       db,
@@ -222,7 +229,68 @@ export async function planNextTasks(
               void _v1; void _v2; void _v3; void _v4; void _v5; void _v6;
               return rest;
             })();
-        const tools = { ...baseTools, ...opinionTools };
+        // The createTasks tool — the canonical way for the planner to commit
+        // a batch of work. Defined inline so it has closure access to the
+        // hoisted `inlineParsedTasks` flag and the abort controller. The
+        // tool validates the schema, stores the parsed batch, aborts the
+        // stream (work is done), and returns a JSON acknowledgment.
+        //
+        // The post-stream code reads `inlineParsedTasks` and runs the same
+        // dedupe / dependency / cycle-detection / persistence pipeline that
+        // a parsed `next_tasks` markdown block would.
+        //
+        // The markdown block path remains as a fallback for any LLM that
+        // still emits text instead of calling the tool.
+        const createTasksTool = tool({
+          description:
+            "Commit the next batch of tasks for the active milestone. Use this when you're ready to plan — it is the canonical way to create work. " +
+            "After this tool returns successfully, your job is DONE. The planner will end and the scheduler will dispatch the tasks.\n\n" +
+            "Each task needs a clear title, description, type, priority, and acceptance criteria. " +
+            "Reference dependencies by their 1-based position in the `tasks` array (e.g. depends_on: [1, 2]).",
+          parameters: z.object({
+            tasks: z.array(z.object({
+              title: z.string().min(1).describe("Short, unique task title"),
+              description: z.string().min(1).describe("What the task should accomplish"),
+              type: z.string().describe("Task type: code | art | music | sfx | review | content | claude | style_exploration"),
+              priority: z.number().int().min(1).max(5).default(3).describe("1=highest, 5=lowest"),
+              target_files: z.array(z.string()).optional().describe("Files this task should create or modify (relative paths)"),
+              acceptance_criteria: z.array(z.string()).optional().describe("Concrete pass/fail criteria"),
+              depends_on: z.array(z.union([z.number().int(), z.string()])).optional().describe("1-based positions of other tasks in this batch this depends on"),
+              needs_human_review: z.boolean().optional().describe("True if a human should review the result before it's accepted"),
+            })).min(1).max(5).describe("1-5 tasks to create"),
+          }),
+          execute: async ({ tasks }) => {
+            if (inlineParsedTasks !== null) {
+              return JSON.stringify({
+                committed: false,
+                error: "createTasks already called this run — you only get one batch per planning attempt",
+              });
+            }
+            const parsed: import("./parsers").ParsedTask[] = tasks.map(t => ({
+              title: t.title.trim(),
+              type: t.type,
+              priority: t.priority ?? 3,
+              target_files: t.target_files ?? [],
+              depends_on: (t.depends_on ?? []).map(d => String(d)),
+              acceptance_criteria: t.acceptance_criteria ?? [],
+              needs_human_review: t.needs_human_review === true,
+              description: t.description,
+            }));
+            inlineParsedTasks = parsed;
+            console.log(`[director:planner] createTasks tool committed ${parsed.length} task(s) — aborting stream`);
+            // Abort the stream — the planner's job is done. The post-stream
+            // code will run the dedupe/dependency/persistence pipeline.
+            abortController.abort();
+            return JSON.stringify({
+              committed: true,
+              count: parsed.length,
+              titles: parsed.map(p => p.title),
+              note: "Tasks queued for persistence. The planner stream is now ending.",
+            });
+          },
+        });
+
+        const tools = { ...baseTools, ...opinionTools, createTasks: createTasksTool };
         const loopGuard = new ToolLoopGuard(5);
         let loopTripped = false;
         let leaseExpiredAborted = false;
@@ -429,6 +497,8 @@ export async function planNextTasks(
               console.warn(`[director:planner] stream aborted by wall-clock timeout (${PLANNER_WALL_TIMEOUT_MS / 1000}s) after ${text.length} chars of output`);
             } else if (advanceMilestoneAborted) {
               console.warn(`[director:planner] stream aborted by advanceMilestone-${advanceMilestoneAborted} after ${text.length} chars of output`);
+            } else if (inlineParsedTasks !== null) {
+              console.log(`[director:planner] stream aborted by createTasks tool — ${inlineParsedTasks.length} task(s) queued for commit`);
             } else {
               throw streamErr;
             }
@@ -443,7 +513,8 @@ export async function planNextTasks(
         // timeout window after the planner had already aborted.
         const selfAborted =
           loopTripped || quotaTripped || leaseExpiredAborted ||
-          wallTimedOut || advanceMilestoneAborted !== null;
+          wallTimedOut || advanceMilestoneAborted !== null ||
+          inlineParsedTasks !== null;
         const steps = selfAborted ? [] : await stream.steps.catch(() => []);
         const elapsed = Math.round((Date.now() - llmStartTime) / 1000);
         const abortReason =
@@ -451,6 +522,7 @@ export async function planNextTasks(
           quotaTripped ? ` (QUOTA-ABORTED: ${quotaTrippedCategory})` :
           leaseExpiredAborted ? " (LEASE-EXPIRED)" :
           wallTimedOut ? " (WALL-CLOCK-TIMEOUT)" :
+          inlineParsedTasks !== null ? ` (CREATE-TASKS-TOOL: ${inlineParsedTasks.length})` :
           advanceMilestoneAborted === "success" ? " (ADVANCED)" :
           advanceMilestoneAborted === "repeated-failure" ? " (ADVANCE-REPEATEDLY-FAILED)" :
           "";
@@ -489,8 +561,19 @@ export async function planNextTasks(
     return 0;
   }
 
-  // Parse tasks
-  let rawTasks = parseNextTasks(resultText);
+  // Parse tasks. Prefer the inline batch from the createTasks tool (canonical
+  // path); fall back to parsing a `next_tasks` markdown block out of the
+  // LLM text for any model that still emits text.
+  // (Cast through a typed local: TS can't narrow `inlineParsedTasks` here
+  // because it was only assigned inside an async closure.)
+  const inlineFromTool = inlineParsedTasks as import("./parsers").ParsedTask[] | null;
+  let rawTasks: import("./parsers").ParsedTask[];
+  if (inlineFromTool !== null) {
+    rawTasks = inlineFromTool;
+    console.log(`[director:planner] using ${inlineFromTool.length} task(s) from createTasks tool (skipping markdown parse)`);
+  } else {
+    rawTasks = parseNextTasks(resultText);
+  }
 
   // Mutual exclusion: if the planner called `advanceMilestone` during this
   // run, the milestone is being marked done. It is incoherent to also queue
