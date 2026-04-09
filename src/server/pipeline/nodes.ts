@@ -57,6 +57,7 @@ import {
 const AUTO_READ_FILES = [
   "package.json",
   "AGENTS.md",
+  "CLAUDE.md",
   "README.md",
   "ARCHITECTURE.md",
   "CONTRIBUTING.md",
@@ -65,7 +66,86 @@ const AUTO_READ_FILES = [
   "pyproject.toml",
   "Cargo.toml",
   "go.mod",
+  // Godot
+  "project.godot",
+  // Generic config that often describes project structure
+  "deno.json",
+  "build.gradle",
+  "build.gradle.kts",
+  "CMakeLists.txt",
 ];
+
+/** Directories that are never useful to the planner — skipped during recursive listing. */
+const SKIP_DIRS = new Set([
+  ".git",
+  ".svn",
+  ".hg",
+  "node_modules",
+  "dist",
+  "build",
+  "out",
+  "target",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".swe",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".tox",
+  ".venv",
+  "venv",
+  "env",
+  ".godot",
+  ".import",
+  "vendor",
+  "coverage",
+  ".idea",
+  ".vscode",
+]);
+
+/**
+ * Recursively list source files in a project, returning sorted relative paths.
+ * Caps total entries to prevent prompt blow-up. Excludes hidden dirs and common
+ * build/cache directories. Used by gatherProjectContext to give the planner a
+ * structural view of the project without forcing it to spend tool calls on
+ * `listDirectory`.
+ */
+async function listProjectFiles(workdir: string, maxEntries = 200): Promise<string[]> {
+  const results: string[] = [];
+  let truncated = false;
+
+  async function walk(dir: string, relPrefix: string, depth: number): Promise<void> {
+    if (results.length >= maxEntries) { truncated = true; return; }
+    if (depth > 6) return;
+    let entries: import("fs").Dirent[];
+    try {
+      entries = await fsReaddir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    // Sort for stable output across runs.
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (results.length >= maxEntries) { truncated = true; return; }
+      if (SKIP_DIRS.has(e.name)) continue;
+      // Skip dotfiles at the top, but allow important dotfiles like .gitignore
+      if (e.name.startsWith(".") && e.name !== ".gitignore" && e.name !== ".env.example") {
+        if (e.isDirectory()) continue;
+      }
+      const relPath = relPrefix ? `${relPrefix}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        await walk(join(dir, e.name), relPath, depth + 1);
+      } else if (e.isFile()) {
+        results.push(relPath);
+      }
+    }
+  }
+
+  await walk(workdir, "", 0);
+  if (truncated) results.push(`... (truncated at ${maxEntries} entries)`);
+  return results;
+}
 
 /**
  * Read key project files from the worktree and build a context section.
@@ -91,28 +171,15 @@ export async function gatherProjectContext(worktreePath: string): Promise<{ cont
     }
   }
 
-  // Auto-read directory listing (top-level + 1 depth)
+  // Recursive file manifest. Gives the agent a real structural view of the
+  // project so it can plan against actual paths instead of having to spend
+  // tool calls on `listDirectory` to discover what exists. Capped to avoid
+  // blowing up the prompt on large repos.
   try {
-    const listing: string[] = [];
-    const entries = await fsReaddir(worktreePath, { withFileTypes: true });
-    for (const e of entries) {
-      if (e.name === "node_modules" || e.name === ".git") continue;
-      const prefix = e.isDirectory() ? "[dir]" : "[file]";
-      listing.push(`${prefix} ${e.name}`);
-      if (e.isDirectory()) {
-        try {
-          const sub = await fsReaddir(join(worktreePath, e.name), { withFileTypes: true });
-          for (const s of sub.slice(0, 20)) {
-            if (s.name === "node_modules" || s.name === ".git") continue;
-            listing.push(`  ${s.isDirectory() ? "[dir]" : "[file]"} ${e.name}/${s.name}`);
-          }
-          if (sub.length > 20) listing.push(`  ... (${sub.length - 20} more)`);
-        } catch { /* permission error etc */ }
-      }
-    }
-    if (listing.length > 0) {
-      const dirText = listing.join("\n");
-      sections.push(`### Directory Structure\n\`\`\`\n${dirText}\n\`\`\``);
+    const files = await listProjectFiles(worktreePath, 200);
+    if (files.length > 0) {
+      const dirText = files.join("\n");
+      sections.push(`### Project Files (${files.length} entries)\n\`\`\`\n${dirText}\n\`\`\``);
       totalChars += dirText.length;
     }
   } catch { /* empty or inaccessible */ }
