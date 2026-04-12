@@ -24,7 +24,7 @@ import type { Db } from "./db";
 import { getRecentLogs, onLogEntry } from "./console-log";
 import { executePipeline, executeStageRetry, cancelPipeline, hasCheckpoint, type PipelineContext } from "./pipeline/index";
 
-import { mergePullRequest, authenticatedRemoteUrl, getBranchDiff } from "./git";
+import { mergePullRequest, authenticatedRemoteUrl, setRemoteUrl, getBranchDiff } from "./git";
 import { getGenerationSpeed, getAllMachineSpeeds } from "./stats";
 import { withLlmSession } from "./llm-dispatch";
 import {
@@ -298,7 +298,7 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     res.status(201).json(project);
   });
 
-  router.patch("/projects/:id", (req, res) => {
+  router.patch("/projects/:id", async (req, res) => {
     const project = db.getProject(req.params.id);
     if (!project) {
       res.status(404).json({ error: "project not found" });
@@ -306,7 +306,17 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     }
     const { name, workdir, git_remote, git_server_token, git_default_branch, build_command, test_command, lint_command } = req.body;
     db.updateProject(req.params.id, { name, workdir, git_remote, git_server_token, git_default_branch, build_command, test_command, lint_command });
-    res.json(db.getProject(req.params.id));
+    const updated = db.getProject(req.params.id)!;
+    // Apply the new token (or updated remote) to the main working directory
+    const effectiveRemote = git_remote ?? updated.git_remote;
+    const effectiveToken = git_server_token ?? updated.git_server_token;
+    if (effectiveRemote && effectiveToken) {
+      const authUrl = authenticatedRemoteUrl(effectiveRemote, effectiveToken);
+      if (authUrl) {
+        await setRemoteUrl(updated.workdir, authUrl);
+      }
+    }
+    res.json(updated);
   });
 
   router.delete("/projects/:id", (req, res) => {

@@ -12,6 +12,7 @@ interface ProjectSettingsProps {
 }
 
 export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettingsProps) {
+  const [gitRemote, setGitRemote] = useState(project.git_remote ?? '')
   const [buildCommand, setBuildCommand] = useState(project.build_command ?? '')
   const [testCommand, setTestCommand] = useState(project.test_command ?? '')
   const [lintCommand, setLintCommand] = useState(project.lint_command ?? '')
@@ -22,6 +23,7 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
 
   const hasTokenChange = gitToken.length > 0
   const hasChanges =
+    (gitRemote || null) !== (project.git_remote ?? null) ||
     (buildCommand || null) !== (project.build_command ?? null) ||
     (testCommand || null) !== (project.test_command ?? null) ||
     (lintCommand || null) !== (project.lint_command ?? null) ||
@@ -33,6 +35,7 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
     setSaved(false)
     try {
       const patch: Partial<Project> = {
+        git_remote: gitRemote || null,
         build_command: buildCommand || null,
         test_command: testCommand || null,
         lint_command: lintCommand || null,
@@ -76,10 +79,6 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
               <span className="font-mono text-xs">{project.workdir}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-border/50">
-              <span className="text-muted-foreground">Git Remote</span>
-              <span className="font-mono text-xs">{project.git_remote || '—'}</span>
-            </div>
-            <div className="flex justify-between py-2 border-b border-border/50">
               <span className="text-muted-foreground">Default Branch</span>
               <span className="font-mono">{project.git_default_branch}</span>
             </div>
@@ -87,6 +86,24 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
               <span className="text-muted-foreground">Created</span>
               <span>{new Date(project.created_at).toLocaleDateString()}</span>
             </div>
+          </div>
+        </section>
+
+        {/* Git remote URL */}
+        <section>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Git Remote</h3>
+          <div>
+            <label htmlFor="project-git-remote" className="block text-sm text-muted-foreground mb-1">Remote Repository URL</label>
+            <Input
+              id="project-git-remote"
+              value={gitRemote}
+              onChange={e => { setGitRemote(e.target.value); }}
+              placeholder="https://github.com/owner/repo.git"
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              The remote repository URL used for cloning, pushing, and pull request operations.
+            </p>
           </div>
         </section>
 
