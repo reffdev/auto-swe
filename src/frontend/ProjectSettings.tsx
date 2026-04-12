@@ -15,26 +15,34 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
   const [buildCommand, setBuildCommand] = useState(project.build_command ?? '')
   const [testCommand, setTestCommand] = useState(project.test_command ?? '')
   const [lintCommand, setLintCommand] = useState(project.lint_command ?? '')
+  const [gitToken, setGitToken] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const hasTokenChange = gitToken.length > 0
   const hasChanges =
     (buildCommand || null) !== (project.build_command ?? null) ||
     (testCommand || null) !== (project.test_command ?? null) ||
-    (lintCommand || null) !== (project.lint_command ?? null)
+    (lintCommand || null) !== (project.lint_command ?? null) ||
+    hasTokenChange
 
   const handleSave = async () => {
     setSaving(true)
     setError(null)
     setSaved(false)
     try {
-      await api.updateProject(project.id, {
+      const patch: Partial<Project> = {
         build_command: buildCommand || null,
         test_command: testCommand || null,
         lint_command: lintCommand || null,
-      } as Partial<Project>)
+      }
+      if (hasTokenChange) {
+        patch.git_server_token = gitToken
+      }
+      await api.updateProject(project.id, patch)
       onDataChange()
+      setGitToken('')
       setSaved(true)
       setTimeout(() => { setSaved(false); }, 2000)
     } catch (e) {
@@ -79,6 +87,28 @@ export function ProjectSettings({ project, onBack, onDataChange }: ProjectSettin
               <span className="text-muted-foreground">Created</span>
               <span>{new Date(project.created_at).toLocaleDateString()}</span>
             </div>
+          </div>
+        </section>
+
+        {/* Git access token */}
+        <section>
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3 uppercase tracking-wide">Git Access Token</h3>
+          <div>
+            <label htmlFor="project-git-token" className="block text-sm text-muted-foreground mb-1">
+              Personal Access Token {project.git_server_token ? <span className="text-emerald-400">(configured)</span> : <span className="text-muted-foreground/70">(not set)</span>}
+            </label>
+            <Input
+              id="project-git-token"
+              type="password"
+              value={gitToken}
+              onChange={e => { setGitToken(e.target.value); }}
+              placeholder={project.git_server_token ? 'Enter a new token to replace the existing one' : 'ghp_... or gitea token'}
+              className="font-mono text-sm"
+              autoComplete="new-password"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Used to authenticate pushes, create pull requests, and open GitHub/Gitea issues. Leave empty to keep the current token unchanged.
+            </p>
           </div>
         </section>
 
