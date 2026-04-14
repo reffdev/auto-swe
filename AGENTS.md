@@ -1,8 +1,8 @@
-# AGENTS.md — Open SWE
+# AGENTS.md - Auto SWE
 
 ## What This Is
 
-An autonomous software engineering orchestration system. It takes high-level directives ("build a game"), decomposes them into milestones and tasks, dispatches work to AI agents on separate machines, handles code review, and generates art/music/SFX assets via ComfyUI — all with human oversight at configurable gates.
+An autonomous software engineering orchestration system. It takes high-level directives ("build a game"), decomposes them into milestones and tasks, dispatches work to AI agents on separate machines, handles code review, and generates art/music/SFX assets via ComfyUI - all with human oversight at configurable gates.
 
 It operates at two levels:
 
@@ -165,7 +165,7 @@ src/frontend/
 | `llm.ts` | Unified LLM client with resilient fetch, retry logic, stream inactivity detection, prompt caching hints. |
 | `llm-dispatch.ts` | PUBLIC dispatch: `withLlmSession` / `withLightLlmSession` / `withLightOrFallbackLlmSession`. The only legal entry points for LLM calls. |
 | `models.ts` | Logical model resolver: CRUD, `resolveInferenceCandidates`, `resolveLightNpuExecution`. |
-| `schema.ts` | Drizzle ORM table definitions — single source of truth for the DB schema. |
+| `schema.ts` | Drizzle ORM table definitions - single source of truth for the DB schema. |
 | `db.ts` | Database class wrapping Drizzle + better-sqlite3. WAL mode. Auto-migration via ALTER TABLE in `migrate()`. |
 | `api.ts` | Express routes (~40+ endpoints). CRUD for projects/machines/issues/models, director/foreman/planner APIs, analysis, stats, console SSE. |
 | `git.ts` | Git operations: worktree lifecycle, commit, push, PR creation/merge (GitHub + Gitea). |
@@ -190,7 +190,7 @@ src/frontend/
 | `persistent-memory.ts` | `.swe/` file management. |
 | `memsearch.ts` | Semantic search via `memsearch` CLI + memory write validators. |
 | `episodic-extractor.ts` | Extract patterns before pruning episodic logs. |
-| `task-knowledge-extractor.ts` | Post-task learning — extracts conventions, patterns, gotchas. |
+| `task-knowledge-extractor.ts` | Post-task learning - extracts conventions, patterns, gotchas. |
 | `style-lock.ts` | Lock approved art style (checkpoint, preset, prompt prefix, reference image). |
 | `style-exploration.ts` | Generate style exploration tasks with varied prompts. |
 | `art-task-processor.ts` | Inject ComfyUI tags into art task descriptions. |
@@ -259,7 +259,7 @@ src/frontend/
 ## Database
 
 SQLite with WAL mode. Drizzle ORM for schema, raw SQL for complex queries.
-Migrations in `db.ts` `migrate()` method — add `ALTER TABLE` statements there.
+Migrations in `db.ts` `migrate()` method - add `ALTER TABLE` statements there.
 
 Key tables: `projects`, `machines`, `models`, `machine_models`, `issues`, `runs`, `llm_requests`, `foreman_tasks`, `foreman_runs`, `foreman_config`, `director_directives`, `director_milestones`, `director_reviews`, `director_conversations`, `director_messages`, `planner_conversations`, `planner_messages`, `analysis_configs`, `analysis_runs`.
 
@@ -279,17 +279,17 @@ to the AI SDK on that host). The same logical model can be hosted on multiple
 machines with different provider strings.
 
 **Two configured slots** in `foreman_config`:
-- `director_model_id` — used by Director conversation/planner/verifier,
+- `director_model_id` - used by Director conversation/planner/verifier,
   issue decomposition, planner-api, and analysis runs
-- `foreman_code_model_id` — used by Foreman code task executor, pipeline runs,
+- `foreman_code_model_id` - used by Foreman code task executor, pipeline runs,
   and pipeline stages
-- `director_machine_id` — optional preferred-machine hint for the Director slot
+- `director_machine_id` - optional preferred-machine hint for the Director slot
   (when the Director model is hosted on multiple machines)
 
 **Per-task override:** `foreman_tasks.model_id` (FK to `models.id`, nullable).
 NULL = use the Foreman code slot default.
 
-**Resolution flow** (everyone goes through `src/server/llm-dispatch.ts` —
+**Resolution flow** (everyone goes through `src/server/llm-dispatch.ts` -
 `models.ts` is the resolver, `llm-dispatch.ts` is the public dispatch entry).
 There are exactly THREE entry points and you should never need anything else:
 
@@ -301,8 +301,8 @@ There are exactly THREE entry points and you should never need anything else:
 const result = await withLlmSession(
   db, "foreman", taskLabel, modelId,
   async (session) => {
-    // session.llm           — instantiated LLM model
-    // session.machine       — the chosen machine
+    // session.llm           - instantiated LLM model
+    // session.machine       - the chosen machine
     // session.providerModelId
     // session.effectiveContextLimit
     return await generate(session.llm, { system, prompt });
@@ -330,9 +330,9 @@ const result = await withLightOrFallbackLlmSession(
 work failed) and returns `null` when all hosting machines are temporarily at
 capacity (caller should defer and retry later).
 
-**Effective context limit** = `min(machine.context_limit, binding.context_limit, model.default_context_limit)` — the smallest non-null value wins.
+**Effective context limit** = `min(machine.context_limit, binding.context_limit, model.default_context_limit)` - the smallest non-null value wins.
 
-**NPU pathway** (lightweight helpers — episodic extractor, task knowledge
+**NPU pathway** (lightweight helpers - episodic extractor, task knowledge
 extractor, art prompt revision, art style exploration) is **not** managed by
 the slot system. The dispatch helpers above (`withLightLlmSession` /
 `withLightOrFallbackLlmSession`) handle it. Internally they call
@@ -340,7 +340,7 @@ the slot system. The dispatch helpers above (`withLightLlmSession` /
 enabled binding (sorted by binding `created_at` for determinism). NPU
 machines are excluded from the inference resolver.
 
-**ComfyUI dispatch** (art/music/sfx tasks) is also untouched by this layer — it
+**ComfyUI dispatch** (art/music/sfx tasks) is also untouched by this layer - it
 uses the preset/workflow system in `foreman/comfyui-*.ts`.
 
 ## Machine Manager
@@ -350,7 +350,7 @@ use `withLlmSession` / `withLightLlmSession` from `llm-dispatch.ts` instead of
 calling the machine manager directly. The lower-level helpers are:
 
 - `acquireLease(db, consumer, label, { preferredMachineId, strictPreferred, machineType })`
-  — used by `withLlmSession` and by ComfyUI dispatch (`machineType: "comfyui"`).
+  - used by `withLlmSession` and by ComfyUI dispatch (`machineType: "comfyui"`).
 - `releaseLease(leaseId)` in finally block.
 - Leases expire automatically (10min director idle, 30min foreman, 60min pipeline, 10min analysis).
 - Leases auto-renew on activity (per-step in agent loops) and abort the
@@ -404,9 +404,9 @@ On rejection, user feedback is processed by an LLM to intelligently revise the p
 ## Review System
 
 Reviews use a cache-friendly three-part prompt:
-1. **System prompt** — identical across all lenses (cached)
-2. **Shared context** — git diff, project files, prior outputs (cached)
-3. **Lens prompt** — lens-specific instructions (only this changes)
+1. **System prompt** - identical across all lenses (cached)
+2. **Shared context** - git diff, project files, prior outputs (cached)
+3. **Lens prompt** - lens-specific instructions (only this changes)
 
 This gives ~77% token savings on multi-lens reviews.
 
@@ -426,7 +426,7 @@ subprocess runs in an isolated namespace with:
 - Per-stage network policy (implement/test-write get net; scout/review/verify don't)
 - Fresh PID/IPC/UTS namespaces
 
-The orchestrator itself is **not** sandboxed — only subprocesses spawned from
+The orchestrator itself is **not** sandboxed - only subprocesses spawned from
 inside agent execution paths. The bwrap wrapper transparently falls through
 to direct spawn on non-Linux hosts or when bwrap is missing. See
 `src/server/util/sandbox.ts` and `docs/sandbox-smoke.md`.
@@ -436,7 +436,7 @@ to direct spawn on non-Linux hosts or when bwrap is missing. See
 - **Two-phase startup**: Orchestrator starts Director first, gates Foreman until Director's first tick completes.
 - **Lease-based access**: All machine access via Machine Manager with priority queue, auto-renewal, and auto-expiry.
 - **Circuit breakers**: Per-machine fault tolerance prevents repeated dispatch to failing machines.
-- **Event-driven scheduling**: Nudge pattern — no polling timers, schedulers wake on state changes.
+- **Event-driven scheduling**: Nudge pattern - no polling timers, schedulers wake on state changes.
 - **Line ending normalization**: All file-reading tools normalize `\r\n` → `\n` for Windows compat.
 - **Shell safety**: `shell: false` in spawn calls prevents injection. Commit messages piped via stdin.
 - **Context budget**: Tracks chars consumed by tool results. Truncates large outputs as budget fills.
@@ -447,9 +447,9 @@ to direct spawn on non-Linux hosts or when bwrap is missing. See
 ## Code Conventions
 
 - TypeScript, strict mode. All files use `.ts` / `.tsx`.
-- AI SDK (`ai` package) for all LLM calls — `streamText`, `generateText`, `tool()`.
+- AI SDK (`ai` package) for all LLM calls - `streamText`, `generateText`, `tool()`.
 - LLM dispatch always goes through `llm-dispatch.ts` (`withLlmSession`,
-  `withLightLlmSession`, `withLightOrFallbackLlmSession`) — these are the only
+  `withLightLlmSession`, `withLightOrFallbackLlmSession`) - these are the only
   public entry points. They internally handle resolution via `models.ts`,
   lease acquisition, colocation release, warmup, and provider construction.
   Do not call `acquireLease`, `instantiateLlm`, `warmUpLlm`, or
@@ -459,7 +459,7 @@ to direct spawn on non-Linux hosts or when bwrap is missing. See
 - Express routes with explicit error handling.
 - Git worktrees for task isolation.
 - Event-driven scheduling (nudge pattern, no polling timers).
-- `shell: false` in spawn calls — prevents injection and special char issues.
+- `shell: false` in spawn calls - prevents injection and special char issues.
 - Database migrations go in `Db.migrate()` as try/catch ALTER TABLE statements.
 - Tests use `:memory:` SQLite and temp directories.
 
@@ -472,15 +472,15 @@ test runtime, which is more lenient about excess properties on object literals.
 
 ## What NOT To Do
 
-- Don't add migrations by modifying the schema alone — add ALTER TABLE to `db.ts` `migrate()`.
-- Don't bypass `llm-dispatch.ts` for LLM calls — always use `withLlmSession`,
+- Don't add migrations by modifying the schema alone - add ALTER TABLE to `db.ts` `migrate()`.
+- Don't bypass `llm-dispatch.ts` for LLM calls - always use `withLlmSession`,
   `withLightLlmSession`, or `withLightOrFallbackLlmSession`. They handle lease
   acquisition, colocation release, warmup, provider construction, and
   guaranteed cleanup. Calling `acquireLease` / `instantiateLlm` / `warmUpLlm`
   directly from feature code is how leaked leases happen.
 - Don't read provider strings from machine fields (`machines.model_id` no longer
-  exists). Resolution happens inside `withLlmSession` via `resolveInferenceCandidates` —
+  exists). Resolution happens inside `withLlmSession` via `resolveInferenceCandidates` -
   feature code never needs to know about provider strings or bindings directly.
-- Don't make the Director write project files — it has read-only filesystem access.
-- Don't skip `shell: false` in spawn calls — prevents injection and special char issues.
+- Don't make the Director write project files - it has read-only filesystem access.
+- Don't skip `shell: false` in spawn calls - prevents injection and special char issues.
 - Don't add `shell: true` to memsearch or other subprocess calls.
