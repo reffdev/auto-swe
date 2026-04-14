@@ -148,7 +148,6 @@ export async function planNextTasks(
   let resultText: string | null;
   // Hoisted out of the session callback so post-stream logic can read it.
   // Set inside onStepFinish when the agent calls advanceMilestone.
-  let advanceMilestoneCalled = false;
   // True iff the agent called advanceMilestone AND it returned advanced=true.
   // Used post-stream to short-circuit parsing — there's nothing to parse,
   // the milestone was committed by the tool itself.
@@ -375,11 +374,8 @@ export async function planNextTasks(
             if (toolCalls?.length) {
               const toolNames = toolCalls.map(tc => tc.toolName).join(", ");
               console.log(`[director:planner] step — ${toolNames} (${elapsed}s)`);
-              for (const tc of toolCalls) {
-                if (tc.toolName === "advanceMilestone") {
-                  advanceMilestoneCalled = true;
-                }
-              }
+
+
             }
 
             // Inspect advanceMilestone tool RESULTS (not just calls) so we
@@ -575,12 +571,13 @@ export async function planNextTasks(
     rawTasks = parseNextTasks(resultText);
   }
 
-  // Mutual exclusion: if the planner called `advanceMilestone` during this
-  // run, the milestone is being marked done. It is incoherent to also queue
-  // new tasks against it in the same invocation. Discard any next_tasks
-  // block and let the next director tick re-evaluate against the now-
-  // advanced state.
-  if (advanceMilestoneCalled && rawTasks.length > 0) {
+  // Mutual exclusion: if `advanceMilestone` *succeeded* during this run,
+  // the milestone is done. It is incoherent to also queue new tasks against
+  // it in the same invocation. Discard any next_tasks and let the next
+  // director tick re-evaluate against the now-advanced state.
+  // NOTE: we intentionally check success, not mere invocation — when
+  // advanceMilestone *fails*, the planner's fallback tasks are valuable.
+  if (advanceMilestoneSucceededOuter && rawTasks.length > 0) {
     console.warn(`[director:planner] LLM called advanceMilestone AND emitted ${rawTasks.length} next_tasks for "${milestone.title}" — these are mutually exclusive. Discarding next_tasks; advanceMilestone wins.`);
     try {
       if (directive.conversation_id) {
