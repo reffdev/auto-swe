@@ -93,6 +93,23 @@ export function addKeyDecision(db: Db, directive: DirectorDirective, decision: s
  * Assemble the full context for a Director LLM call.
  * This is the "context assembly pipeline" from the plan.
  */
+/**
+ * Wrap a section in a semantic XML tag block. Sections are separated this
+ * way (rather than markdown headers) so the LLM can unambiguously identify
+ * boundaries — Anthropic's model docs call this out specifically as the
+ * preferred structure for multi-section context. Tags are closed on their
+ * own line so they don't get confused with inline references.
+ */
+function tag(name: string, body: string, attrs?: Record<string, string>): string {
+  const attrStr = attrs
+    ? Object.entries(attrs)
+        .filter(([, v]) => v != null && v !== "")
+        .map(([k, v]) => ` ${k}="${String(v).replace(/"/g, "&quot;")}"`)
+        .join("")
+    : "";
+  return `<${name}${attrStr}>\n${body}\n</${name}>`;
+}
+
 export async function assembleDirectorContext(
   db: Db,
   directive: DirectorDirective,
@@ -105,14 +122,14 @@ export async function assembleDirectorContext(
   // 1. Project CLAUDE.md
   const claudeMd = await tryReadFile(resolve(project.workdir, "CLAUDE.md"));
   if (claudeMd) {
-    parts.push("# Project Rules (CLAUDE.md)\n\n" + claudeMd);
+    parts.push(tag("project_rules", claudeMd, { source: "CLAUDE.md" }));
   }
 
   // 2. Generated design doc
   if (directive.design_doc_path) {
     const designDoc = await tryReadFile(resolve(project.workdir, directive.design_doc_path));
     if (designDoc) {
-      parts.push("# Design Document\n\n" + designDoc);
+      parts.push(tag("design_doc", designDoc, { path: directive.design_doc_path }));
     }
   }
 
@@ -122,7 +139,7 @@ export async function assembleDirectorContext(
     for (const docPath of docPaths) {
       const content = await tryReadFile(resolve(project.workdir, docPath));
       if (content) {
-        parts.push(`# Reference: ${docPath}\n\n` + content);
+        parts.push(tag("reference_doc", content, { path: docPath }));
       }
     }
   }
@@ -131,14 +148,19 @@ export async function assembleDirectorContext(
   if (directive.progress) {
     try {
       const progress: DirectiveProgress = JSON.parse(directive.progress);
-      parts.push(formatProgressSummary(progress));
+      parts.push(tag("directive_progress", formatProgressSummary(progress)));
     } catch { /* ignore */ }
   }
 
   // 5. Current milestone
   const activeMilestone = db.getActiveMilestone(directive.id);
   if (activeMilestone) {
-    parts.push(`# Current Milestone\n\nTitle: ${activeMilestone.title}\nDescription: ${activeMilestone.description}\nVerification: ${activeMilestone.verification ?? "Not specified"}`);
+    const body = [
+      `Title: ${activeMilestone.title}`,
+      `Description: ${activeMilestone.description}`,
+      `Verification: ${activeMilestone.verification ?? "Not specified"}`,
+    ].join("\n");
+    parts.push(tag("current_milestone", body, { id: activeMilestone.id, title: activeMilestone.title }));
   }
 
   // 6. Task summaries for the planner
@@ -168,7 +190,7 @@ export async function assembleDirectorContext(
       const summaries = recentCompleted.map(t =>
         `- [${t.status.toUpperCase()}] ${t.title}${t.error_message ? ` (error: ${t.error_message})` : ""}`
       );
-      parts.push("# Recent Task Results\n\n" + summaries.join("\n"));
+      parts.push(tag("recent_task_results", summaries.join("\n")));
     }
 
     // Full title manifest — every task for this directive, deduped by title.
@@ -183,22 +205,32 @@ export async function assembleDirectorContext(
         seen.add(key);
         manifest.push(`- [${t.status}] ${t.title} (${t.type})`);
       }
-      parts.push(
-        "# All Task Titles In This Directive (do NOT re-plan any of these)\n\n" +
+      const body =
         "Every task below — including completed and accepted ones — already exists. " +
         "Do not generate a task with the same title or the same concept as any of these. " +
         "If you believe one of these needs to be redone, stop and escalate instead.\n\n" +
-        manifest.join("\n")
-      );
+        manifest.join("\n");
+      parts.push(tag("existing_task_titles", body));
     }
   }
 
   // 7. Art style status
   const styleLock = await getStyleLock(project.workdir);
   if (styleLock) {
-    parts.push(`# Art Style (LOCKED)\n\nPreset: ${styleLock.preset}\nCheckpoint: ${styleLock.checkpoint}\nStyle prefix: "${styleLock.prompt_style_prefix}"\nIP-Adapter: ${styleLock.ip_adapter_model} @ ${styleLock.ip_adapter_weight}\nLocked: ${styleLock.locked_at}`);
+    const body = [
+      `Preset: ${styleLock.preset}`,
+      `Checkpoint: ${styleLock.checkpoint}`,
+      `Style prefix: "${styleLock.prompt_style_prefix}"`,
+      `IP-Adapter: ${styleLock.ip_adapter_model} @ ${styleLock.ip_adapter_weight}`,
+      `Locked: ${styleLock.locked_at}`,
+    ].join("\n");
+    parts.push(tag("art_style", body, { status: "locked" }));
   } else {
-    parts.push("# Art Style\n\n**Not established.** No style reference locked for this project. A style_exploration task should be created before generating production art assets.");
+    parts.push(tag(
+      "art_style",
+      "Not established. No style reference locked for this project. A style_exploration task should be created before generating production art assets.",
+      { status: "unlocked" },
+    ));
   }
 
   // 8. Persistent memory — project brief always, conventions retrieved by relevance
@@ -210,7 +242,7 @@ export async function assembleDirectorContext(
   });
   const memoryText = formatMemoryContext(memoryCtx);
   if (memoryText) {
-    parts.push(memoryText);
+    parts.push(tag("persistent_memory", memoryText));
   }
 
   // Semantic + episodic memories (separate from conventions): search for relevant ones
@@ -225,27 +257,26 @@ export async function assembleDirectorContext(
       const memText = nonConvResults
         .map((r, i) => `${i + 1}. ${r.source ? `[${r.source}] ` : ""}${r.content}`)
         .join("\n\n");
-      parts.push("# Relevant Memories\n\n" + memText);
+      parts.push(tag("relevant_memories", memText));
     }
   }
 
-  // 8. Project filesystem state (directory listing, key files)
+  // 9. Project filesystem state (directory listing, key files)
   try {
     const projectState = await gatherProjectContext(project.workdir);
     if (projectState.context) {
-      parts.push("# Project Filesystem State\n\n" + projectState.context);
+      parts.push(tag("project_files", projectState.context));
     }
   } catch { /* non-fatal — project dir may not exist yet */ }
 
-  // 8. Pending review gates
+  // 10. Pending review gates
   const pendingReviews = db.getPendingReviewsForDirective(directive.id);
   if (pendingReviews.length > 0) {
-    parts.push("# Pending Human Reviews\n\n" + pendingReviews.map(r =>
-      `- [${r.review_type}] ${r.question}`
-    ).join("\n"));
+    const body = pendingReviews.map(r => `- [${r.review_type}] ${r.question}`).join("\n");
+    parts.push(tag("pending_human_reviews", body));
   }
 
-  return parts.join("\n\n---\n\n");
+  return parts.join("\n\n");
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

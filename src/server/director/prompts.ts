@@ -206,20 +206,31 @@ export function buildPlanningPrompt(opts: {
 
   const system = systemParts.join("\n");
 
-  const userParts = opts.verificationMode
+  // The user prompt is structured as a series of XML-tagged sections.
+  // The directive context is already pre-tagged by assembleDirectorContext;
+  // here we add task-specific tags around the milestone, instructions, and
+  // (later, conditionally) verification issues.
+  const milestoneTagBody = opts.verificationMode
     ? [
-        opts.directiveContext,
-        "",
-        "---",
-        "",
-        `# Milestone ready for verification: ${opts.milestoneTitle}`,
+        `Title: ${opts.milestoneTitle}`,
         `milestone_id: ${opts.milestoneId ?? "(unknown)"}`,
-        "",
         `Verification criteria: ${opts.milestoneVerification}`,
         "",
-        "**ALL TASKS FOR THIS MILESTONE ARE COMPLETE.** Your job RIGHT NOW is to decide:",
-        "advance the milestone, or plan corrective tasks. There is no third option.",
-        "",
+        "ALL TASKS FOR THIS MILESTONE ARE COMPLETE. The decision is: advance the milestone, or plan corrective tasks. There is no third option.",
+      ].join("\n")
+    : [
+        `Title: ${opts.milestoneTitle}`,
+        `Verification criteria: ${opts.milestoneVerification}`,
+      ].join("\n");
+
+  const milestoneTagAttrs: Record<string, string> = { title: opts.milestoneTitle };
+  if (opts.milestoneId) milestoneTagAttrs.id = opts.milestoneId;
+  if (opts.verificationMode) milestoneTagAttrs.mode = "verification";
+
+  const milestoneTag = `<milestone${Object.entries(milestoneTagAttrs).map(([k, v]) => ` ${k}="${v.replace(/"/g, "&quot;")}"`).join("")}>\n${milestoneTagBody}\n</milestone>`;
+
+  const instructionsBody = opts.verificationMode
+    ? [
         "## Required sequence (do these in order, then STOP)",
         "",
         "1. Call `checkMilestoneReadyToAdvance(milestoneId)`. ONE call.",
@@ -249,16 +260,8 @@ export function buildPlanningPrompt(opts: {
         "runProjectCheck, etc.) to clarify. After 5 calls, you must commit to a decision",
         "even if you're not 100% sure. The verifier's confidence is enough — your job is",
         "to act on it, not to second-guess it.",
-      ]
+      ].join("\n")
     : [
-        opts.directiveContext,
-        "",
-        "---",
-        "",
-        `# Current Milestone: ${opts.milestoneTitle}`,
-        "",
-        `Verification criteria: ${opts.milestoneVerification}`,
-        "",
         "Generate the next 1-5 tasks to make progress toward this milestone, OR explicitly",
         "decide to wait. Focus on what's missing or incomplete.",
         "",
@@ -287,39 +290,45 @@ export function buildPlanningPrompt(opts: {
         "Waiting is a first-class decision, not a failure. The next tick will run again when",
         "in-flight work completes. Forcing parallel work that doesn't fit the milestone's",
         "structure produces busywork the verifier will reject anyway.",
-      ];
+      ].join("\n");
+
+  const instructionsTag = `<instructions>\n${instructionsBody}\n</instructions>`;
+
+  const userParts: string[] = [
+    opts.directiveContext,
+    milestoneTag,
+    instructionsTag,
+  ];
 
   if (opts.verificationIssues?.length) {
     const attempt = opts.correctionAttempt ?? 1;
     const isLateAttempt = attempt >= 2;
-    userParts.push(
-      "",
-      `## CORRECTIVE PLANNING — Verification Failed (attempt ${attempt} of 3)`,
-      "",
+    const lines: string[] = [
       "The milestone was verified and the following issues were found. You MUST generate tasks to fix these specific errors.",
       "Do NOT regenerate tasks that already exist — create NEW fix tasks with DIFFERENT titles.",
       "Use the read-only tools (readFile, gitDiff, inspectTaskOutcome, runProjectCheck) to investigate the root cause before generating tasks.",
       "",
-      "**Verification errors:**",
+      "Verification errors:",
       ...opts.verificationIssues.map(issue => `- ${issue}`),
-    );
+    ];
     if (isLateAttempt) {
-      userParts.push(
+      lines.push(
         "",
         `**This is attempt ${attempt}. Previous corrective attempts have failed.**`,
         "Do NOT just retry the same fix with minor variations — that's the loop you are in.",
         "Required:",
         "1. Use `inspectTaskDiff` on the failed corrective tasks from previous attempts to see EXACTLY what was tried and why it didn't work.",
         "2. Diagnose the ROOT CAUSE — is the verification criterion wrong? Is there a missing dependency? Is the test environment broken?",
-        "3. Either generate a fundamentally different approach, OR if you genuinely cannot fix this, output a `next_tasks` block containing a single task of type `claude` with description `[needs_human_review] <explanation of why this milestone is stuck>` so a human can intervene.",
+        "3. Either generate a fundamentally different approach, OR call `createTasks` with a single task of type `claude` and description `[needs_human_review] <explanation of why this milestone is stuck>` so a human can intervene.",
       );
       if (attempt >= 3) {
-        userParts.push(
+        lines.push(
           "",
           "**Attempt 3 is the final automated attempt.** If this fails, the milestone will be escalated to human review automatically. Make this attempt count — change strategy, not tactics.",
         );
       }
     }
+    userParts.push(`<corrective_planning attempt="${attempt}" of="3">\n${lines.join("\n")}\n</corrective_planning>`);
   }
 
   if (opts.idleMachineTypes?.length) {
@@ -328,11 +337,10 @@ export function buildPlanningPrompt(opts: {
       comfyui: "art/music/sfx",
     };
     const idleDesc = opts.idleMachineTypes
-      .map(t => `**${t}** (runs ${typeLabels[t] ?? t} tasks)`)
+      .map(t => `${t} (runs ${typeLabels[t] ?? t} tasks)`)
       .join(" and ");
-    userParts.push(
-      "",
-      `## Top-up request — idle machines: ${idleDesc}`,
+    const body = [
+      `Idle machines: ${idleDesc}`,
       "",
       "Other tasks are still running. The dispatcher noticed these machine type(s) have no",
       "queued work and asked you to generate parallel tasks if appropriate.",
@@ -347,10 +355,11 @@ export function buildPlanningPrompt(opts: {
       "serial and the next step depends on the in-flight tasks, emit a `wait` block instead",
       "(see the wait format above). An idle machine is FINE — busywork that the verifier",
       "rejects is worse than an idle machine.",
-    );
+    ].join("\n");
+    userParts.push(`<top_up_request idle_types="${opts.idleMachineTypes.join(",")}">\n${body}\n</top_up_request>`);
   }
 
-  const user = userParts.join("\n");
+  const user = userParts.join("\n\n");
 
   return { system, user };
 }
@@ -514,35 +523,25 @@ export function buildMilestoneVerificationPrompt(opts: {
     "Be rigorous but fair. Minor style issues are not milestone failures.",
   ].join("\n");
 
-  const userParts = [
-    `# Milestone: ${opts.milestoneTitle}`,
-    "",
-    "## Verification Criteria",
-    opts.milestoneVerification,
-    "",
-    "## Completed Tasks",
-    opts.completedTaskSummaries,
+  const userParts: string[] = [
+    `<milestone title="${opts.milestoneTitle.replace(/"/g, "&quot;")}">\nTitle: ${opts.milestoneTitle}\n</milestone>`,
+    `<verification_criteria>\n${opts.milestoneVerification}\n</verification_criteria>`,
+    `<completed_tasks>\n${opts.completedTaskSummaries}\n</completed_tasks>`,
   ];
   if (opts.projectState) {
-    userParts.push(
-      "",
-      "## Current Project State",
-      opts.projectState.slice(0, 15000),
-    );
+    userParts.push(`<project_files>\n${opts.projectState.slice(0, 15000)}\n</project_files>`);
   } else {
     // Be explicit: project listing wasn't available, but that's NOT a
     // reason to fail the milestone. The LLM should base its verdict on
     // the verification criteria + completed task summaries.
     userParts.push(
-      "",
-      "## Note",
-      "A raw project file listing was not available for this verification. " +
+      "<note>\nA raw project file listing was not available for this verification. " +
       "Base your verdict on the verification criteria and the completed task " +
       "summaries above. Do NOT cite missing file listings as a reason to fail " +
-      "or escalate — that's a tooling issue on our side, not a milestone problem.",
+      "or escalate — that's a tooling issue on our side, not a milestone problem.\n</note>",
     );
   }
-  const user = userParts.join("\n");
+  const user = userParts.join("\n\n");
 
   return { system, user };
 }
