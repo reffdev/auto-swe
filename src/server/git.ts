@@ -703,20 +703,24 @@ export async function createPullRequest(
   }
 }
 
+export interface MergePullRequestResult {
+  ok: boolean;
+  /** Error message when ok=false. Caller decides whether to log it. */
+  error?: string;
+}
+
 export async function mergePullRequest(
   project: Project,
   prNumber: number,
   message?: string,
-): Promise<boolean> {
+): Promise<MergePullRequestResult> {
   if (!project.git_remote || !project.git_server_token) {
-    console.error("[git] cannot merge PR — no remote or token configured");
-    return false;
+    return { ok: false, error: "no git remote or token configured" };
   }
 
   const parsed = parseRemote(project.git_remote);
   if (!parsed) {
-    console.error(`[git] cannot parse remote URL: ${project.git_remote}`);
-    return false;
+    return { ok: false, error: `cannot parse remote URL: ${project.git_remote}` };
   }
 
   const { owner, repo, isGitHub } = parsed;
@@ -735,14 +739,18 @@ export async function mergePullRequest(
 
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`HTTP ${res.status}: ${text}`);
+      // Return the error to the caller instead of logging it. Many merge
+      // failures (e.g. HTTP 405 "base branch was modified") are recovered
+      // by the caller via rebase-and-retry, so logging here pollutes the
+      // log with a scary stack trace for what is actually a routine race.
+      // Callers can decide whether to surface or swallow the error.
+      return { ok: false, error: `HTTP ${res.status}: ${text.slice(0, 500)}` };
     }
 
     console.log(`[git] PR #${prNumber} merged`);
-    return true;
+    return { ok: true };
   } catch (err) {
-    console.error(`[git] PR merge failed:`, err);
-    return false;
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

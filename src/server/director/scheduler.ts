@@ -190,20 +190,27 @@ async function createAndMergePR(db: Db, task: ForemanTask, project: Project, mer
       }
     }
 
-    // Merge the PR — if it fails (e.g., merge conflict from other PRs), rebase and retry
+    // Merge the PR — if it fails (e.g., merge conflict from other PRs), rebase and retry.
+    // We deliberately do NOT log the first-attempt failure here. Many merge
+    // failures (e.g. HTTP 405 "base branch was modified") are routine races
+    // that the rebase recovery resolves on the next attempt; logging the
+    // first failure pollutes the log with a scary error for what is
+    // ultimately a successful merge. Only log if the recovery also fails.
     if (prNumber) {
       let merged = await mergePullRequest(project, prNumber, mergeMessage);
-      if (!merged && task.git_worktree && task.git_branch) {
-        console.log(`[director] merge failed for PR #${prNumber}, attempting rebase for "${task.title}"`);
+      let firstError = merged.ok ? null : merged.error ?? "unknown error";
+      if (!merged.ok && task.git_worktree && task.git_branch) {
         const rebased = await rebaseAndPush(project.workdir, task.git_worktree, task.git_branch);
         if (rebased) {
           merged = await mergePullRequest(project, prNumber, mergeMessage);
         }
       }
-      if (merged) {
+      if (merged.ok) {
         console.log(`[director] merged PR #${prNumber} for "${task.title}"`);
       } else {
-        console.warn(`[director] failed to merge PR #${prNumber} for "${task.title}" — may need manual merge`);
+        // Both attempts failed — surface the actual error(s) so the user
+        // can decide what's wrong.
+        console.warn(`[director] failed to merge PR #${prNumber} for "${task.title}" — may need manual merge. First attempt: ${firstError}. Second attempt: ${merged.error ?? "unknown error"}`);
       }
     }
   } catch (err) {

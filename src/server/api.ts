@@ -886,8 +886,9 @@ export function createApiRouter(db: Db, options?: ApiOptions): Router {
     const project = db.getProject(issue.project_id);
     if (project?.git_remote && project?.git_server_token) {
       const merged = await mergePullRequest(project, issue.git_pr_number);
-      if (!merged) {
-        res.status(500).json({ error: "Failed to merge PR via git server API. You can merge it manually." });
+      if (!merged.ok) {
+        console.warn(`[api] manual PR merge failed for issue ${issue.id}: ${merged.error ?? "unknown error"}`);
+        res.status(500).json({ error: `Failed to merge PR: ${merged.error ?? "unknown error"}. You can merge it manually.` });
         return;
       }
     }
