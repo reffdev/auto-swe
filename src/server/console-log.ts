@@ -39,9 +39,26 @@ export function installConsoleCapture(): void {
     emitLogEntry(level, capture(level, args));
   };
 
+  // Reentrancy marker: true while we're inside a console.error/warn wrapper
+  // calling origError/origWarn. The stderr-write hook below checks this to
+  // skip its own emit — otherwise every console.error is captured twice, once
+  // via the console wrapper and once via the stderr hook that fires when the
+  // underlying stream write happens. The earlier "buffer.some(...)" dedupe
+  // check was racy (the buffer hadn't been written yet when the stderr hook
+  // ran) and leaked duplicates with a [stderr] prefix.
+  let inConsoleWrapper = false;
+
   console.log = (...args: unknown[]) => { origLog(...args); emit("log", args); };
-  console.error = (...args: unknown[]) => { origError(...args); emit("error", args); };
-  console.warn = (...args: unknown[]) => { origWarn(...args); emit("warn", args); };
+  console.error = (...args: unknown[]) => {
+    inConsoleWrapper = true;
+    try { origError(...args); } finally { inConsoleWrapper = false; }
+    emit("error", args);
+  };
+  console.warn = (...args: unknown[]) => {
+    inConsoleWrapper = true;
+    try { origWarn(...args); } finally { inConsoleWrapper = false; }
+    emit("warn", args);
+  };
 
   // Capture process-level events that don't go through console
   process.on("warning", (warning) => {
@@ -51,11 +68,12 @@ export function installConsoleCapture(): void {
   // Capture stderr writes from child processes that bypass console
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = (chunk: unknown, ...rest: unknown[]): boolean => {
-    const text = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
-    const trimmed = text.trim();
-    // Only capture non-empty lines that aren't already from console.error (avoid double-capture)
-    if (trimmed && !trimmed.startsWith("Error:") && !buffer.some(e => e.message.includes(trimmed.slice(0, 50)))) {
-      emitLogEntry("error", `[stderr] ${trimmed}`);
+    if (!inConsoleWrapper) {
+      const text = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
+      const trimmed = text.trim();
+      if (trimmed && !trimmed.startsWith("Error:")) {
+        emitLogEntry("error", `[stderr] ${trimmed}`);
+      }
     }
     return (origStderrWrite as Function)(chunk, ...rest);
   };

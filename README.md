@@ -4,6 +4,8 @@ An autonomous software engineering orchestration system. Takes high-level direct
 
 Single-host control plane, multi-machine execution. Built with Claude as a development tool.
 
+*Personal homelab project. Open source and generalized enough for anyone to run and extend, but not actively monitoring issues / PRs.*
+
 Detailed documentation & visualizations are available in [`docs/architecture/`](docs/architecture/)
 
 Agents read [`AGENTS.md`](AGENTS.md)
