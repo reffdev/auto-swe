@@ -12,6 +12,8 @@ Agents read [`AGENTS.md`](AGENTS.md)
 
 The agent failure modes observed while building this system motivated a separate project: [**inspect-degradation**](https://github.com/reffdev/inspect-degradation), a step-level evaluation pipeline for measuring within-run agent behavior.
 
+![auto-swe dashboard](example.jpg)
+
 ## What it does
 
 - **Director** - chats with you, drafts a design doc, decomposes it into milestones, plans task batches, and verifies completed work.
