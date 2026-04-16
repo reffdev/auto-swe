@@ -6,8 +6,12 @@ import type { LangGraphRunnableConfig } from "@langchain/langgraph";
 import { tool as aiTool, type ToolSet } from "ai";
 import { generate, stream as llmStream } from "../llm";
 import { z } from "zod";
-import { readFile as fsReadFile, readdir as fsReaddir } from "fs/promises";
+import { readFile as fsReadFile, readdir as fsReaddir, stat as fsStat } from "fs/promises";
 import { join, resolve } from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 import { getStatus, getDiffStat, getDiff, getHeadCommitFull, getChangedFiles } from "../git-helpers";
 
 import type { PipelineStateType, PipelineConfig } from "./state";
@@ -75,43 +79,36 @@ const AUTO_READ_FILES = [
   "CMakeLists.txt",
 ];
 
-/** Directories that are never useful to the planner — skipped during recursive listing. */
-const SKIP_DIRS = new Set([
-  ".git",
-  ".svn",
-  ".hg",
-  "node_modules",
-  "dist",
-  "build",
-  "out",
-  "target",
-  ".next",
-  ".nuxt",
-  ".cache",
-  ".swe",
-  "__pycache__",
-  ".pytest_cache",
-  ".mypy_cache",
-  ".tox",
-  ".venv",
-  "venv",
-  "env",
-  ".godot",
-  ".import",
-  "vendor",
-  "coverage",
-  ".idea",
-  ".vscode",
-]);
-
 /**
- * Recursively list source files in a project, returning sorted relative paths.
- * Caps total entries to prevent prompt blow-up. Excludes hidden dirs and common
- * build/cache directories. Used by gatherProjectContext to give the planner a
- * structural view of the project without forcing it to spend tool calls on
- * `listDirectory`.
+ * List source files in a project, returning sorted relative paths.
+ * Prefers `git ls-files` which respects .gitignore automatically.
+ * Falls back to a manual recursive walk for non-git directories.
+ * Caps total entries to prevent prompt blow-up.
  */
 async function listProjectFiles(workdir: string, maxEntries = 200): Promise<string[]> {
+  // Try git ls-files first — respects .gitignore, no hardcoded skip list needed.
+  try {
+    await fsStat(join(workdir, ".git"));
+    const { stdout } = await execFileAsync(
+      "git",
+      ["ls-files", "--cached", "--others", "--exclude-standard"],
+      { cwd: workdir, maxBuffer: 1024 * 1024, timeout: 30_000 },
+    );
+    const files = stdout.trim().split("\n").filter(Boolean).sort();
+    if (files.length > maxEntries) {
+      return [...files.slice(0, maxEntries), `... (truncated at ${maxEntries} entries)`];
+    }
+    return files;
+  } catch {
+    // Not a git repo or git not available — fall through to manual walk.
+  }
+
+  // Fallback: manual recursive walk with a basic skip list.
+  const SKIP_DIRS = new Set([
+    ".git", "node_modules", "dist", "build", "out", "target",
+    "__pycache__", ".venv", "venv", ".godot", ".import", ".swe",
+    "vendor", "coverage",
+  ]);
   const results: string[] = [];
   let truncated = false;
 
@@ -124,12 +121,10 @@ async function listProjectFiles(workdir: string, maxEntries = 200): Promise<stri
     } catch {
       return;
     }
-    // Sort for stable output across runs.
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
       if (results.length >= maxEntries) { truncated = true; return; }
       if (SKIP_DIRS.has(e.name)) continue;
-      // Skip dotfiles at the top, but allow important dotfiles like .gitignore
       if (e.name.startsWith(".") && e.name !== ".gitignore" && e.name !== ".env.example") {
         if (e.isDirectory()) continue;
       }

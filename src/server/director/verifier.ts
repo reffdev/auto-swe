@@ -495,37 +495,42 @@ export async function verifyMilestone(
  * when this returns null and the LLM judges based on the verification
  * criteria + completed task summaries instead.
  */
+/** Max characters of file listing to pass to the verifier LLM. */
+const PROJECT_STATE_MAX_CHARS = 30_000;
+
 async function getProjectState(workdir: string): Promise<string | null> {
-  // Use runProcess (no shell) so we don't have to worry about quoting and
-  // escapes. find with -prune is faster than -not -path because it skips
-  // descending into hidden / node_modules dirs entirely.
+  // Prefer `git ls-files` — it respects .gitignore (including nested ones),
+  // lists tracked files + untracked-but-not-ignored files, and requires no
+  // hardcoded skip-directory list.
+  try {
+    const result = await runProcess(
+      "git",
+      ["ls-files", "--cached", "--others", "--exclude-standard"],
+      { cwd: workdir, timeoutMs: 30_000 },
+    );
+    const out = (result.stdout ?? "").trim();
+    if (out.length > 0) return out.slice(0, PROJECT_STATE_MAX_CHARS);
+    if (result.status !== 0) {
+      console.warn(`[director:verifier] getProjectState: git ls-files exited ${result.status}: ${(result.stderr ?? "").slice(0, 200)}`);
+    }
+  } catch (err) {
+    console.warn(`[director:verifier] getProjectState: git ls-files threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // Fallback for non-git directories: find with basic pruning.
   try {
     const result = await runProcess(
       "find",
       [
-        workdir,
-        "-maxdepth", "4",
-        "(", "-name", ".*", "-o", "-name", "node_modules", "-o", "-name", "dist", "-o", "-name", ".git", ")",
-        "-prune", "-o",
-        "-type", "f", "-print",
+        workdir, "-maxdepth", "6",
+        "(", "-name", ".*", "-o", "-name", "node_modules", "-o", "-name", "dist", ")",
+        "-prune", "-o", "-type", "f", "-print",
       ],
       { cwd: workdir, timeoutMs: 30_000 },
     );
     const out = (result.stdout ?? "").trim();
-    if (out.length > 0) return out.slice(0, 8000);
-    if (result.status !== 0) {
-      console.warn(`[director:verifier] getProjectState: find exited ${result.status}: ${(result.stderr ?? "").slice(0, 200)}`);
-    }
+    if (out.length > 0) return out.slice(0, PROJECT_STATE_MAX_CHARS);
   } catch (err) {
-    console.warn(`[director:verifier] getProjectState: find threw: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  // Fallback: a recursive ls. Slower but more portable.
-  try {
-    const result = await runProcess("ls", ["-laR", workdir], { cwd: workdir, timeoutMs: 30_000 });
-    const out = (result.stdout ?? "").trim();
-    if (out.length > 0) return out.slice(0, 8000);
-  } catch (err) {
-    console.warn(`[director:verifier] getProjectState: ls fallback threw: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[director:verifier] getProjectState: find fallback threw: ${err instanceof Error ? err.message : String(err)}`);
   }
   return null;
 }
