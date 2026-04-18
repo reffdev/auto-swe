@@ -853,7 +853,14 @@ async function advanceMilestone(db: Db, directive: DirectorDirective, project: P
     );
     await planTasks(db, directive, project, activeMilestone, "failure recovery", failureIssues);
   } else if (tasks.some(t => t.status === "queued" || t.status === "running") && !isDirectorPlanning()) {
-    await topUpIfIdle(db, directive, project, activeMilestone);
+    // Drain-first, plan-later. Only top-up when the foreman has no queued
+    // tasks left to dispatch for this milestone. Planning while the queue
+    // is still deep burns LLM cycles and contends with the foreman for
+    // machines that should be executing pending work.
+    const hasQueued = tasks.some(t => t.status === "queued");
+    if (!hasQueued) {
+      await topUpIfIdle(db, directive, project, activeMilestone);
+    }
   }
 }
 
