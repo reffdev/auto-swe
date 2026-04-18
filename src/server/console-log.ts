@@ -3,6 +3,8 @@
  * recent entries for the /api/console SSE endpoint.
  */
 
+import { inspect } from "util";
+
 export interface LogEntry {
   timestamp: string;
   level: "log" | "error" | "warn";
@@ -13,8 +15,33 @@ const MAX_BUFFER = 500;
 const buffer: LogEntry[] = [];
 const listeners = new Set<(entry: LogEntry) => void>();
 
-function capture(level: LogEntry["level"], args: unknown[]): string {
-  return args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+/**
+ * Format one console argument for the log buffer.
+ *
+ * History: this used to be `typeof a === "string" ? a : JSON.stringify(a)`.
+ * That silently stringified Error instances as `{}` because Error's own
+ * properties (`name`, `message`, `stack`) are non-enumerable, so every
+ * `console.error("...:", err)` call in the codebase showed up in the UI
+ * log stream as `...: {}`. Push failures, PR creation failures, the
+ * server's unhandledRejection handler — all invisible.
+ *
+ * `util.inspect` is what Node's own console.error uses, so the UI buffer
+ * now matches what we'd see in stdout.
+ */
+function formatArg(a: unknown): string {
+  if (typeof a === "string") return a;
+  if (a instanceof Error) {
+    // Preserve stack when present — matches default Node console.error output.
+    return a.stack ? a.stack : `${a.name}: ${a.message}`;
+  }
+  // depth=4 is enough for most config/response objects without blowing up
+  // on deep trees; breakLength=Infinity keeps each arg on one line so the
+  // "one log entry = one line" assumption downstream stays intact.
+  return inspect(a, { depth: 4, breakLength: Infinity });
+}
+
+function capture(_level: LogEntry["level"], args: unknown[]): string {
+  return args.map(formatArg).join(" ");
 }
 
 /** Emit a log entry directly (for non-console sources like process events). */
