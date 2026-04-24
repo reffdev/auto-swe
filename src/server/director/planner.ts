@@ -335,9 +335,11 @@ export async function planNextTasks(
 
         // Wall-clock cap for the entire planner stream. Foreman/runStage has
         // a wallTimeoutMs but the planner did not, and we observed runs of
-        // 19+ minutes spinning on advanceMilestone retries. Cap at 12 min;
-        // this is plenty for both planning and verification mode.
-        const PLANNER_WALL_TIMEOUT_MS = 12 * 60 * 1000;
+        // 19+ minutes spinning on advanceMilestone retries. Cap at 30 min;
+        // on slow local models (e.g. 27B at 30-150s per step) the agent
+        // legitimately needs this much to explore the codebase and commit
+        // a plan. Shorter caps were firing during normal operation.
+        const PLANNER_WALL_TIMEOUT_MS = 30 * 60 * 1000;
         let wallTimedOut = false;
         const wallTimer = setTimeout(() => {
           wallTimedOut = true;
