@@ -568,19 +568,28 @@ async function processKnowledgeExtraction(db: Db, project: Project): Promise<voi
 
   const dispatch = async (): Promise<"ok" | "no-machine" | "error"> => {
     const runner = async (session: LlmSession): Promise<"ok" | "error"> => {
+      const KNOWLEDGE_EXTRACTION_TIMEOUT_MS = 6 * 60 * 1000;
+      // Cleanable timer so the race loser doesn't leave a pending timeout that
+      // later fires into an abandoned Promise — the previous AbortSignal.timeout
+      // version leaked an orphan rejection every time the extraction finished
+      // before the 6-minute boundary.
+      let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
       try {
-        const KNOWLEDGE_EXTRACTION_TIMEOUT_MS = 6 * 60 * 1000;
-        const extractionTimeout = AbortSignal.timeout(KNOWLEDGE_EXTRACTION_TIMEOUT_MS);
         await Promise.race([
           extractTaskKnowledge(db, task, project, session),
           new Promise<never>((_, reject) => {
-            extractionTimeout.addEventListener("abort", () => reject(new Error("Knowledge extraction timed out (6min)")));
+            timeoutTimer = setTimeout(
+              () => reject(new Error("Knowledge extraction timed out (6min)")),
+              KNOWLEDGE_EXTRACTION_TIMEOUT_MS,
+            );
           }),
         ]);
         return "ok";
       } catch (err) {
         console.warn(`[director:knowledge] failed "${task.title}":`, err instanceof Error ? err.message : err);
         return "error";
+      } finally {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
       }
     };
 

@@ -419,9 +419,23 @@ export async function verifyMilestone(
   //   - When called standalone (from the scheduler backstop), we acquire
   //     our own session via withLlmSession.
   const runVerifyOnSession = async (session: LlmSession): Promise<{ passed: boolean; issues: string[] }> => {
-    const milestoneTimeout = AbortSignal.timeout(3 * 60 * 1000);
+    // Cleanable timeout: AbortSignal.timeout() leaves the timer running after
+    // the work completes, which can fire a stale TimeoutError into whatever
+    // internal promises the AI SDK attached to the signal. Using an
+    // AbortController + clearable timer means the signal never aborts once
+    // we've returned successfully.
+    const timeoutController = new AbortController();
+    const timeoutTimer = setTimeout(
+      () => timeoutController.abort(new Error("Milestone verification timed out (3min)")),
+      3 * 60 * 1000,
+    );
     const startedAt = Date.now();
-    const text = await generate(session.llm, { system, prompt: user, abortSignal: milestoneTimeout });
+    let text: string;
+    try {
+      text = await generate(session.llm, { system, prompt: user, abortSignal: timeoutController.signal });
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
     if (milestone.id) {
       try {
         db.createLlmRequest({
