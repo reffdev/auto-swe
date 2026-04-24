@@ -219,6 +219,22 @@ export async function generate(model: LlmModel, opts: GenerateOptions): Promise<
       console.error("[llm] generate error:", error instanceof Error ? error.message : error);
     },
   });
+  // AI SDK v4 eagerly materializes .usage / .finishReason / .steps /
+  // .toolCalls / .toolResults / .response / .warnings as deferred promises on
+  // the result. When the stream aborts (e.g. via abortSignal), ALL of them
+  // reject — not just .text. Since this generate() only awaits .text, the
+  // others would become unhandled rejections. Attach no-op catch handlers
+  // defensively so aborts propagate cleanly through .text only.
+  const swallow = (p: Promise<unknown> | undefined) => { p?.catch?.(() => {}); };
+  swallow(result.usage);
+  swallow(result.finishReason);
+  swallow(result.steps);
+  swallow(result.toolCalls);
+  swallow(result.toolResults);
+  swallow(result.response);
+  swallow(result.warnings);
+  swallow(result.providerMetadata);
+  swallow(result.request);
   // Must consume the stream for .text to resolve
   await result.consumeStream();
   return await result.text;

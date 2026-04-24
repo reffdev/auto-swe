@@ -420,14 +420,20 @@ export async function verifyMilestone(
   //     our own session via withLlmSession.
   const runVerifyOnSession = async (session: LlmSession): Promise<{ passed: boolean; issues: string[] }> => {
     // Cleanable timeout: AbortSignal.timeout() leaves the timer running after
-    // the work completes, which can fire a stale TimeoutError into whatever
-    // internal promises the AI SDK attached to the signal. Using an
-    // AbortController + clearable timer means the signal never aborts once
-    // we've returned successfully.
+    // the work completes, which can fire a stale abort into whatever internal
+    // promises the AI SDK attached to the signal. Using an AbortController +
+    // clearable timer means the signal never aborts once we've returned.
+    //
+    // 10 min matches the Director lease idle timeout and the planner
+    // wall-clock budget. A local 27B model on a ~12k-token verification prompt
+    // can legitimately take 5+ minutes — the old 3-min cap was firing during
+    // normal operation. The purpose of this cap is a safety net for true
+    // hangs, not a tight performance budget.
+    const MILESTONE_VERIFY_TIMEOUT_MS = 10 * 60 * 1000;
     const timeoutController = new AbortController();
     const timeoutTimer = setTimeout(
-      () => timeoutController.abort(new Error("Milestone verification timed out (3min)")),
-      3 * 60 * 1000,
+      () => timeoutController.abort(new Error("Milestone verification timed out (10min)")),
+      MILESTONE_VERIFY_TIMEOUT_MS,
     );
     const startedAt = Date.now();
     let text: string;
