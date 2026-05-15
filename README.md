@@ -1,5 +1,7 @@
 # auto-swe
 
+This is an exploration of agent orchestration, not intended to be a complete product. If you're looking to build your own agent stack, I highly recommend [Hermes Agent](https://github.com/nousresearch/hermes-agent) as a more complete starting point.
+
 An autonomous software engineering orchestration system. Takes high-level directives ("build a tower defense game"), decomposes them into milestones and tasks, dispatches work to LLM agents running on separate inference machines, runs code review and gated build/test checks, and generates art / music / SFX through ComfyUI — all with configurable human oversight.
 
 Single-host control plane, multi-machine execution. Built with Claude as a development tool.
