@@ -1,6 +1,6 @@
 # auto-swe
 
-This is an exploration of agent orchestration, not intended to be a complete product. If you're looking to build your own agent stack, I highly recommend [Hermes Agent](https://github.com/nousresearch/hermes-agent) or [OpenHands](https://github.com/OpenHands/OpenHands) as a more complete starting point.
+This is an exploration of agent orchestration, not intended to be a complete product. If you're looking to build your own agent stack, I highly recommend [Hermes Agent](https://github.com/nousresearch/hermes-agent) or [OpenHands](https://github.com/OpenHands/OpenHands) as a more complete starting point. If you're looking to explore architecture and patterns around agentic orchestration, continue on.
 
 An autonomous software engineering orchestration system. Takes high-level directives ("build a tower defense game"), decomposes them into milestones and tasks, dispatches work to LLM agents running on separate inference machines, runs code review and gated build/test checks, and generates art / music / SFX through ComfyUI — all with configurable human oversight.
 
